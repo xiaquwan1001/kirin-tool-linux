@@ -80,66 +80,202 @@ internal abstract class GatedWriteCommand : ICliCommand
     }
 }
 
-internal sealed class FlashOtaCommand : GatedWriteCommand
+internal sealed class FlashOtaCommand : ICliCommand
 {
-    public override string Name => "flash-ota";
-    public override string McpName => "flash_ota";
-    public override string Summary => "Plan flashing every partition of an UPDATE.APP (gate-only: never writes in this build).";
-    public override string Usage => "flash-ota <UPDATE.APP> [--yes] [--json]";
-    public override IReadOnlyList<CliParam> Params => new[]
+    public string Name => "flash-ota";
+    public string McpName => "flash_ota";
+    public string Summary => "Flash every partition of one or more UPDATE.APP / PTABLE.APP archives (Full OTA equivalent; writes only with --yes).";
+    public string Usage =>
+        "flash-ota <file>... [--partitions a,b] [--exclude x,y] [--allow-redline] [--yes] [--json]\n" +
+        "  files are flashed in the order given (base PTABLE, base UPDATE, cust PTABLE, cust UPDATE, preload PTABLE, preload UPDATE)\n" +
+        "  without --yes the plan is printed and nothing is written (exit 4)";
+    public bool IsWrite => true;
+    public IReadOnlyList<CliParam> Params => new[]
     {
-        new CliParam("file", "string", "path to UPDATE.APP to inspect for the flash plan", Required: true, Positional: true),
+        new CliParam("file", "string[]", "UPDATE.APP / PTABLE.APP paths, in flash order", Required: true, Positional: true),
+        new CliParam("files", "string", "same as the positional files, comma separated (use from MCP)"),
+        new CliParam("partitions", "string", "comma separated whitelist of partition names to flash"),
+        new CliParam("exclude", "string", "comma separated partition names to skip"),
+        new CliParam("allow-redline", "boolean", "permit writing oeminfo/nvme/modem_secure/persist/modemnvm*/certification/hisee_encos/veritykey"),
+        new CliParam("work-dir", "string", "staging directory for extracted images (default: <dir of first file>/.kirintool-cli-tmp)"),
+        new CliParam("strict-names", "boolean", "refuse instead of skipping partitions the loader does not expose"),
+        new CliParam("yes", "boolean", "acknowledge the plan and perform the write"),
+        new CliParam("json", "boolean", "structured output"),
     };
 
-    protected override Task<WritePlan> BuildPlanAsync(ParsedArgs args, CliContext context, CancellationToken cancellationToken)
+    public async Task<int> ExecuteAsync(ParsedArgs args, CliContext context, CancellationToken cancellationToken)
     {
-        if (args.Positionals.Count < 1) throw new CliUsageException("flash-ota requires an UPDATE.APP path");
-        string archivePath = Path.GetFullPath(args.Positionals[0], context.WorkingDirectory);
-        if (!File.Exists(archivePath)) throw new CliFileException($"file not found: {archivePath}");
+        List<string> inputs = args.Positionals.ToList();
+        string? filesValue = args.Value("files");
+        if (!string.IsNullOrWhiteSpace(filesValue))
+            inputs.AddRange(SplitList(filesValue));
+        if (inputs.Count == 0) throw new CliUsageException("flash-ota requires at least one UPDATE.APP / PTABLE.APP path");
 
-        List<ExtractionEntry> entries = PartitionExtractor.Read(archivePath, cancellationToken);
-        long totalBytes = entries.Sum(entry => entry.Partition.Size);
-
-        var partitions = entries.Select(entry => new
+        var paths = new List<string>();
+        foreach (string input in inputs)
         {
-            partition = entry.Name,
-            size = entry.Partition.Size,
-            formattedSize = entry.Partition.FormattedSize,
-            image = Path.Combine(Path.Combine(Path.GetTempPath(), "kirintool-flash", Path.GetFileNameWithoutExtension(archivePath)), entry.FileName),
+            string resolved = Path.GetFullPath(input, context.WorkingDirectory);
+            if (!File.Exists(resolved)) throw new CliFileException($"file not found: {resolved}");
+            paths.Add(resolved);
+        }
+
+        OtaPlan plan;
+        try
+        {
+            plan = OtaFlashRunner.BuildPlan(paths, SplitList(args.Value("partitions")), SplitList(args.Value("exclude")), cancellationToken);
+        }
+        catch (CliFileException ex)
+        {
+            context.Diag($"error: {ex.Message}");
+            return ExitCodes.FileOrVerify;
+        }
+
+        var rows = plan.Entries.Select(entry => new[]
+        {
+            entry.Partition,
+            TextFormat.Bytes(entry.Size),
+            entry.IsRedline ? "REDLINE" : entry.Source,
         }).ToList();
 
         var details = new
         {
-            archive = archivePath,
-            implementation = "Services/FastbootFlasherService.FlashPartitionAsync (not invoked in this build)",
-            partitionCount = partitions.Count,
-            totalBytes,
-            partitions,
+            files = paths,
+            partitionCount = plan.Entries.Count,
+            skippedCount = plan.Skipped.Count,
+            totalBytes = plan.TotalBytes,
+            redlines = plan.Redlines,
+            warnings = plan.Warnings,
+            partitions = plan.Entries.Select(entry => new
+            {
+                partition = entry.Partition,
+                size = entry.Size,
+                source = entry.Source,
+                redline = entry.IsRedline,
+                total = entry.Size,
+            }).ToList(),
+            skipped = plan.Skipped.Select(entry => entry.Partition).ToList(),
         };
 
-        var lines = new List<string>
+        if (context.Json && !context.Yes)
+            context.WriteJson(new { command = Name, dryRun = true, applied = false, gate = "plan-only", plan = details, exitCode = ExitCodes.Gated });
+        else
         {
-            $"flash plan for {archivePath}",
-            $"would write {partitions.Count} partitions ({TextFormat.Bytes(totalBytes)}) via fastboot flash:",
-            TextFormat.Table(partitions.Select(p => new[] { p.partition, p.formattedSize }).ToList(), "PARTITION", "SIZE"),
-        };
+            context.Output.WriteLine($"flash plan: {plan.Entries.Count} partitions, {TextFormat.Bytes(plan.TotalBytes)}");
+            context.Output.WriteLine(TextFormat.Table(rows, "PARTITION", "SIZE", "SOURCE"));
+            foreach (string warning in plan.Warnings) context.Output.WriteLine($"warning: {warning}");
+            context.Output.WriteLine($"skipped by policy: {plan.Skipped.Count} entr{(plan.Skipped.Count == 1 ? "y" : "ies")}");
+        }
 
-        return Task.FromResult(new WritePlan(details, lines));
+        bool allowRedline = args.HasFlag("allow-redline");
+        if (plan.Redlines.Count > 0 && !allowRedline)
+        {
+            context.Diag($"refused: plan writes redline partitions ({string.Join(", ", plan.Redlines)}); pass --allow-redline to override");
+            return ExitCodes.Gated;
+        }
+
+        bool confirmed = context.Yes || args.HasFlag("yes");
+        if (!confirmed)
+        {
+            context.Diag("gate: plan only; re-run with --yes to flash");
+            return ExitCodes.Gated;
+        }
+
+        FastbootSession? session = await FastbootSession.TryOpenAsync();
+        if (session == null)
+        {
+            context.Diag("error: fastboot binary not found");
+            return ExitCodes.NoDevice;
+        }
+        if (!session.Connected)
+        {
+            context.Diag("error: no device in fastboot mode");
+            return ExitCodes.NoDevice;
+        }
+
+        string workDirectory = args.Value("work-dir") is { Length: > 0 } workDirArg
+            ? Path.GetFullPath(workDirArg, context.WorkingDirectory)
+            : Path.Combine(Path.GetDirectoryName(paths[0]) ?? context.WorkingDirectory, ".kirintool-cli-tmp");
+        try { Directory.CreateDirectory(workDirectory); }
+        catch (Exception ex)
+        {
+            context.Diag($"error: cannot create staging directory {workDirectory}: {ex.Message}");
+            return ExitCodes.FileOrVerify;
+        }
+        context.Diag($"staging directory: {workDirectory}");
+
+        var (resolvedNames, unresolved) = await OtaFlashRunner.ResolveNamesAsync(
+            session.Client, plan.Entries.Select(entry => entry.Partition), context, cancellationToken);
+        if (unresolved.Count > 0)
+        {
+            // The temporary loader publishes its own partition map, which can be narrower than the
+            // GPT a package was built for (e.g. no "kpatch" on ELS loaders). Skipping is safe for
+            // those; --strict-names keeps the old all-or-nothing behaviour.
+            if (args.HasFlag("strict-names"))
+            {
+                context.Diag($"refused: {unresolved.Count} planned partition(s) do not exist on this loader: {string.Join(", ", unresolved)}");
+                return ExitCodes.DeviceRejected;
+            }
+            context.Diag($"warning: skipping {unresolved.Count} partition(s) the loader does not expose: {string.Join(", ", unresolved)}");
+            var unresolvedNames = new HashSet<string>(unresolved.Select(line => line.Split(" -> ")[0]), StringComparer.OrdinalIgnoreCase);
+            plan = new OtaPlan
+            {
+                Entries = plan.Entries.Where(entry => !unresolvedNames.Contains(entry.Partition)).ToList(),
+                SuperParts = plan.SuperParts.Where(entry => !unresolvedNames.Contains(entry.Partition)).ToList(),
+                Skipped = plan.Skipped,
+                Redlines = plan.Redlines,
+                Warnings = plan.Warnings,
+                TotalBytes = plan.TotalBytes,
+            };
+        }
+
+        List<OtaFlashOutcome> outcomes = await OtaFlashRunner.ExecuteAsync(plan, workDirectory, resolvedNames, session.Client, context, cancellationToken);
+        int ok = outcomes.Count(outcome => outcome.Ok);
+        var failed = outcomes.Where(outcome => !outcome.Ok).Select(outcome => new { partition = outcome.Partition, error = outcome.Error }).ToList();
+
+        if (context.Json)
+            context.WriteJson(new
+            {
+                command = Name,
+                dryRun = false,
+                applied = true,
+                fastboot = session.ExecutablePath,
+                flashed = ok,
+                total = outcomes.Count,
+                failed,
+                exitCode = ok == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected,
+            });
+        else
+            context.Output.WriteLine($"flashed {ok}/{outcomes.Count} partitions");
+
+        if (ok == 0) return ExitCodes.FileOrVerify;
+        return ok == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected;
     }
-}
 
-internal sealed class FlashXmlCommand : GatedWriteCommand
+    internal static List<string> SplitList(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? new List<string>()
+            : value.Split(new[] { ',', ';', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+}
+internal sealed class FlashXmlCommand : ICliCommand
 {
-    public override string Name => "flash-xml";
-    public override string McpName => "flash_xml";
-    public override string Summary => "Plan flashing from a Huawei flashing XML (gate-only: never writes in this build).";
-    public override string Usage => "flash-xml <flashing.xml|dir> [--yes] [--json]";
-    public override IReadOnlyList<CliParam> Params => new[]
+    public string Name => "flash-xml";
+    public string McpName => "flash_xml";
+    public string Summary => "Flash the <image> entries of a Huawei flashing XML (writes only with --yes).";
+    public string Usage =>
+        "flash-xml <flashing.xml|dir> [--partitions a,b] [--exclude x,y] [--allow-redline] [--yes] [--json]\n" +
+        "  identifiers whose images are missing abort before any write; without --yes only the plan is printed (exit 4)";
+    public bool IsWrite => true;
+    public IReadOnlyList<CliParam> Params => new[]
     {
         new CliParam("path", "string", "flashing XML file, or a directory containing one", Required: true, Positional: true),
+        new CliParam("partitions", "string", "comma separated whitelist of identifiers to flash"),
+        new CliParam("exclude", "string", "comma separated identifiers to skip"),
+        new CliParam("allow-redline", "boolean", "permit writing oeminfo/nvme/modem_secure/persist/modemnvm*/certification/hisee_encos/veritykey"),
+        new CliParam("yes", "boolean", "acknowledge the plan and perform the write"),
+        new CliParam("json", "boolean", "structured output"),
     };
 
-    protected override Task<WritePlan> BuildPlanAsync(ParsedArgs args, CliContext context, CancellationToken cancellationToken)
+    public async Task<int> ExecuteAsync(ParsedArgs args, CliContext context, CancellationToken cancellationToken)
     {
         if (args.Positionals.Count < 1) throw new CliUsageException("flash-xml requires a flashing XML path");
         string path = Path.GetFullPath(args.Positionals[0], context.WorkingDirectory);
@@ -150,56 +286,134 @@ internal sealed class FlashXmlCommand : GatedWriteCommand
                 .OrderBy(file => file, StringComparer.Ordinal)
                 .ToList();
             if (candidates.Count == 0) throw new CliFileException($"no *.xml flashing file found in {path}");
-            if (candidates.Count > 1)
-            {
-                string? preferred = candidates.FirstOrDefault(file =>
-                    Path.GetFileName(file).Contains("flash", StringComparison.OrdinalIgnoreCase));
-                path = preferred ?? candidates[0];
-            }
-            else
-            {
-                path = candidates[0];
-            }
+            path = candidates.Count > 1
+                ? candidates.FirstOrDefault(file => Path.GetFileName(file).Contains("flash", StringComparison.OrdinalIgnoreCase)) ?? candidates[0]
+                : candidates[0];
         }
 
         if (!File.Exists(path)) throw new CliFileException($"file not found: {path}");
 
         string? fastbootPath = BinaryLocator.FindFastboot();
         var service = new FastbootFlasherService(new FastbootClient(fastbootPath ?? "fastboot"));
-        List<FastbootPartition> partitions = service.ParseFlashingXml(path);
-        if (partitions.Count == 0)
-            throw new CliFileException($"no flashable <image> entries parsed from {path}");
+        List<FastbootPartition> parsed = service.ParseFlashingXml(path);
+        if (parsed.Count == 0) throw new CliFileException($"no flashable <image> entries parsed from {path}");
 
-        var images = partitions.Select(partition => new
-        {
-            partition = partition.Identifier,
-            name = partition.Name,
-            image = partition.DumpPath,
-            exists = partition.DumpPath != null && File.Exists(partition.DumpPath),
-        }).ToList();
+        List<string> only = FlashOtaCommand.SplitList(args.Value("partitions"));
+        List<string> excluded = FlashOtaCommand.SplitList(args.Value("exclude"));
+        var onlySet = only.Count > 0 ? new HashSet<string>(only, StringComparer.OrdinalIgnoreCase) : null;
+        var excludeSet = excluded.Count > 0 ? new HashSet<string>(excluded, StringComparer.OrdinalIgnoreCase) : null;
 
-        var details = new
-        {
-            xml = path,
-            implementation = "Services/FastbootFlasherService.ParseFlashingXml + FlashPartitionAsync (not invoked in this build)",
-            imageCount = images.Count,
-            missingImages = images.Count(image => !image.exists),
-            images,
-        };
+        var selected = new List<FastbootPartition>();
+        var skipped = new List<string>();
+        var redlines = new List<string>();
+        var missing = new List<string>();
 
-        var lines = new List<string>
+        foreach (FastbootPartition partition in parsed)
         {
-            $"flash plan for {path}",
-            $"would write {images.Count} images:",
-            TextFormat.Table(images.Select(i => new[]
+            cancellationToken.ThrowIfCancellationRequested();
+            string identifier = partition.Identifier ?? string.Empty;
+            if (onlySet != null && !onlySet.Contains(identifier)) { skipped.Add(identifier); continue; }
+            if (excludeSet != null && (excludeSet.Contains(identifier) || excludeSet.Contains(partition.Name ?? string.Empty)))
             {
-                i.partition, i.name, i.exists ? "present" : "MISSING", i.image ?? "(unresolved)",
-            }).ToList(), "PARTITION", "NAME", "STATE", "PATH"),
-        };
-        if (images.Any(image => !image.exists))
-            lines.Add("warning: some images are missing; a real flash would fail or be partial.");
+                skipped.Add(identifier);
+                continue;
+            }
+            if (FlashPolicy.IsRedline(identifier) || FlashPolicy.IsRedline(partition.Name ?? string.Empty))
+                redlines.Add(identifier);
+            if (partition.DumpPath == null || !File.Exists(partition.DumpPath))
+                missing.Add($"{identifier} ({(partition.DumpPath ?? "unresolved")})");
+            selected.Add(partition);
+        }
 
-        return Task.FromResult(new WritePlan(details, lines));
+        bool allowRedline = args.HasFlag("allow-redline");
+
+        if (context.Json && !context.Yes)
+            context.WriteJson(new
+            {
+                command = Name,
+                dryRun = true,
+                applied = false,
+                xml = path,
+                partitionCount = selected.Count,
+                skipped,
+                redlines,
+                missingImages = missing,
+                partitions = selected.Select(partition => new
+                {
+                    identifier = partition.Identifier,
+                    name = partition.Name,
+                    image = partition.DumpPath,
+                    redline = FlashPolicy.IsRedline(partition.Identifier ?? string.Empty),
+                }).ToList(),
+                exitCode = ExitCodes.Gated,
+            });
+        else
+        {
+            context.Output.WriteLine($"flash plan for {path}: {selected.Count} images");
+            context.Output.WriteLine(TextFormat.Table(selected.Select(partition => new[]
+            {
+                partition.Identifier ?? "?",
+                partition.Name ?? "?",
+                FlashPolicy.IsRedline(partition.Identifier ?? string.Empty) ? "REDLINE" : "ok",
+                partition.DumpPath ?? "(unresolved)",
+            }).ToList(), "IDENTIFIER", "NAME", "STATE", "PATH"));
+            if (skipped.Count > 0) context.Output.WriteLine($"skipped: {string.Join(", ", skipped)}");
+        }
+
+        if (missing.Count > 0)
+        {
+            context.Diag($"refused: {missing.Count} image(s) missing: {string.Join(", ", missing)}");
+            return ExitCodes.FileOrVerify;
+        }
+        if (redlines.Count > 0 && !allowRedline)
+        {
+            context.Diag($"refused: plan writes redline identifiers ({string.Join(", ", redlines)}); pass --allow-redline to override");
+            return ExitCodes.Gated;
+        }
+
+        bool confirmed = context.Yes || args.HasFlag("yes");
+        if (!confirmed)
+        {
+            context.Diag("gate: plan only; re-run with --yes to flash");
+            return ExitCodes.Gated;
+        }
+
+        FastbootSession? session = await FastbootSession.TryOpenAsync();
+        if (session == null) { context.Diag("error: fastboot binary not found"); return ExitCodes.NoDevice; }
+        if (!session.Connected) { context.Diag("error: no device in fastboot mode"); return ExitCodes.NoDevice; }
+
+        var outcomes = new List<OtaFlashOutcome>();
+        for (int i = 0; i < selected.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            FastbootPartition partition = selected[i];
+            // Huawei loaders match partition names case-sensitively; GPT names are lower case.
+            string flashName = (partition.Identifier ?? string.Empty).ToLowerInvariant();
+            context.Diag($"[{i + 1}/{selected.Count}] flash {flashName} <- {TextFormat.Bytes(new FileInfo(partition.DumpPath!).Length)}");
+            ProcessResult result = await session.Client.FlashPartition(flashName, partition.DumpPath!);
+            bool ok = result.IsSuccess && (result.Output ?? string.Empty).Contains("OKAY", StringComparison.OrdinalIgnoreCase);
+            outcomes.Add(new OtaFlashOutcome(flashName, ok, ok ? null : (result.Output ?? string.Empty).Trim()));
+            context.Diag(ok ? $"    OKAY {flashName}" : $"    FAILED {flashName}: {result.Output}");
+        }
+
+        int okCount = outcomes.Count(outcome => outcome.Ok);
+        if (context.Json)
+            context.WriteJson(new
+            {
+                command = Name,
+                dryRun = false,
+                applied = true,
+                fastboot = session.ExecutablePath,
+                flashed = okCount,
+                total = outcomes.Count,
+                failed = outcomes.Where(outcome => !outcome.Ok).Select(outcome => new { partition = outcome.Partition, error = outcome.Error }).ToList(),
+                exitCode = okCount == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected,
+            });
+        else
+            context.Output.WriteLine($"flashed {okCount}/{outcomes.Count} images");
+
+        if (okCount == 0) return ExitCodes.FileOrVerify;
+        return okCount == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected;
     }
 }
 
