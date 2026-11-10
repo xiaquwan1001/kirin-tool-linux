@@ -35,6 +35,10 @@ jobs:
       DOTNET_NOLOGO: 'true'
       DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
       DEBIAN_FRONTEND: noninteractive
+      # ubuntu:20.04 has no g++-10 alternative installed: the default c++ is g++-9 and the
+      # vendored libziparchive needs C++20 (<span>). Pin the compiler for every native step.
+      CC: gcc-10
+      CXX: g++-10
 
     steps:
       - name: Install build dependencies
