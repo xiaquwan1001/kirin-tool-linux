@@ -24,6 +24,11 @@ concurrency:
   group: release-linux-${{ github.ref }}
   cancel-in-progress: true
 
+# Container jobs default to `sh` and this pipeline uses bash-isms (set -o pipefail).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     name: build binaries + deb + AppImage (glibc 2.31)
