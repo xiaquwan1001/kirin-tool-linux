@@ -44,7 +44,8 @@ chmod 755 "$SUITE$APP/Kirin-Tool"
 ln -s "$APP/Kirin-Tool" "$SUITE/usr/bin/kirin-tool"
 ln -s "$APP/UsbUpdateProbe" "$SUITE/usr/bin/kirin-usb-update-probe"
 ln -s "$APP/VcomOpenProbe" "$SUITE/usr/bin/kirin-vcom-open-probe"
-[ -n "$CLI_BINARY" ] && ln -s "$APP/KirinTool.Cli" "$SUITE/usr/bin/kirin-tool-cli"
+# The CLI may either be passed in or already sit in the publish tree (release pipeline does the latter).
+if [ -x "$SUITE$APP/KirinTool.Cli" ]; then ln -s "$APP/KirinTool.Cli" "$SUITE/usr/bin/kirin-tool-cli"; fi
 
 # ---- freedesktop / udev integration ----
 install -Dm644 "$ROOT/packaging/kirin-tool-appimage.desktop" "$SUITE/usr/share/applications/kirin-tool.desktop"

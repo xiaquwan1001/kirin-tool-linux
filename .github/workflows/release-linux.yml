@@ -89,6 +89,9 @@ jobs:
           test -x cli-out/KirinTool.Cli
           ./cli-out/KirinTool.Cli --help | grep -q 'flash-ota'
           ./cli-out/KirinTool.Cli version
+          # Ship the CLI inside the app tree too, so the deb, the .tar.gz and the
+          # AppImage all carry the same headless entry point at <app>/KirinTool.Cli.
+          install -m755 cli-out/KirinTool.Cli publish-deb/KirinTool.Cli
 
       # ---- smoke: the bundled fastboot must run and report the Huawei-parity version ----
       - name: Smoke test bundled fastboot + app tree
@@ -101,11 +104,12 @@ jobs:
 
       # ---- packaging ----
       - name: Build deb
-        run: ./packaging/build-deb.sh publish-deb "$VERSION" cli-out/KirinTool.Cli dist
+        run: ./packaging/build-deb.sh publish-deb "$VERSION" "" dist
 
       - name: Build AppImage
         env:
           KIRIN_BUILD_COMMIT: ${{ github.sha }}
+          KIRIN_CLI_BINARY: cli-out/KirinTool.Cli
         run: ./packaging/build-appimage.sh publish-appimage "$VERSION"
 
       - name: Assemble tarball and single-file CLI
@@ -118,6 +122,37 @@ jobs:
           ( cd dist && sha256sum -- * > "SHA256SUMS-${VERSION}.txt" && cat "SHA256SUMS-${VERSION}.txt" )
           dpkg-deb -I "dist/kirin-tool-linux_${VERSION}_amd64.deb" | sed -n '1,14p'
           ls -lh dist
+
+      # ---- verification: the packages must actually install and run ----
+      - name: Verify deb installs (apt resolves Depends) and CLI works
+        run: |
+          set -euo pipefail
+          DEB="$(ls dist/*.deb)"
+          apt-get install -y "./$DEB"
+          command -v kirin-tool kirin-tool-cli
+          kirin-tool-cli --help | grep -q 'flash-ota'
+          kirin-tool-cli version
+          dpkg -s kirin-tool-linux | sed -n '1,10p'
+
+      - name: Verify AppImage unpacks and bundled binaries run
+        run: |
+          set -euo pipefail
+          APPIMAGE="$(ls dist/*.AppImage)"
+          chmod +x "$APPIMAGE"
+          ./"$APPIMAGE" --appimage-extract >/dev/null
+          test -x squashfs-root/usr/bin/Kirin-Tool
+          squashfs-root/usr/bin/fastboot/fastboot --version
+          squashfs-root/usr/bin/KirinTool.Cli --help | grep -q 'flash-ota'
+
+      - name: Verify tarball extracts and CLI runs
+        run: |
+          set -euo pipefail
+          T="$(ls dist/*.tar.gz)"
+          D="$(mktemp -d)"
+          tar xzf "$T" -C "$D"
+          test -x "$D/Kirin-Tool"
+          test -x "$D/KirinTool.Cli"
+          "$D/KirinTool.Cli" version
 
       - uses: actions/upload-artifact@v4
         with:

@@ -16,6 +16,12 @@ export KIRIN_NATIVE_LDFLAGS=''
 export CC="${CC:-gcc-10}" CXX="${CXX:-g++-10}"
 make -C "$ROOT/native/usb-update" clean
 "$ROOT/packaging/publish.sh" "$PUBLISH_DIR"
+# Optional: carry the headless CLI (single self-contained file) inside the AppImage.
+# The release pipeline publishes it beforehand and passes the path in.
+if [[ -n "${KIRIN_CLI_BINARY:-}" ]]; then
+    [[ -x "$KIRIN_CLI_BINARY" ]] || { echo "KIRIN_CLI_BINARY is not executable: $KIRIN_CLI_BINARY" >&2; exit 1; }
+    install -m755 "$KIRIN_CLI_BINARY" "$PUBLISH_DIR/KirinTool.Cli"
+fi
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 LIBUSB_SOURCE="${KIRIN_LIBUSB_SOURCE:-$STAGE/libusb-1.0.30.tar.bz2}"
