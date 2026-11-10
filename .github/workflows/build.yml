@@ -1,9 +1,10 @@
 name: build
 
+# Fork note: releases are built and published by release-linux.yml (deb + AppImage + binaries).
+# This upstream workflow is kept for parity but is dispatch-only in this fork so a tag push
+# does not build the same AppImage/pacman artifacts twice.
 on:
   workflow_dispatch:
-  push:
-    tags: [ 'v*' ]
 
 jobs:
   app-linux-x64:

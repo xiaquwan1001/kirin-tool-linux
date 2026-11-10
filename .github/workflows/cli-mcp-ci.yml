@@ -152,3 +152,42 @@ jobs:
           path: artifact/KirinTool.Cli
           if-no-files-found: error
           retention-days: 14
+
+  packaging-smoke:
+    name: deb packaging smoke (synthetic publish tree)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds the real .deb writer against a fake publish tree: catches path/metadata
+      # regressions in packaging/build-deb.sh without spending 20 min on a native build.
+      - name: Build deb from a synthetic publish tree
+        run: |
+          set -euo pipefail
+          P=publish-fake
+          mkdir -p "$P/fastboot" "$P/loaders/hisi990" "$P/licenses" "$P/docs"
+          printf '#!/bin/sh\necho fake-gui\n' > "$P/Kirin-Tool"
+          printf '#!/bin/sh\necho "fastboot version 35.0.2-kirin-tool-linux-huawei-parity"\n' > "$P/fastboot/fastboot"
+          head -c 64 /dev/zero > "$P/loaders/hisi990/fastboot.ktl"
+          echo marker > "$P/libkirin_usb_update.so"
+          echo license > "$P/licenses/LICENSE"
+          echo doc > "$P/docs/README.md"
+          printf '#!/bin/sh\necho fake-probe\n' > "$P/UsbUpdateProbe"
+          printf '#!/bin/sh\necho fake-probe\n' > "$P/VcomOpenProbe"
+          printf '#!/bin/sh\necho fake-cli\n' > cli-fake
+          chmod +x "$P/Kirin-Tool" "$P/fastboot/fastboot" "$P/UsbUpdateProbe" "$P/VcomOpenProbe" cli-fake
+
+          ./packaging/build-deb.sh "$P" 0.0.0-ci ./cli-fake dist
+
+          DEB="$(ls dist/*.deb)"
+          echo "built: $DEB"
+          dpkg-deb -I "$DEB" | tee /tmp/control.txt
+          grep -q 'Package: kirin-tool-linux' /tmp/control.txt
+          grep -q 'Architecture: amd64' /tmp/control.txt
+          dpkg-deb -c "$DEB" > /tmp/contents.txt
+          for f in usr/lib/kirin-tool-linux/Kirin-Tool usr/bin/kirin-tool usr/bin/kirin-tool-cli \
+                   usr/lib/udev/rules.d/51-kirin-tool-fastboot.rules usr/share/applications/kirin-tool.desktop; do
+            grep -qF "$f" /tmp/contents.txt
+          done
+          echo 'deb packaging smoke OK'

@@ -1,0 +1,161 @@
+name: release-linux
+
+# Fork release pipeline: builds the three Linux delivery formats from one commit and
+# attaches them to a GitHub release.
+#   * kirin-tool-linux-<ver>-x86_64.AppImage  (portable, glibc 2.31)
+#   * kirin-tool-linux_<ver>_amd64.deb        (GUI + headless CLI, self-contained)
+#   * kirin-tool-linux-<ver>-x86_64.tar.gz    (same tree as the deb, for no-root use)
+#   * kirin-tool-cli-<ver>-linux-x86_64        (single-file headless CLI)
+# Everything is built inside ubuntu:20.04 so the binaries keep glibc 2.31 compatibility;
+# the AppImage script refuses to run on a newer glibc on purpose.
+#
+# Upstream build.yml is dispatch-only in this fork (see the comment there) so a tag push
+# produces exactly one set of artifacts.
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build binaries + deb + AppImage (glibc 2.31)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:20.04
+    timeout-minutes: 120
+    env:
+      DOTNET_NOLOGO: 'true'
+      DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential gcc-10 g++-10 pkg-config cmake ninja-build \
+            libprotobuf-dev protobuf-compiler libbrotli-dev liblz4-dev libpcre2-dev \
+            libzstd-dev libgtest-dev libgmock-dev libusb-1.0-0-dev zlib1g-dev \
+            python3 curl ca-certificates git dpkg xz-utils rsync file \
+            libicu66 libssl1.1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Resolve version
+        run: |
+          V="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Kirin-Tool.csproj | head -n1)"
+          test -n "$V"
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          echo "Building $V for ${GITHUB_REF_NAME:-dispatch}"
+
+      # ---- GUI app tree (self-contained + bundled Huawei-parity fastboot + loaders) ----
+      - name: Publish app tree (deb payload)
+        env:
+          KIRIN_BUILD_COMMIT: ${{ github.sha }}
+        run: ./packaging/publish.sh publish-deb
+
+      # ---- headless CLI: one self-contained file, compressed bundle ----
+      - name: Publish CLI (single file, self-contained)
+        run: |
+          dotnet publish KirinTool.Cli/KirinTool.Cli.csproj -c Release -r linux-x64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:DebugType=none -p:DebugSymbols=false -p:NuGetAudit=false \
+            -p:Version="$VERSION" \
+            -o cli-out
+          test -x cli-out/KirinTool.Cli
+          ./cli-out/KirinTool.Cli --help | grep -q 'flash-ota'
+          ./cli-out/KirinTool.Cli version
+
+      # ---- smoke: the bundled fastboot must run and report the Huawei-parity version ----
+      - name: Smoke test bundled fastboot + app tree
+        run: |
+          test -x publish-deb/Kirin-Tool
+          test -x publish-deb/fastboot/fastboot
+          publish-deb/fastboot/fastboot --version
+          test -f publish-deb/loaders/hisi990/fastboot.ktl
+          test -f publish-deb/libkirin_usb_update.so
+
+      # ---- packaging ----
+      - name: Build deb
+        run: ./packaging/build-deb.sh publish-deb "$VERSION" cli-out/KirinTool.Cli dist
+
+      - name: Build AppImage
+        env:
+          KIRIN_BUILD_COMMIT: ${{ github.sha }}
+        run: ./packaging/build-appimage.sh publish-appimage "$VERSION"
+
+      - name: Assemble tarball and single-file CLI
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          mv kirin-tool-linux-"$VERSION"-x86_64.AppImage dist/
+          tar czf "dist/kirin-tool-linux-${VERSION}-x86_64.tar.gz" -C publish-deb .
+          install -m755 cli-out/KirinTool.Cli "dist/kirin-tool-cli-${VERSION}-linux-x86_64"
+          ( cd dist && sha256sum -- * > "SHA256SUMS-${VERSION}.txt" && cat "SHA256SUMS-${VERSION}.txt" )
+          dpkg-deb -I "dist/kirin-tool-linux_${VERSION}_amd64.deb" | sed -n '1,14p'
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kirin-tool-linux-release-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: attach artifacts to GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kirin-tool-linux-release-${{ github.sha }}
+          path: dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Kirin Tool for Linux ${{ github.ref_name }} (fork build)
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.tar.gz
+            dist/kirin-tool-cli-*-linux-x86_64
+            dist/SHA256SUMS-*.txt
+          body: |
+            Fork build of Kirin Tool for Linux (downstream of Redminote11tech/kirin-tool-linux).
+
+            Formats
+            - `kirin-tool-linux-*-x86_64.AppImage` — portable GUI, no install, glibc >= 2.31
+            - `kirin-tool-linux_*_amd64.deb` — GUI + headless CLI, self-contained (no .NET needed)
+            - `kirin-tool-linux-*-x86_64.tar.gz` — same app tree for `~/opt` style installs
+            - `kirin-tool-cli-*-linux-x86_64` — single-file headless CLI / MCP stdio server
+
+            What this fork adds on top of upstream 2.4.8: GUI scroll/focus fixes, a headless CLI +
+            MCP entry point, and a real Full-OTA write path (`flash-ota`) that was verified on a
+            Huawei P40 Pro (ELS-AN00): 46/46 partitions written through a temporary loader, device
+            booted 22 s after reboot.
+
+            Install (deb): `sudo apt install ./kirin-tool-linux_*_amd64.deb`, then run `kirin-tool`
+            (GUI) or `kirin-tool-cli --help`. A udev rule granting access to 12d1 USB devices is
+            included; add yourself to the `adbusers` group (or edit the rule).
+
+            Licenses: BSL-1.1 for the app, plus the notices under /usr/share/licenses/kirin-tool-linux.

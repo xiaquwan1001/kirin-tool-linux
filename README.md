@@ -13,7 +13,14 @@ Extract UPDATE.APP partitions · Flash compatible Kirin devices · Read device i
 
 </div>
 
-An unofficial, independently maintained Linux port of [Kirin-Tool](https://github.com/kethily-daniel/Kirin-Tool) for Huawei / HiSilicon Kirin devices. It brings UPDATE.APP firmware extraction, fastboot flashing, device information and supported loader workflows to Linux, with an Avalonia desktop interface, native icons and Inter fonts. Prebuilt **AppImage** and **Arch Linux / CachyOS packages** are available.
+An unofficial, independently maintained Linux port of [Kirin-Tool](https://github.com/kethily-daniel/Kirin-Tool) for Huawei / HiSilicon Kirin devices.
+
+> **This checkout is the `xiaquwan1001` fork.** On top of upstream 2.4.8 it carries a headless CLI + MCP
+> stdio entry point and a real Full-OTA write path (`flash-ota`), plus the GUI scroll/focus fixes. It builds
+> three Linux delivery formats itself — `.deb`, `.AppImage`, `.tar.gz` — and a single-file CLI binary;
+> see [docs/fork-release.md](docs/fork-release.md). The upstream PRs for these changes live in
+> `feat/cli-and-mcp-entry`, `feat/ota-flash` and `fix/gui-scroll-and-dialog-order`.
+ It brings UPDATE.APP firmware extraction, fastboot flashing, device information and supported loader workflows to Linux, with an Avalonia desktop interface, native icons and Inter fonts. Prebuilt **AppImage** and **Arch Linux / CachyOS packages** are available.
 
 **Source available under the [Business Source License 1.1](LICENSE), with no Additional Use Grant.** This is not an OSI-approved open-source license. Read the license before copying, modifying or using the software; production use is restricted until the applicable Change Date.
 
@@ -79,6 +86,26 @@ If FUSE2 is unavailable, run without mounting the image:
 
 ```bash
 ./kirin-tool-linux-2.4.8-x86_64.AppImage --appimage-extract-and-run
+```
+
+### Debian / Ubuntu (fork build)
+
+The fork also publishes a `.deb` and a single-file CLI binary from the same pipeline
+(`.github/workflows/release-linux.yml`):
+
+```bash
+sudo apt install ./kirin-tool-linux_<version>_amd64.deb
+kirin-tool          # GUI
+kirin-tool-cli --help # headless CLI / `kirin-tool-cli mcp` for the MCP stdio server
+```
+
+The package is self-contained (bundles the .NET runtime, the Huawei-parity fastboot and all loaders under
+`/usr/lib/kirin-tool-linux`), installs `/usr/lib/udev/rules.d/51-kirin-tool-fastboot.rules`, and only adds
+symlinks in `/usr/bin`. If you do not want a system install, the `.tar.gz` is the identical tree:
+
+```bash
+tar xf kirin-tool-linux-<version>-x86_64.tar.gz -C ~/opt/kirin-tool-linux
+~/opt/kirin-tool-linux/Kirin-Tool
 ```
 
 On Arch/CachyOS you can alternatively install FUSE2 with `sudo pacman -S fuse2`.
