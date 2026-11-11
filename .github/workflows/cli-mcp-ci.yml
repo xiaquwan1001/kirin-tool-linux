@@ -79,7 +79,7 @@ jobs:
       - name: Smoke test - help, version, doctor (stubbed fastboot)
         run: |
           set -euo pipefail
-          cli=KirinTool.Cli/bin/Release/net8.0/KirinTool.Cli
+          cli=KirinTool.Cli/bin/Release/net10.0/KirinTool.Cli
           test -x "$cli"
 
           "$cli" --help | tee /tmp/help.txt
@@ -108,7 +108,7 @@ jobs:
       - name: Smoke test - stdio MCP session
         run: |
           set -euo pipefail
-          cli=KirinTool.Cli/bin/Release/net8.0/KirinTool.Cli
+          cli=KirinTool.Cli/bin/Release/net10.0/KirinTool.Cli
           printf '%s\n' \
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
             '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
@@ -126,7 +126,7 @@ jobs:
       - name: Stage artifact (CLI output, no firmware)
         run: |
           set -euo pipefail
-          src=KirinTool.Cli/bin/Release/net8.0
+          src=KirinTool.Cli/bin/Release/net10.0
           dst=artifact/KirinTool.Cli
           mkdir -p "$dst"
           rsync -a \
