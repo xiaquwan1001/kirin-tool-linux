@@ -945,9 +945,16 @@ namespace Kirin_Tool
                 return;
             }
 
-            if (!await ConfirmRedlineWriteAsync(allPartitions.Select(p => p.Partition.Name), "The USB Update flash"))
+            // UX pre-confirmation only: this scan sees just the partitions the selected files
+            // announce. The service re-checks the partitions it actually discovers after
+            // unpacking and stays the final gate, so the flag is only set when the user
+            // confirmed THIS operation for the names known up front.
+            bool allowRedline = false;
+            var redlinePreScan = FlashPolicy.RedlineHits(allPartitions.Select(p => p.Partition.Name));
+            if (redlinePreScan.Count > 0)
             {
-                return;
+                allowRedline = await ConfirmRedlineWriteAsync(redlinePreScan, "The USB Update flash");
+                if (!allowRedline) return;
             }
 
             var flashDialog = new ProcessDialogUapp(allPartitions, cancellationTokenSource);
@@ -1000,7 +1007,7 @@ namespace Kirin_Tool
                     flashDialog.CompletePartitionByIndex(index, success, message);
                 };
 
-                await Task.Run(() => _usbUpdateFlasherService.FlashPartitions(filesData, cancellationTokenSource.Token));
+                await Task.Run(() => _usbUpdateFlasherService.FlashPartitions(filesData, cancellationTokenSource.Token, allowRedline: allowRedline));
 
                 flashDialog.SetOverallComplete(true, "USB Update flash completed successfully!");
             }
@@ -1446,12 +1453,22 @@ namespace Kirin_Tool
                 return;
             }
 
+            // The service returns normally only on its success path and throws on every failure
+            // path (patch verification, VCOM transfer result, fastboot flash), so "no exception"
+            // is the service's verdict - not a dialog default. It still does not prove that the
+            // device reached the requested mode, which is why the texts below say what was and
+            // was not confirmed.
             try
             {
                 if (enter)
                 {
                     await _swTpService.EnterSoftwareTestpoint(SwTpUpdateFile.FilePath);
-                    await ShowMessageBox("Success", "Successfully entered VCOM mode!");
+                    await ShowMessageBox("Transfer Completed - Mode Unknown",
+                        "The software-testpoint XLOADER transfer returned without an error report from the service.\n\n" +
+                        "Whether the device actually switched to VCOM mode is Unknown from here: while the device sits in VCOM " +
+                        "there is no fastboot read-back that could confirm it.\n\n" +
+                        "Confirm it on the host before starting the USB Update flash: the device must enumerate as " +
+                        "12d1:3609 (USB Update / VCOM port). If it does not, nothing was written and the testpoint entry has to be retried.");
                 }
                 else
                 {
@@ -1462,7 +1479,27 @@ namespace Kirin_Tool
                     }
 
                     await _swTpService.ExitSoftwareTestpoint(SwTpUpdateFile.FilePath);
-                    await ShowMessageBox("Success", "XLOADER restored successfully!");
+
+                    // The service only checks the flash exit code, so read the device back before
+                    // claiming the XLOADER restore worked.
+                    var verify = await _fastbootClient.QueryVariableAsync("product");
+                    switch (ClassifyCommandOutput(verify.Output))
+                    {
+                        case CommandOutcome.Succeeded:
+                            await ShowMessageBox("Success",
+                                "XLOADER was flashed back and the device answers fastboot getvar product again (OKAY).");
+                            break;
+                        case CommandOutcome.Failed:
+                            await ShowMessageBox("Restore Not Confirmed",
+                                "The XLOADER flash returned, but the device no longer answers fastboot getvar product.\n\n" +
+                                $"Last output:\n{OutputTail(verify.Output)}");
+                            break;
+                        default:
+                            await ShowMessageBox("No Write Confirmed",
+                                "The XLOADER flash returned, but the read-back printed neither OKAY nor ERROR, so the restore is not confirmed.\n\n" +
+                                $"Last output:\n{OutputTail(verify.Output)}");
+                            break;
+                    }
                 }
             }
             catch (Exception ex)
@@ -1472,133 +1509,6 @@ namespace Kirin_Tool
             }
         }
 
-
-        private async Task<(bool IsSuccess, string Message)> FlashPartitionsWithProgress(List<PartitionInfo> selectedPartitions, ProcessDialogUapp progressDialog, CancellationToken cancellationToken)
-        {
-            var partitionsToFlash = selectedPartitions
-                .Where(p => !IsSkipPartition(p.Name))
-                .ToList();
-
-            var skippedPartitions = selectedPartitions.Where(p => IsSkipPartition(p.Name)).ToList();
-            foreach (var skipped in skippedPartitions)
-            {
-            }
-
-            if (partitionsToFlash.Count == 0)
-            {
-                return (false, "All selected partitions were marked as 'skip' - nothing to flash.");
-            }
-
-            int successCount = 0;
-            int totalCount = partitionsToFlash.Count;
-            string lastError = string.Empty;
-            string tempDirectory = null;
-
-            try
-            {
-                var updateAppPath = partitionsToFlash.First().UpdateAppFilePath;
-                var updateAppDirectory = Path.GetDirectoryName(updateAppPath) ?? Directory.GetCurrentDirectory();
-                tempDirectory = Path.Combine(updateAppDirectory, $"temp_flash_{DateTime.Now:yyyyMMdd_HHmmss}");
-
-                if (!Directory.Exists(tempDirectory))
-                {
-                    Directory.CreateDirectory(tempDirectory);
-                }
-
-                for (int i = 0; i < partitionsToFlash.Count; i++)
-                {
-                    var partition = partitionsToFlash[i];
-                    string tempFilePath = null;
-
-                    try
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        progressDialog.UpdateCurrentPartition(partition.Name, "Extracting...", 25);
-
-                        tempFilePath = Path.Combine(tempDirectory, $"{partition.Name}.img");
-                        await ExtractPartitionToTempDirectoryWithCancellation(partition, tempFilePath, cancellationToken);
-
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        progressDialog.UpdateCurrentPartition(partition.Name, "Flashing...", 75);
-
-                        string flashPartitionName = partition.Name.Equals("efi", StringComparison.OrdinalIgnoreCase) ? "ptable" : partition.Name;
-                        var flashResult = await _fastbootClient.FlashPartition(flashPartitionName, tempFilePath);
-
-                        if (flashResult.IsSuccess)
-                        {
-                            progressDialog.CompletePartition(partition.Name, true);
-                            successCount++;
-                        }
-                        else
-                        {
-                            progressDialog.CompletePartition(partition.Name, false, "Flash failed");
-                            lastError = flashResult.Output;
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        progressDialog.CompletePartition(partition.Name, false, "Cancelled");
-
-                        if (tempFilePath != null && File.Exists(tempFilePath))
-                        {
-                            try
-                            {
-                                File.Delete(tempFilePath);
-                            }
-                            catch (Exception ex)
-                            {
-                            }
-                        }
-
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        progressDialog.CompletePartition(partition.Name, false, ex.Message);
-                        lastError = ex.Message;
-                    }
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                return (false, "Operation was cancelled by user");
-            }
-            finally
-            {
-                if (tempDirectory != null && Directory.Exists(tempDirectory))
-                {
-                    try
-                    {
-                        Directory.Delete(tempDirectory, true);
-                    }
-                    catch (Exception ex)
-                    {
-                        try
-                        {
-                            var files = Directory.GetFiles(tempDirectory);
-                            foreach (var file in files)
-                            {
-                                File.Delete(file);
-                            }
-
-                            Directory.Delete(tempDirectory);
-                        }
-                        catch (Exception ex2)
-                        {
-                        }
-                    }
-                }
-            }
-
-            bool allSuccessful = successCount == totalCount;
-            string message = allSuccessful
-                ? $"Successfully flashed all {totalCount} partitions!"
-                : $"Completed {successCount}/{totalCount} partitions.";
-
-            return (allSuccessful, message);
-        }
 
         private async Task ExtractPartitionToTempDirectoryWithCancellation(PartitionInfo partition, string outputPath, CancellationToken cancellationToken)
         {
@@ -1700,51 +1610,16 @@ namespace Kirin_Tool
         private bool IsSkipPartition(string partitionName, bool isUsbMode = false)
         {
             if (isUsbMode) return false;
-
-            if (string.IsNullOrWhiteSpace(partitionName))
-                return true;
-
-            var skipPartitions = new List<string>
-            {
-                "sha256rsa", "crc", "curver", "verlist", "package_type",
-                "base_verlist", "base_ver", "ptable_cust", "cust_verlist",
-                "cust_ver", "preload_verlist", "preload_ver", "ptable_preload"
-            };
-
-            string lowerName = partitionName.ToLowerInvariant();
-            return skipPartitions.Any(skip => lowerName.Contains(skip));
+            return FlashPolicy.ShouldSkip(partitionName);
         }
 
         // Device-keyed partitions: a write here is unrecoverable without a verified backup.
-        // Token list mirrors the CLI's FlashPolicy.Redline (Cli/Commands/OtaFlashRunner.cs);
-        // the exact-name list keeps the older GUI guard for the baseband calibration set.
-        private static readonly string[] RedlinePartitionTokens =
-        {
-            "oeminfo", "nvme", "modem_secure", "persist", "modemnvm",
-            "certification", "hisee_encos", "veritykey"
-        };
+        // The token set and the baseband exact-name set now live in Utils/FlashPolicy.cs, which
+        // the CLI and the USB-update service share, so the GUI cannot drift away from them.
+        internal static bool IsRedlinePartition(string partitionName) => FlashPolicy.IsRedline(partitionName);
 
-        private static readonly string[] RedlinePartitionExactNames = { "nvm", "modemst1", "modemst2", "fsg" };
-
-        internal static bool IsRedlinePartition(string partitionName)
-        {
-            if (string.IsNullOrWhiteSpace(partitionName)) return false;
-
-            string lower = partitionName.Trim().ToLowerInvariant();
-            if (RedlinePartitionExactNames.Any(p => lower.Equals(p, StringComparison.Ordinal))) return true;
-
-            return RedlinePartitionTokens.Any(token => lower.Contains(token, StringComparison.Ordinal));
-        }
-
-        private static List<string> RedlinePartitionHits(IEnumerable<string> partitionNames)
-        {
-            return (partitionNames ?? Enumerable.Empty<string>())
-                .Where(name => !string.IsNullOrWhiteSpace(name))
-                .Where(IsRedlinePartition)
-                .Select(name => name.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
+        private static List<string> RedlinePartitionHits(IEnumerable<string> partitionNames) =>
+            FlashPolicy.RedlineHits(partitionNames).ToList();
 
         /// <summary>
         /// Hard gate in front of every GUI write path. Returns false before a single write
@@ -1781,33 +1656,41 @@ namespace Kirin_Tool
 
             var frpResult = await _fastbootClient.EraseFrpWithSteps();
 
+            // A step only counts when fastboot exited 0 AND printed OKAY; that check lives in
+            // FastbootClient.EraseFrpWithSteps, the dialog never defaults to success.
             await Task.Delay(500);
             frpDialog.UpdateStepStatus(1, frpResult.Step1Success);
-            frpDialog.UpdateOverallStatus("Step 1 completed!");
+            frpDialog.UpdateOverallStatus($"Step 1/3 (erase frp): {(frpResult.Step1Success ? "OKAY" : "no OKAY")}");
 
             await Task.Delay(500);
             frpDialog.UpdateStepStatus(2, frpResult.Step2Success);
-            frpDialog.UpdateOverallStatus("Step 2 completed!");
+            frpDialog.UpdateOverallStatus($"Step 2/3 (erase config): {(frpResult.Step2Success ? "OKAY" : "no OKAY")}");
 
             await Task.Delay(500);
             frpDialog.UpdateStepStatus(3, frpResult.Step3Success);
+            frpDialog.UpdateOverallStatus($"Step 3/3 (oem frp-erase): {(frpResult.Step3Success ? "OKAY" : "no OKAY")}");
+
+            string frpEvidence = OutputTail(
+                !frpResult.Step1Success ? frpResult.Step1Output :
+                !frpResult.Step2Success ? frpResult.Step2Output :
+                frpResult.Step3Output);
 
             string finalStatus;
             if (frpResult.AllStepsFailed)
             {
-                finalStatus = "FRP Lock removal failed!";
+                finalStatus = $"FRP Lock removal failed: none of the 3 erase commands returned OKAY. Last output: {frpEvidence}";
             }
             else if (frpResult.SuccessfulStepsCount == 3)
             {
-                finalStatus = "FRP Lock removal completed successfully!";
+                finalStatus = "All 3 FRP erase commands returned OKAY - the FRP / Find My Phone state itself is not verified on this path.";
             }
             else
             {
-                finalStatus = $"FRP Lock removal partially completed ({frpResult.SuccessfulStepsCount}/3 steps succeeded).";
+                finalStatus = $"{frpResult.SuccessfulStepsCount}/3 FRP erase commands returned OKAY - FRP and Find My Phone state were not verified, this fastboot path has no reliable read-back for them. Last output: {frpEvidence}";
             }
 
             frpDialog.UpdateOverallStatus(finalStatus);
-            frpDialog.ShowCloseButton(frpResult.OverallSuccess);
+            frpDialog.ShowCloseButton(frpResult.SuccessfulStepsCount == 3);
 
             await dialogTask;
         }
@@ -1821,38 +1704,55 @@ namespace Kirin_Tool
 
             var result = await _fastbootClient.EnableDowngradeWithSteps();
 
+            // A step only counts when fastboot exited 0 AND printed OKAY
+            // (FastbootClient.EnableDowngradeWithSteps). See the final line for what that means.
             await Task.Delay(500);
             downgradeDialog.UpdateStepStatus(1, result.Step1Success);
-            downgradeDialog.UpdateOverallStatus("Step 1 " + (result.Step1Success ? "Completed" : "Failed"));
+            downgradeDialog.UpdateOverallStatus($"Step 1/4 (oeminfoerase-amssver): {(result.Step1Success ? "OKAY" : "no OKAY")}");
 
             await Task.Delay(500);
             downgradeDialog.UpdateStepStatus(2, result.Step2Success);
-            downgradeDialog.UpdateOverallStatus("Step 2 " + (result.Step2Success ? "Completed" : "Failed"));
+            downgradeDialog.UpdateOverallStatus($"Step 2/4 (oeminfoerase-basever): {(result.Step2Success ? "OKAY" : "no OKAY")}");
 
             await Task.Delay(500);
             downgradeDialog.UpdateStepStatus(3, result.Step3Success);
-            downgradeDialog.UpdateOverallStatus("Step 3 " + (result.Step3Success ? "Completed" : "Failed"));
+            downgradeDialog.UpdateOverallStatus($"Step 3/4 (oeminfoerase-custver): {(result.Step3Success ? "OKAY" : "no OKAY")}");
 
             await Task.Delay(500);
             downgradeDialog.UpdateStepStatus(4, result.Step4Success);
-            downgradeDialog.UpdateOverallStatus("Step 4 " + (result.Step4Success ? "Completed" : "Failed"));
+            downgradeDialog.UpdateOverallStatus($"Step 4/4 (oeminfoerase-preloadver): {(result.Step4Success ? "OKAY" : "no OKAY")}");
 
+            string downgradeEvidence = OutputTail(
+                !result.Step1Success ? result.Step1Output :
+                !result.Step2Success ? result.Step2Output :
+                !result.Step3Success ? result.Step3Output :
+                result.Step4Output);
+
+            // OKAY only proves that the oeminfoerase command was accepted and executed. It does
+            // not prove that the version records were cleared or that a downgrade is now
+            // possible, and there is no getvar that reads those records back.
             string finalStatus;
             if (result.AllStepsFailed)
             {
-                finalStatus = "Failed to enable downgrade!";
+                finalStatus = $"Enable Downgrade failed: no version-record erase returned OKAY. Last output: {downgradeEvidence}";
             }
             else if (result.SuccessfulStepsCount == 4)
             {
-                finalStatus = "Downgrade enabled successfully!";
+                finalStatus =
+                    "All 4 version-record erases returned OKAY - OKAY only means the commands were executed, " +
+                    "the records were not verified as cleared and a downgrade is NOT confirmed to be possible. " +
+                    "Verify with 'fastboot oem dump-emmc oeminfo <file>' and compare the version records, or simply attempt the downgrade.";
             }
             else
             {
-                finalStatus = "Failed to enable downgrade!";
+                finalStatus =
+                    $"{result.SuccessfulStepsCount}/4 version-record erases returned OKAY - the downgrade is not confirmed. " +
+                    "OKAY only means a command was executed, not that a record was cleared. " +
+                    $"Verify with 'fastboot oem dump-emmc oeminfo <file>'. Last output: {downgradeEvidence}";
             }
 
             downgradeDialog.UpdateOverallStatus(finalStatus);
-            downgradeDialog.ShowCloseButton(result.OverallSuccess);
+            downgradeDialog.ShowCloseButton(result.SuccessfulStepsCount == 4);
 
             await dialogTask;
         }
@@ -1993,17 +1893,26 @@ namespace Kirin_Tool
                     await _fastbootClient.GetVarAsync("rescue_ugs_port");
                     var finalResult = await _fastbootClient.GetVarAsync("rescue_enter_recovery");
 
-                    if (!string.IsNullOrEmpty(finalResult) && 
-                        (finalResult.ToUpper().Contains("OKAY") || 
-                         finalResult.ToUpper().Contains("SUCCESS") || 
-                         finalResult.Contains("This is sec phone!!") || 
-                         finalResult.Contains("start to hisuite")))
+                    // Rescue partitions were written, but entering USB Update mode is a separate
+                    // event. "This is sec phone!!" / "start to hisuite" are banners the loader
+                    // happens to print, so they count as corroborating evidence only: an error
+                    // token wins, and no OKAY/SUCCESS/banner at all is Unknown, never success.
+                    switch (ClassifyUsbUpdateModeEntry(finalResult))
                     {
-                        progressDialog.SetOverallComplete(true, "Rebooted to USB Update mode successfully!");
-                    }
-                    else
-                    {
-                        progressDialog.SetOverallComplete(false, $"Flash successful, but failed to enter USB Update mode.");
+                        case ModeEntryOutcome.Entered:
+                            progressDialog.SetOverallComplete(true,
+                                "Rescue partitions flashed and the loader confirmed the USB Update mode entry (OKAY/SUCCESS).");
+                            break;
+                        case ModeEntryOutcome.Failed:
+                            progressDialog.SetOverallComplete(false,
+                                "Rescue partitions flashed, but the loader refused the USB Update mode entry. " +
+                                $"Last output: {OutputTail(finalResult)}");
+                            break;
+                        default:
+                            progressDialog.SetOverallComplete(false,
+                                "Rescue partitions flashed, but the USB Update mode entry is NOT confirmed: the loader printed " +
+                                $"neither OKAY/SUCCESS nor an error. Last output: {OutputTail(finalResult)}");
+                            break;
                     }
                 }
                 else
@@ -2066,6 +1975,57 @@ namespace Kirin_Tool
             Failed,
             AlreadyUnlockedNoWrite,
             Unknown
+        }
+
+        /// <summary>Three-state verdict for a single fastboot command's output.</summary>
+        private enum CommandOutcome
+        {
+            Succeeded,
+            Failed,
+            Unknown
+        }
+
+        private enum ModeEntryOutcome
+        {
+            Entered,
+            Failed,
+            Unknown
+        }
+
+        /// <summary>
+        /// Classifies one command's output. Failure wins over success (fastboot prints OKAY for
+        /// the commands it sent and still appends FAILED when the bootloader refuses), and an
+        /// output with neither token is Unknown - never a success.
+        /// </summary>
+        private static CommandOutcome ClassifyCommandOutput(string output)
+        {
+            string upper = (output ?? string.Empty).ToUpperInvariant();
+
+            if (upper.Contains("FAIL") || upper.Contains("ERROR") ||
+                upper.Contains("NOT ALLOWED") || upper.Contains("NOT SUPPORT"))
+                return CommandOutcome.Failed;
+
+            if (upper.Contains("OKAY") || upper.Contains("SUCCESS")) return CommandOutcome.Succeeded;
+
+            return CommandOutcome.Unknown;
+        }
+
+        /// <summary>
+        /// Classifies the rescue_enter_recovery read-back. Explicit OKAY/SUCCESS is the primary
+        /// evidence; the loader banners are only accepted when no error token is present and are
+        /// reported as such, and an unparsable reply stays Unknown.
+        /// </summary>
+        private static ModeEntryOutcome ClassifyUsbUpdateModeEntry(string output)
+        {
+            var verdict = ClassifyCommandOutput(output);
+            if (verdict == CommandOutcome.Failed) return ModeEntryOutcome.Failed;
+            if (verdict == CommandOutcome.Succeeded) return ModeEntryOutcome.Entered;
+
+            string text = output ?? string.Empty;
+            if (text.Contains("This is sec phone!!") || text.Contains("start to hisuite"))
+                return ModeEntryOutcome.Entered;
+
+            return ModeEntryOutcome.Unknown;
         }
 
         /// <summary>
@@ -2273,16 +2233,17 @@ namespace Kirin_Tool
                     progressDialog.ProgressItems[0].ProgressValue = 50;
 
                     var modelResult = await _fastbootClient.OemCommandAsync($"oeminfowrite-KTModel@{model}");
-                    bool modelSuccess = !string.IsNullOrEmpty(modelResult) &&
-                                        !modelResult.ToUpper().Contains("FAIL") &&
-                                        !modelResult.ToUpper().Contains("ERROR");
+                    var modelOutcome = ClassifyCommandOutput(modelResult);
+                    bool modelSuccess = modelOutcome == CommandOutcome.Succeeded;
 
-                    progressDialog.ProgressItems[0].StatusText = modelSuccess ? "Done" : "Failed";
+                    progressDialog.ProgressItems[0].StatusText = modelSuccess ? "Done" : (modelOutcome == CommandOutcome.Unknown ? "Unconfirmed" : "Failed");
                     progressDialog.ProgressItems[0].ProgressValue = modelSuccess ? 100 : 0;
 
                     if (!modelSuccess)
                     {
-                        progressDialog.UpdateOverallStatus($"Failed to write model: {modelResult}");
+                        progressDialog.UpdateOverallStatus(modelOutcome == CommandOutcome.Unknown
+                            ? $"Model write not confirmed: the loader printed neither OKAY nor ERROR. Last output: {OutputTail(modelResult)}"
+                            : $"Failed to write model. Last output: {OutputTail(modelResult)}");
                         progressDialog.ShowCloseButton(false, "Write Failed");
                         await dialogTask;
                         return;
@@ -2293,21 +2254,22 @@ namespace Kirin_Tool
                     progressDialog.ProgressItems[1].ProgressValue = 50;
 
                     var vendorResult = await _fastbootClient.OemCommandAsync($"oeminfowrite-KTVendor@{vendor}");
-                    bool vendorSuccess = !string.IsNullOrEmpty(vendorResult) &&
-                                         !vendorResult.ToUpper().Contains("FAIL") &&
-                                         !vendorResult.ToUpper().Contains("ERROR");
+                    var vendorOutcome = ClassifyCommandOutput(vendorResult);
+                    bool vendorSuccess = vendorOutcome == CommandOutcome.Succeeded;
 
-                    progressDialog.ProgressItems[1].StatusText = vendorSuccess ? "Done" : "Failed";
+                    progressDialog.ProgressItems[1].StatusText = vendorSuccess ? "Done" : (vendorOutcome == CommandOutcome.Unknown ? "Unconfirmed" : "Failed");
                     progressDialog.ProgressItems[1].ProgressValue = vendorSuccess ? 100 : 0;
 
                     if (modelSuccess && vendorSuccess)
                     {
-                        progressDialog.UpdateOverallStatus("Successfully wrote model and vendor to device!");
+                        progressDialog.UpdateOverallStatus("Both oeminfowrite commands (model, vendor) returned OKAY.");
                         progressDialog.ShowCloseButton(true, "Write Complete");
                     }
                     else
                     {
-                        progressDialog.UpdateOverallStatus($"Failed to write vendor: {vendorResult}");
+                        progressDialog.UpdateOverallStatus(vendorOutcome == CommandOutcome.Unknown
+                            ? $"Vendor write not confirmed (model write returned OKAY): the loader printed neither OKAY nor ERROR. Last output: {OutputTail(vendorResult)}"
+                            : $"Failed to write vendor (model write returned OKAY). Last output: {OutputTail(vendorResult)}");
                         progressDialog.ShowCloseButton(false, "Write Failed");
                     }
 
@@ -2362,7 +2324,7 @@ namespace Kirin_Tool
                     return;
                 }
 
-                progressDialog.UpdateOverallStatus("Conversion successful! Press OK to select a save location.");
+                progressDialog.UpdateOverallStatus("OEMInfo conversion finished. Press OK to select a save location (conversion only - nothing has been written to the device).");
                 progressDialog.ProgressItems[0].StatusText = "Done";
                 progressDialog.ProgressItems[0].ProgressValue = 100;
                 progressDialog.ShowCloseButton(true, "Conversion Complete");
@@ -2373,22 +2335,28 @@ namespace Kirin_Tool
                 {
                     await File.WriteAllBytesAsync(savePath, result.ConvertedData);
 
-                    if (result.PulledFromDevice)
-                    {
-                        var flashResult = await _dialogService.ShowConfirmDialog("Flash Back to Device?", "OEMInfo conversion completed successfully!\n\nDo you want to flash the converted OEMInfo back to the device?", "Yes, Flash", "Cancel");
+                    // Conversion and device write are two separate outcomes and are reported as
+                    // such: a finished conversion says nothing about the oeminfo partition.
+                    string conversionReport =
+                        $"Conversion: succeeded - the converted image was written to:\n{savePath}\n\n" +
+                        "Device write: none performed.";
 
-                        if (flashResult == true)
-                        {
-                            await FlashOemInfoToDevice(savePath);
-                        }
-                        else
-                        {
-                            await ShowMessageBox("Success", $"Converted OEMInfo saved to:\n{savePath}");
-                        }
+                    bool writeRequested = result.PulledFromDevice &&
+                        await _dialogService.ShowConfirmDialog("Flash Back to Device?", "The OEMInfo conversion finished and the converted image was saved.\n\nDo you want to flash the converted OEMInfo back to the device now?", "Yes, Flash", "Cancel") == true;
+
+                    if (!writeRequested)
+                    {
+                        await ShowMessageBox("Conversion Complete / No Write", conversionReport);
                     }
                     else
                     {
-                        await ShowMessageBox("Success", $"Converted OEMInfo saved to:\n{savePath}");
+                        var write = await FlashOemInfoToDevice(savePath);
+                        if (!write.WriteSucceeded)
+                        {
+                            await ShowMessageBox("Conversion Complete / Write Not Confirmed",
+                                conversionReport.Replace("Device write: none performed.", "Device write: not confirmed.") +
+                                $"\n\n{write.Detail}");
+                        }
                     }
                 }
             }
@@ -2402,13 +2370,13 @@ namespace Kirin_Tool
             }
         }
 
-        private async Task FlashOemInfoToDevice(string filePath)
+        private async Task<(bool WriteSucceeded, string Detail)> FlashOemInfoToDevice(string filePath)
         {
             // OEMInfo is a redline partition: the conversion prompt above is not an opt-in
             // for the write itself.
             if (!await ConfirmRedlineWriteAsync(new[] { "oeminfo" }, "Writing the converted OEMInfo"))
             {
-                return;
+                return (false, "The oeminfo write was cancelled at the redline confirmation, no write was performed.");
             }
 
             try
@@ -2426,26 +2394,36 @@ namespace Kirin_Tool
 
                 var flashResult = await _oemInfoService.FlashConvertedOemInfo(filePath);
 
+                // Success needs the process exit code AND an explicit OKAY token. Exit code 0
+                // without OKAY is Unknown: fastboot accepted the command, the write is unproven.
                 if (flashResult.IsSuccess && flashResult.Output.ToUpper().Contains("OKAY"))
                 {
-                    progressDialog.UpdateOverallStatus("OEMInfo flashed successfully!");
+                    progressDialog.UpdateOverallStatus("Flash oeminfo returned OKAY (write confirmed by fastboot).");
                     progressDialog.ProgressItems[0].StatusText = "Done";
                     progressDialog.ProgressItems[0].ProgressValue = 100;
-                    progressDialog.ShowCloseButton(true, "Flash Complete");
-                }
-                else
-                {
-                    progressDialog.UpdateOverallStatus("Failed to flash OEMInfo to device.");
-                    progressDialog.ProgressItems[0].StatusText = "Failed";
-                    progressDialog.ProgressItems[0].ProgressValue = 0;
-                    progressDialog.ShowCloseButton(false, "Flash Failed");
+                    progressDialog.ShowCloseButton(true, "Write Complete");
+                    await dialogTask;
+                    return (true, "flash oeminfo returned OKAY (exit code 0).");
                 }
 
+                string detail = flashResult.IsSuccess
+                    ? $"The flash command exited 0 but printed no OKAY, so the write is not confirmed.\nLast output:\n{OutputTail(flashResult.Output)}"
+                    : $"The flash command failed (exit code {flashResult.ExitCode}).\nLast output:\n{OutputTail(flashResult.Output)}";
+
+                progressDialog.UpdateOverallStatus(flashResult.IsSuccess
+                    ? "OEMInfo write not confirmed: the loader printed no OKAY."
+                    : "Failed to flash OEMInfo to device.");
+                progressDialog.ProgressItems[0].StatusText = flashResult.IsSuccess ? "Unconfirmed" : "Failed";
+                progressDialog.ProgressItems[0].ProgressValue = 0;
+                progressDialog.ShowCloseButton(false, "Write Not Confirmed");
+
                 await dialogTask;
+                return (false, detail);
             }
             catch (Exception ex)
             {
                 await ShowMessageBox("Flash Error", $"Error flashing OEMInfo: {ex.Message}");
+                return (false, $"The flash raised an error: {ex.Message}");
             }
         }
 

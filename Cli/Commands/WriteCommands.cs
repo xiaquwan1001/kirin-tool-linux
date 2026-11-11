@@ -1,6 +1,7 @@
 using System.Text;
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
+using Kirin_Tool.Utils;
 
 namespace Kirin_Tool.Cli.Commands;
 

@@ -73,6 +73,32 @@ jobs:
       - name: Build CLI project (Release)
         run: dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release --no-restore -p:NuGetAudit=false
 
+      # Hardware-free tests, run after the two builds so they exercise the exact
+      # assemblies under test. tests/FlashPolicy pins the shared write policy
+      # (Utils/FlashPolicy.cs: skip list + redline set) and re-checks the CLI side
+      # by driving "KirinTool.Cli flash-ota" against a synthetic UPDATE.APP that
+      # stops at the plan gate. tests/StableParity keeps the frozen release
+      # boundary intact.
+      - name: Test - flash policy (shared redline/skip policy + CLI plan gate)
+        run: dotnet run --project tests/FlashPolicy -c Release -p:NuGetAudit=false
+
+      - name: Test - stable parity (frozen boundary)
+        run: dotnet run --project tests/StableParity -c Release -p:NuGetAudit=false
+
+      # The rest of the hardware-free harnesses. They were only run by hand before,
+      # so a regression in parsing/serial/sparse/flash-detail handling could ship.
+      # Hardware probes (tests/VcomOpenProbe, tests/UsbUpdateProbe) and the pixel
+      # comparison (tests/VisualParity, font-dependent) stay out on purpose.
+      - name: Test - hardware-free suites
+        run: |
+          set -euo pipefail
+          for t in FastbootReads VcomPromptUi GuiQol Extractor UsbDiagnostics \
+                   UsbTransport UsbUpdateUi OemInfoUi UdevNotice Kirin9000; do
+            echo "::group::$t"
+            dotnet run --project "tests/$t" -c Release -p:NuGetAudit=false
+            echo "::endgroup::"
+          done
+
       # The runner has no phone in fastboot mode. BinaryLocator also probes PATH
       # and /usr/bin, so a tiny stub is enough to exercise "doctor" end to end
       # without installing platform-tools or touching USB.
@@ -168,6 +194,8 @@ jobs:
         os:
           - ubuntu-latest
           - ubuntu-24.04
+          # GA since 2026-09: the release the user's host runs. libicu78 lives here.
+          - ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
 

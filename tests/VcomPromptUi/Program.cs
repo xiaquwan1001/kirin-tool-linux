@@ -56,4 +56,46 @@ foreach(var (name,expected) in new[]{
 }
 Console.WriteLine("PASS redline partition gate matches the CLI policy");
 
+// One output classifier for every "did this command really work" question: the exit code is
+// checked by the caller, this only decides what the loader actually said. Failure wins over
+// success, and an output with neither token stays Unknown instead of defaulting to success.
+var classifyCommand=typeof(MainWindow).GetMethod("ClassifyCommandOutput",BindingFlags.NonPublic|BindingFlags.Static)!;
+string Command(string output)=>classifyCommand.Invoke(null,new object[]{output})!.ToString()!;
+foreach(var (output,expected) in new[]{
+ ("OKAY [  0.005s]\nFinished. Total time: 0.006s","Succeeded"),
+ ("FAILED (remote: 'Command not allowed')\nfastboot: error: Command failed","Failed"),
+ ("FAILED (remote: 'not support')\nOKAY [  0.001s]","Failed"),
+ ("(bootloader) product: els-an00\n","Unknown"),
+ ("","Unknown")})
+{
+ var actual=Command(output);
+ if(actual!=expected)throw new Exception($"ClassifyCommandOutput({output.Replace("\n","\\n")}) = {actual}, expected {expected}");
+}
+Console.WriteLine("PASS command output classified (no OKAY and no ERROR is not success)");
+
+// rescue_enter_recovery: the loader banners are corroborating evidence, not the only judge.
+var classifyMode=typeof(MainWindow).GetMethod("ClassifyUsbUpdateModeEntry",BindingFlags.NonPublic|BindingFlags.Static)!;
+string ModeEntry(string output)=>classifyMode.Invoke(null,new object[]{output})!.ToString()!;
+foreach(var (output,expected) in new[]{
+ ("OKAY [  1.000s]","Entered"),
+ ("SUCCESS","Entered"),
+ ("This is sec phone!!","Entered"),
+ ("start to hisuite","Entered"),
+ ("FAILED (remote: 'Command not allowed')","Failed"),
+ ("FAILED (remote: 'Command not allowed')\nThis is sec phone!!","Failed"),
+ ("< waiting for any device >","Unknown"),
+ ("","Unknown")})
+{
+ var actual=ModeEntry(output);
+ if(actual!=expected)throw new Exception($"ClassifyUsbUpdateModeEntry({output.Replace("\n","\\n")}) = {actual}, expected {expected}");
+}
+Console.WriteLine("PASS USB Update mode entry classified (Unknown is not reported as success)");
+
+// The dead List<PartitionInfo> overload was removed; the live 5-parameter overload stays.
+var flashOverloads=typeof(MainWindow).GetMethods(BindingFlags.Instance|BindingFlags.NonPublic)
+    .Where(m=>m.Name=="FlashPartitionsWithProgress").ToArray();
+if(flashOverloads.Length!=1||flashOverloads[0].GetParameters().Length!=5)
+    throw new Exception($"expected exactly one 5-parameter FlashPartitionsWithProgress, found {flashOverloads.Length}");
+Console.WriteLine("PASS dead FlashPartitionsWithProgress(List<PartitionInfo>) overload removed");
+
 progress.Close();owner.Close();

@@ -49,7 +49,17 @@ namespace Kirin_Tool.Services.USBUpdate
             _onRetryRequired = onRetryRequired;
         }
 
-        public async Task FlashPartitions(IEnumerable<(string FilePath, string Label, List<string> SelectedPartitions)> filesData, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Unpack the given package files and burn the discovered partitions over the
+        /// USB-update channel.
+        /// </summary>
+        /// <param name="allowRedline">
+        /// Device-keyed (redline) partitions are refused by default. The names are only
+        /// known after unpacking, so the gate lives here rather than in the caller: pass
+        /// <c>true</c> only after the user explicitly confirmed that THIS operation may
+        /// overwrite identity/calibration/key material.
+        /// </param>
+        public async Task FlashPartitions(IEnumerable<(string FilePath, string Label, List<string> SelectedPartitions)> filesData, CancellationToken cancellationToken = default, bool allowRedline = false)
         {
             if (Directory.Exists(_dloadDirectory))
             {
@@ -207,6 +217,25 @@ namespace Kirin_Tool.Services.USBUpdate
             }
 
             OnPartitionsDiscovered?.Invoke(allPartitions);
+
+            // Redline gate. Placed after discovery (that is when the package names are
+            // known) and before list.txt / any USB transfer, so a refused plan has not
+            // written a single byte to the device.
+            IReadOnlyList<string> redlineHits = FlashPolicy.RedlineHits(allPartitions.Select(p => p.partitionName));
+            if (redlineHits.Count > 0)
+            {
+                _log($"redline: plan writes {redlineHits.Count} device-keyed partition(s): {string.Join(", ", redlineHits)}");
+                if (!allowRedline)
+                {
+                    _log($"redline: refused, nothing has been written (allowRedline=false)");
+                    throw new InvalidOperationException(
+                        $"Refusing to flash {redlineHits.Count} redline partition(s): {string.Join(", ", redlineHits)}. "
+                        + "These hold the device identity, baseband calibration and key/DRM material; a wrong image is "
+                        + "unrecoverable without a verified backup. No bytes have been written to the device. "
+                        + "Re-run with allowRedline (CLI: --allow-redline) only if you have that backup.");
+                }
+                _log($"redline: proceeding because allowRedline=true");
+            }
 
             var listLines = allPartitions.Select(p => $"{p.partitionName} 1").ToList();
             File.WriteAllLines(Path.Combine(_dloadDirectory, "list.txt"), listLines);

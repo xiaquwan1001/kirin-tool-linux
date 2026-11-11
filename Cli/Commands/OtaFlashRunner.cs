@@ -37,42 +37,8 @@ internal sealed class OtaPlan
 
 internal sealed record OtaFlashOutcome(string Partition, bool Ok, string? Error);
 
-/// <summary>
-/// Mirror of the GUI's Full OTA policy (MainWindow.IsSkipPartition) plus a hard
-/// redline list that the GUI only enforces through "Edit". The CLI never writes a
-/// redline partition unless the caller passes --allow-redline explicitly.
-/// </summary>
-internal static class FlashPolicy
-{
-    // Same contains-list the GUI uses when building its Full OTA partition list.
-    private static readonly string[] SkipContains =
-    {
-        "sha256rsa", "crc", "curver", "verlist", "package_type",
-        "base_verlist", "base_ver", "ptable_cust", "cust_verlist",
-        "cust_ver", "preload_verlist", "preload_ver", "ptable_preload",
-    };
-
-    // Device-keyed data. Writing any of these is unrecoverable without a backup.
-    private static readonly string[] Redline =
-    {
-        "oeminfo", "nvme", "modem_secure", "persist", "modemnvm",
-        "certification", "hisee_encos", "veritykey",
-    };
-
-    public static bool ShouldSkip(string partitionName)
-    {
-        if (string.IsNullOrWhiteSpace(partitionName)) return true;
-        string lower = partitionName.ToLowerInvariant();
-        return SkipContains.Any(token => lower.Contains(token, StringComparison.Ordinal));
-    }
-
-    public static bool IsRedline(string partitionName)
-    {
-        if (string.IsNullOrWhiteSpace(partitionName)) return false;
-        string lower = partitionName.ToLowerInvariant();
-        return Redline.Any(token => lower.Contains(token, StringComparison.Ordinal));
-    }
-}
+// Write policy (skip list + redline set) lives in Kirin_Tool.Utils.FlashPolicy so the
+// CLI and the USB-update service share one definition; see Utils/FlashPolicy.cs.
 
 /// <summary>Headless equivalent of the GUI's FlashFullOtaPartitions pipeline.</summary>
 internal static class OtaFlashRunner
