@@ -32,7 +32,17 @@ public static class FlashPolicy
         "cust_ver", "preload_verlist", "preload_ver", "ptable_preload",
     };
 
-    /// <summary>Substrings that mark device-keyed data (i.e. "modemnvm_1" is a hit).</summary>
+    /// <summary>
+    /// Substrings that mark device-keyed data (i.e. "modemnvm_1" is a hit).
+    ///
+    /// Substring matching is deliberate, and it also sweeps in backup/mirror copies such as
+    /// "oeminfo_bak" or "nvme_bak2". That is the intended policy: a stale mirror of identity
+    /// or calibration data is just as dangerous to write as the original, and a name-based
+    /// allowlist for "known safe backups" would rot the moment a new suffix appears. Tests in
+    /// tests/FlashPolicy pin this behaviour so a future edit cannot quietly loosen it; a
+    /// genuinely different policy decision has to change the table (and those assertions),
+    /// not add an exception at a call site.
+    /// </summary>
     private static readonly string[] RedlineContains =
     {
         "oeminfo", "nvme", "modem_secure", "persist", "modemnvm",

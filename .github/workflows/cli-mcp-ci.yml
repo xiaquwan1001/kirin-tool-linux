@@ -92,7 +92,7 @@ jobs:
       - name: Test - hardware-free suites
         run: |
           set -euo pipefail
-          for t in FastbootReads VcomPromptUi GuiQol Extractor UsbDiagnostics \
+          for t in FastbootReads VcomPromptUi GuiQol Extractor UsbDiagnostics UsbRedlineGate \
                    UsbTransport UsbUpdateUi OemInfoUi UdevNotice Kirin9000; do
             echo "::group::$t"
             dotnet run --project "tests/$t" -c Release -p:NuGetAudit=false

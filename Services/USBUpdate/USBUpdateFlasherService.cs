@@ -50,6 +50,35 @@ namespace Kirin_Tool.Services.USBUpdate
         }
 
         /// <summary>
+        /// Redline gate: refuse a plan that writes device-keyed partitions unless
+        /// <paramref name="allowRedline"/> is set. Kept as a separate static method so the
+        /// decision ("refused after discovery, before any write") is reachable from a
+        /// hardware-free test without a device on the bus. Behaviour is unchanged from the
+        /// inlined version: log the hit, throw <see cref="InvalidOperationException"/> on
+        /// refusal, otherwise log that the caller explicitly allowed it.
+        /// </summary>
+        internal static void EnforceRedlineWrite(IReadOnlyList<string> partitionNames, bool allowRedline, Action<string>? log)
+        {
+            IReadOnlyList<string> redlineHits = FlashPolicy.RedlineHits(partitionNames);
+            if (redlineHits.Count == 0)
+            {
+                return;
+            }
+
+            log?.Invoke($"redline: plan writes {redlineHits.Count} device-keyed partition(s): {string.Join(", ", redlineHits)}");
+            if (!allowRedline)
+            {
+                log?.Invoke("redline: refused, nothing has been written (allowRedline=false)");
+                throw new InvalidOperationException(
+                    $"Refusing to flash {redlineHits.Count} redline partition(s): {string.Join(", ", redlineHits)}. "
+                    + "These hold the device identity, baseband calibration and key/DRM material; a wrong image is "
+                    + "unrecoverable without a verified backup. No bytes have been written to the device. "
+                    + "Re-run with allowRedline (CLI: --allow-redline) only if you have that backup.");
+            }
+            log?.Invoke("redline: proceeding because allowRedline=true");
+        }
+
+        /// <summary>
         /// Unpack the given package files and burn the discovered partitions over the
         /// USB-update channel.
         /// </summary>
@@ -221,21 +250,7 @@ namespace Kirin_Tool.Services.USBUpdate
             // Redline gate. Placed after discovery (that is when the package names are
             // known) and before list.txt / any USB transfer, so a refused plan has not
             // written a single byte to the device.
-            IReadOnlyList<string> redlineHits = FlashPolicy.RedlineHits(allPartitions.Select(p => p.partitionName));
-            if (redlineHits.Count > 0)
-            {
-                _log($"redline: plan writes {redlineHits.Count} device-keyed partition(s): {string.Join(", ", redlineHits)}");
-                if (!allowRedline)
-                {
-                    _log($"redline: refused, nothing has been written (allowRedline=false)");
-                    throw new InvalidOperationException(
-                        $"Refusing to flash {redlineHits.Count} redline partition(s): {string.Join(", ", redlineHits)}. "
-                        + "These hold the device identity, baseband calibration and key/DRM material; a wrong image is "
-                        + "unrecoverable without a verified backup. No bytes have been written to the device. "
-                        + "Re-run with allowRedline (CLI: --allow-redline) only if you have that backup.");
-                }
-                _log($"redline: proceeding because allowRedline=true");
-            }
+            EnforceRedlineWrite(allPartitions.Select(p => p.partitionName).ToList(), allowRedline, _log);
 
             var listLines = allPartitions.Select(p => $"{p.partitionName} 1").ToList();
             File.WriteAllLines(Path.Combine(_dloadDirectory, "list.txt"), listLines);
