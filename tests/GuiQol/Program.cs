@@ -13,7 +13,10 @@ using Avalonia.VisualTree;
 using Kirin_Tool;
 using Kirin_Tool.Services;
 
-const string ShotDirectory = "/home/xuqianhui/P40pro/tmp/gui-qol";
+// Screenshot output: never a machine-specific path (this test runs in CI too).
+// Override with KIRIN_GUIQOL_SHOTS when you want the PNGs in a known folder.
+string ShotDirectory = Environment.GetEnvironmentVariable("KIRIN_GUIQOL_SHOTS")
+    ?? Path.Combine(Path.GetTempPath(), "kirin-guiqol-shots");
 
 AppBuilder.Configure<App>().WithInterFont().UseSkia()
     .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
