@@ -60,27 +60,28 @@
 
                         <StackPanel Grid.Row="0" Margin="16">
                             <TextBlock Text="CPU Model" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                            <!-- Tag carries the persisted cpu_model value; see UserSettings.cpu_model. -->
                             <ComboBox x:Name="CpuComboBox" HorizontalAlignment="Stretch" SelectedIndex="0">
-                                <ComboBoxItem Content="Select CPU Model..." IsEnabled="False"/>
-                                <ComboBoxItem Content="Kirin 65x_a (hisi65x_a)"/>
-                                <ComboBoxItem Content="Kirin 65x_b (hisi65x_b)"/>
-                                <ComboBoxItem Content="Kirin 620 (hisi620)"/>
-                                <ComboBoxItem Content="Kirin 620c (hisi620c)"/>
-                                <ComboBoxItem Content="Kirin 925 (hisi925)"/>
-                                <ComboBoxItem Content="Kirin 935 (hisi935)"/>
-                                <ComboBoxItem Content="Kirin 950 (hisi950)"/>
-                                <ComboBoxItem Content="Kirin 955 (hisi955)"/>
-                                <ComboBoxItem Content="Kirin 960 (hisi960)"/>
-                                <ComboBoxItem Content="Kirin 970 (hisi970)"/>
-                                <ComboBoxItem Content="Kirin 980 (hisi980)"/>
-                                <ComboBoxItem Content="Kirin 985 (hisi985)"/>
-                                <ComboBoxItem Content="Kirin 990 5G (hisi990)"/>
-                                <ComboBoxItem Content="Kirin 9000 (hisi9000) — Experimental"/>
-                                <ComboBoxItem Content="Kirin 710 (hisi710)"/>
-                                <ComboBoxItem Content="Kirin 710a (hisi710a)"/>
-                                <ComboBoxItem Content="Kirin 810 (hisi810)"/>
-                                <ComboBoxItem Content="Kirin 820 (hisi820)"/>
-                                <ComboBoxItem Content="Kirin K3v2 (hisik3v2)"/>
+                                <ComboBoxItem Content="Select CPU Model..." IsEnabled="False" Tag="none"/>
+                                <ComboBoxItem Content="Kirin 65x_a (hisi65x_a)" Tag="hisi65x_a"/>
+                                <ComboBoxItem Content="Kirin 65x_b (hisi65x_b)" Tag="hisi65x_b"/>
+                                <ComboBoxItem Content="Kirin 620 (hisi620)" Tag="hisi620"/>
+                                <ComboBoxItem Content="Kirin 620c (hisi620c)" Tag="hisi620c"/>
+                                <ComboBoxItem Content="Kirin 925 (hisi925)" Tag="hisi925"/>
+                                <ComboBoxItem Content="Kirin 935 (hisi935)" Tag="hisi935"/>
+                                <ComboBoxItem Content="Kirin 950 (hisi950)" Tag="hisi950"/>
+                                <ComboBoxItem Content="Kirin 955 (hisi955)" Tag="hisi955"/>
+                                <ComboBoxItem Content="Kirin 960 (hisi960)" Tag="hisi960"/>
+                                <ComboBoxItem Content="Kirin 970 (hisi970)" Tag="hisi970"/>
+                                <ComboBoxItem Content="Kirin 980 (hisi980)" Tag="hisi980"/>
+                                <ComboBoxItem Content="Kirin 985 (hisi985)" Tag="hisi985"/>
+                                <ComboBoxItem Content="Kirin 990 5G (hisi990)" Tag="hisi990"/>
+                                <ComboBoxItem Content="Kirin 9000 (hisi9000) — Experimental" Tag="hisi9000"/>
+                                <ComboBoxItem Content="Kirin 710 (hisi710)" Tag="hisi710"/>
+                                <ComboBoxItem Content="Kirin 710a (hisi710a)" Tag="hisi710a"/>
+                                <ComboBoxItem Content="Kirin 810 (hisi810)" Tag="hisi810"/>
+                                <ComboBoxItem Content="Kirin 820 (hisi820)" Tag="hisi820"/>
+                                <ComboBoxItem Content="Kirin K3v2 (hisik3v2)" Tag="hisik3v2"/>
                             </ComboBox>
                         </StackPanel>
 
