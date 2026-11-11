@@ -95,6 +95,21 @@ public static class UserSettings
         EnsureLoaded();
     }
 
+    /// <summary>
+    /// Loads the default XDG location unless <see cref="Initialize"/> already
+    /// chose a directory. Used by the application startup path so an injected
+    /// configuration directory (tests, packaged checks) is never replaced.
+    /// </summary>
+    public static void EnsureInitialized()
+    {
+        lock (Gate)
+        {
+            _configDirectory ??= ResolveDefaultConfigDirectory();
+        }
+
+        EnsureLoaded();
+    }
+
     /// <summary>Directory holding <c>settings.json</c>.</summary>
     public static string ConfigDirectory
     {

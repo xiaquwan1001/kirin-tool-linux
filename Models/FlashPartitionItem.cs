@@ -22,7 +22,9 @@ using Kirin_Tool.Models;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
+using Avalonia;
 using Avalonia.Media;
+using Avalonia.Styling;
 using Avalonia.Threading;
 
 namespace Kirin_Tool.UI
@@ -110,17 +112,26 @@ namespace Kirin_Tool.UI
             }
         }
 
+        /// <summary>True while the application renders the dark palette.</summary>
+        private static bool IsDarkTheme => Application.Current?.ActualThemeVariant == ThemeVariant.Dark;
+
+        private static Color ThemedColor(string light, string dark) => Color.Parse(IsDarkTheme ? dark : light);
+
         public SolidColorBrush BackgroundBrush
         {
             get
             {
+                // Row tints follow the theme so dark mode never shows light text
+                // on a near-white row.
                 if (IsCompleted)
-                    return IsSuccess ? new SolidColorBrush(Color.FromRgb(240, 255, 240)) : new SolidColorBrush(Color.FromRgb(255, 240, 240));
+                    return new SolidColorBrush(IsSuccess
+                        ? ThemedColor("#F0FFF0", "#17301C")
+                        : ThemedColor("#FFF0F0", "#331A1A"));
 
                 if (ProgressValue > 0)
-                    return new SolidColorBrush(Color.FromRgb(255, 250, 230));
+                    return new SolidColorBrush(ThemedColor("#FFFAE6", "#332912"));
 
-                return new SolidColorBrush(Colors.White);
+                return new SolidColorBrush(IsDarkTheme ? Color.Parse("#2A2A2A") : Colors.White);
             }
         }
 
@@ -134,7 +145,7 @@ namespace Kirin_Tool.UI
                 if (ProgressValue > 0)
                     return new SolidColorBrush(Colors.Orange);
 
-                return new SolidColorBrush(Colors.LightGray);
+                return new SolidColorBrush(ThemedColor("#D3D3D3", "#4A4A4A"));
             }
         }
 

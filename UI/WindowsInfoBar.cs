@@ -24,20 +24,47 @@ public class WindowsInfoBar : UserControl
     private readonly TextBlock _title = new() { FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 14, 0) };
     private readonly TextBlock _message = new() { TextWrapping = TextWrapping.Wrap };
     private readonly Button _close = new() { Classes = { "infobar-close" }, Padding = new Thickness(4), MinHeight = 24, MinWidth = 24, Margin = new Thickness(12, -2, 0, 0), VerticalAlignment = VerticalAlignment.Top };
+    private readonly WindowsSymbol _icon = new() { Symbol = "ErrorCircle24", Filled = true, FontSize = 16, Margin = new Thickness(0, 2, 14, 0), VerticalAlignment = VerticalAlignment.Top };
+    private readonly Border _surface;
     public WindowsInfoBar()
     {
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
-        grid.Children.Add(new WindowsSymbol { Symbol = "ErrorCircle24", Filled = true, FontSize = 16, Foreground = Brush.Parse("#9D5D00"), Margin = new Thickness(0, 2, 14, 0), VerticalAlignment = VerticalAlignment.Top });
+        grid.Children.Add(_icon);
         var text = new WrapPanel { Orientation = Orientation.Horizontal };
         text.Children.Add(_title); text.Children.Add(_message); Grid.SetColumn(text, 1); grid.Children.Add(text);
         _close.Content = new WindowsSymbol { Symbol = "Dismiss24", FontSize = 16 };
         AutomationProperties.SetName(_close, "Dismiss warning");
         _close.Click += (_, _) => { IsDismissed = true; Update(); };
         Grid.SetColumn(_close, 2); grid.Children.Add(_close);
-        Content = new Border { Background = Brush.Parse("#FFF4CE"), BorderBrush = Brush.Parse("#E5DFC9"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(16, 12), Child = grid };
-        Foreground = Brush.Parse("#1A1A1A");
+        _surface = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(16, 12), Child = grid };
+        Content = _surface;
+        ApplyTheme();
+        // The caption bar can switch variants at any time; keep the warning
+        // readable instead of staying frozen on the light palette.
+        ActualThemeVariantChanged += (_, _) => ApplyTheme();
         Update();
     }
+
+    /// <summary>
+    /// Resolves a palette entry for the variant this control is actually
+    /// rendered with. The theme-less overload would silently fall back to the
+    /// light palette.
+    /// </summary>
+    private IBrush ThemeBrush(string key, string fallback)
+    {
+        if (this.TryFindResource(key, ActualThemeVariant, out var value) && value is IBrush brush) return brush;
+        if (Application.Current is { } app && app.TryFindResource(key, app.ActualThemeVariant, out var appValue) && appValue is IBrush appBrush) return appBrush;
+        return Brush.Parse(fallback);
+    }
+
+    private void ApplyTheme()
+    {
+        _surface.Background = ThemeBrush("AppNoticeBrush", "#FFF3CD");
+        _surface.BorderBrush = ThemeBrush("AppNoticeBorderBrush", "#FFE69C");
+        _icon.Foreground = ThemeBrush("AppWarningTextBrush", "#9D5D00");
+        Foreground = ThemeBrush("AppTextBrush", "#1A1A1A");
+    }
+
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);

@@ -2,12 +2,22 @@
         xmlns:ui="clr-namespace:Kirin_Tool.UI">
   <!-- Recreated from the frozen WPF layout, using native Avalonia controls. -->
   <Style Selector="Window">
-    <Setter Property="Foreground" Value="#303030"/>
-    <Setter Property="Background" Value="#FAFAFA"/>
+    <Setter Property="Foreground" Value="{DynamicResource AppTextBrush}"/>
+    <Setter Property="Background" Value="{DynamicResource AppWindowBackgroundBrush}"/>
+  </Style>
+  <!-- Warning banner: defined at application scope so the theme dictionary is
+       re-resolved when the light/dark variant changes. -->
+  <Style Selector="Border.notice">
+    <Setter Property="Background" Value="{DynamicResource AppNoticeBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource AppNoticeBorderBrush}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="CornerRadius" Value="4"/>
+    <Setter Property="Padding" Value="16,12"/>
+    <Setter Property="Margin" Value="0,0,0,8"/>
   </Style>
   <Style Selector="Button, ui|WindowsButton">
-    <Setter Property="Background" Value="#FFFFFF"/>
-    <Setter Property="BorderBrush" Value="#DDDDDD"/>
+    <Setter Property="Background" Value="{DynamicResource AppButtonBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource AppButtonBorderBrush}"/>
     <Setter Property="BorderThickness" Value="1"/>
     <Setter Property="Padding" Value="8,6"/>
     <Setter Property="MinHeight" Value="32"/>
@@ -15,23 +25,23 @@
     <Setter Property="VerticalContentAlignment" Value="Center"/>
   </Style>
   <Style Selector="Button.accent, ui|WindowsButton.accent">
-    <Setter Property="Background" Value="#0067C0"/>
-    <Setter Property="Foreground" Value="White"/>
-    <Setter Property="BorderBrush" Value="#005AA8"/>
+    <Setter Property="Background" Value="{DynamicResource AppAccentBrush}"/>
+    <Setter Property="Foreground" Value="{DynamicResource AppAccentTextBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource AppAccentBorderBrush}"/>
   </Style>
   <Style Selector="Button.caution, ui|WindowsButton.caution">
-    <Setter Property="Background" Value="#FFF4CE"/>
-    <Setter Property="BorderBrush" Value="#D6B656"/>
+    <Setter Property="Background" Value="{DynamicResource AppCautionBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource AppCautionBorderBrush}"/>
   </Style>
   <Style Selector="TextBox">
-    <Setter Property="BorderBrush" Value="#E5E5E5"/>
-    <Setter Property="Background" Value="#FFFFFF"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource AppBorderBrush}"/>
+    <Setter Property="Background" Value="{DynamicResource AppInputBrush}"/>
     <Setter Property="CornerRadius" Value="4"/>
     <Setter Property="MinHeight" Value="34"/>
   </Style>
   <Style Selector="ComboBox">
-    <Setter Property="Background" Value="#FFFFFF"/>
-    <Setter Property="BorderBrush" Value="#DDDDDD"/>
+    <Setter Property="Background" Value="{DynamicResource AppInputBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource AppButtonBorderBrush}"/>
     <Setter Property="FontSize" Value="14"/>
     <Setter Property="Padding" Value="10,6"/>
   </Style>
@@ -47,7 +57,7 @@
       <ControlTemplate>
         <Border Name="NavigationBackground" Background="Transparent" CornerRadius="4">
           <Grid>
-            <Border Name="SelectionIndicator" Width="3" Height="16" Background="#0067C0" CornerRadius="2" HorizontalAlignment="Left" IsVisible="False"/>
+            <Border Name="SelectionIndicator" Width="3" Height="16" Background="{DynamicResource AppAccentBrush}" CornerRadius="2" HorizontalAlignment="Left" IsVisible="False"/>
             <ContentPresenter Name="PART_ContentPresenter" Content="{TemplateBinding Content}" Padding="{TemplateBinding Padding}" VerticalAlignment="Center"/>
           </Grid>
         </Border>
@@ -56,20 +66,20 @@
   </Style>
   <Style Selector="ListBoxItem.navigation:selected /template/ ContentPresenter#PART_ContentPresenter">
     <Setter Property="Background" Value="Transparent"/>
-    <Setter Property="Foreground" Value="#303030"/>
+    <Setter Property="Foreground" Value="{DynamicResource AppTextBrush}"/>
   </Style>
   <Style Selector="ListBoxItem.navigation:pointerover /template/ Border#NavigationBackground">
-    <Setter Property="Background" Value="#EDEDED"/>
+    <Setter Property="Background" Value="{DynamicResource AppNavHoverBrush}"/>
   </Style>
   <Style Selector="ListBoxItem.navigation:selected /template/ Border#NavigationBackground">
-    <Setter Property="Background" Value="#E6E6E6"/>
+    <Setter Property="Background" Value="{DynamicResource AppNavSelectedBrush}"/>
   </Style>
   <Style Selector="ListBoxItem.navigation:selected /template/ Border#SelectionIndicator">
     <Setter Property="IsVisible" Value="True"/>
   </Style>
   <Style Selector="ui|WindowsExpander">
-    <Setter Property="Background" Value="White"/>
-    <Setter Property="BorderBrush" Value="#E5E5E5"/>
+    <Setter Property="Background" Value="{DynamicResource AppCardBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource AppBorderBrush}"/>
     <Setter Property="BorderThickness" Value="1"/>
     <Setter Property="CornerRadius" Value="4"/>
     <Setter Property="Template">
@@ -81,12 +91,12 @@
               <Grid ColumnDefinitions="24,*,16">
                 <ui:WindowsSymbol Symbol="{TemplateBinding Icon}" FontSize="20" VerticalAlignment="Center"/>
                 <ContentPresenter Grid.Column="1" Content="{TemplateBinding Header}" Margin="12,0" VerticalAlignment="Center"/>
-                <Path Name="ExpanderChevron" Grid.Column="2" Data="M2,8 L7,3 L12,8" Stroke="#404040" StrokeThickness="1" Width="12" Height="10" VerticalAlignment="Center">
+                <Path Name="ExpanderChevron" Grid.Column="2" Data="M2,8 L7,3 L12,8" Stroke="{DynamicResource AppIconBrush}" StrokeThickness="1" Width="12" Height="10" VerticalAlignment="Center">
                   <Path.RenderTransform><RotateTransform Angle="180"/></Path.RenderTransform>
                 </Path>
               </Grid>
             </ToggleButton>
-            <Border Name="ExpandedContent" IsVisible="{TemplateBinding IsExpanded}" BorderBrush="#E5E5E5" BorderThickness="0,1,0,0" Padding="14,16">
+            <Border Name="ExpandedContent" IsVisible="{TemplateBinding IsExpanded}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="14,16">
               <ContentPresenter Name="PART_ContentPresenter" Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" HorizontalContentAlignment="Stretch"/>
             </Border>
           </StackPanel>
@@ -107,7 +117,7 @@
     </Setter>
   </Style>
   <Style Selector="ToggleButton.card-header:pointerover /template/ Border#HeaderBackground">
-    <Setter Property="Background" Value="#F6F6F6"/>
+    <Setter Property="Background" Value="{DynamicResource AppSubtleBrush}"/>
   </Style>
   <Style Selector="ui|WindowsExpander[IsExpanded=True] /template/ Path#ExpanderChevron">
     <Setter Property="RenderTransform"><RotateTransform Angle="0"/></Setter>
@@ -117,7 +127,7 @@
     <Setter Property="Margin" Value="0,0,0,2"/>
     <Setter Property="Template">
       <ControlTemplate>
-        <Border Background="White" BorderBrush="#EAEAEA" BorderThickness="1" CornerRadius="4" Padding="14,12">
+        <Border Background="{DynamicResource AppCardBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="14,12">
           <Grid ColumnDefinitions="24,2*,3*">
             <ui:WindowsSymbol Symbol="{TemplateBinding Icon}" FontSize="18" VerticalAlignment="Center"/>
             <TextBlock Grid.Column="1" Text="{TemplateBinding Header}" Margin="12,0" VerticalAlignment="Center" TextWrapping="Wrap"/>
@@ -137,10 +147,10 @@
     <Setter Property="CornerRadius" Value="0"/>
   </Style>
   <Style Selector="Button.caption:pointerover /template/ ContentPresenter, ui|WindowsButton.caption:pointerover /template/ ContentPresenter">
-    <Setter Property="Background" Value="#E5E5E5"/>
+    <Setter Property="Background" Value="{DynamicResource AppNavHoverBrush}"/>
   </Style>
   <Style Selector="Button.caption.close:pointerover /template/ ContentPresenter, ui|WindowsButton.caption.close:pointerover /template/ ContentPresenter">
-    <Setter Property="Background" Value="#E81123"/>
+    <Setter Property="Background" Value="{DynamicResource AppCaptionCloseHoverBrush}"/>
   </Style>
   <Style Selector="ui|WindowsButton">
     <Setter Property="Template">
@@ -162,9 +172,9 @@
   </Style>
   <Style Selector="ui|WindowsButton:disabled">
     <Setter Property="Opacity" Value="1"/>
-    <Setter Property="Background" Value="#F9F9F9"/>
-    <Setter Property="Foreground" Value="#A3A3A3"/>
-    <Setter Property="BorderBrush" Value="#E6E6E6"/>
+    <Setter Property="Background" Value="{DynamicResource AppDisabledBrush}"/>
+    <Setter Property="Foreground" Value="{DynamicResource AppDisabledTextBrush}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource AppDisabledBorderBrush}"/>
   </Style>
   <Style Selector="Button.infobar-close, ui|WindowsButton.infobar-close">
     <Setter Property="Background" Value="Transparent"/>

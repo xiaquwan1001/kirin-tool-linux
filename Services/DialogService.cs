@@ -29,7 +29,10 @@ public class DialogService
     /// </summary>
     private static IBrush ThemeBrush(string key, IBrush fallback)
     {
-        return Application.Current is { } app && app.TryFindResource(key, out var value) && value is IBrush brush
+        // The theme-less overload would resolve against the default (light)
+        // palette even when the app is running dark.
+        return Application.Current is { } app &&
+               app.TryFindResource(key, app.ActualThemeVariant, out var value) && value is IBrush brush
             ? brush
             : fallback;
     }
