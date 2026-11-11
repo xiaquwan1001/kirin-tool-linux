@@ -29,7 +29,7 @@ Reject(()=>FastbootReadResponses.Psid(Reply("OKAY\n")),"empty PSID response reje
 Check(FastbootReadResponses.OemVersion("(bootloader) NAM-LGRP1-CHN 102.0.1.272\nOKAY")=="NAM-LGRP1-CHN 102.0.1.272","colonless NAM OEM reply accepted");
 Check(FastbootReadResponses.OemVersion("(bootloader) :NOH-LGRP1-CHN 104.2.0.196\nOKAY")=="NOH-LGRP1-CHN 104.2.0.196","Kirin leading colon retained");
 Check(FastbootReadResponses.OemVersion("(bootloader) value\nFAILED")=="Unknown","failed version response rejected");
-AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions{UseHeadlessDrawing=false}).SetupWithoutStarting();
+System.Environment.SetEnvironmentVariable("KIRIN_TOOL_SETTINGS_DIR", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kirin-tool-test-settings")); AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions{UseHeadlessDrawing=false}).SetupWithoutStarting();
 var owner=new MainWindow();
 // An accidental missing gate must never invoke a real fastboot client.
 foreach(var field in new[]{"_fastbootClient","_xmlFastbootClient"})

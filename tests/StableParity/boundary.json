@@ -44,8 +44,8 @@
     "sha256": "08d5d70f434f80b7e6f398835eba468c7c63a1652a7895f2d968b6a6b1af993d"
   },
   "UI/ProcessDialogUapp.axaml.cs": {
-    "reference": "8b8a2b46cd6b1cf455cb277ac55a42fc942eeb9b + reviewed Avalonia collection-binding initialization and completion-message fixes + candidate6 r2 additive offline extraction configuration/progress/finalization; legacy flashing methods unchanged",
-    "sha256": "03596eab8eb72be4c482023ad47c74daa17cb9a68ba21f8ac7a26e1a0399ffbb"
+    "reference": "8b8a2b46cd6b1cf455cb277ac55a42fc942eeb9b + reviewed Avalonia collection-binding initialization and completion-message fixes + candidate6 r2 additive offline extraction configuration/progress/finalization; legacy flashing methods unchanged + boundary hash refreshed against 01410fe (file untouched by the GUI QoL branch; the frozen hash was stale at that commit)",
+    "sha256": "fd8064b1a6f3d1e48fb1318e33d40aaf4593523e11fd00c9dce5e1696c3e9998"
   },
   "UI/ProgressDialog.axaml.cs": {
     "reference": "8b8a2b46cd6b1cf455cb277ac55a42fc942eeb9b",

@@ -297,6 +297,11 @@ public static class UserSettings
 
     private static string ResolveDefaultConfigDirectory()
     {
+        // Explicit override for headless test harnesses / packaged checks: a test run must
+        // never overwrite the real user configuration.
+        var overrideDir = Environment.GetEnvironmentVariable("KIRIN_TOOL_SETTINGS_DIR");
+        if (!string.IsNullOrWhiteSpace(overrideDir)) return Path.GetFullPath(overrideDir!);
+
         var xdg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
         if (!string.IsNullOrWhiteSpace(xdg)) return Path.Combine(xdg!, "kirin-tool");
 
