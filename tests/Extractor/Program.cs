@@ -112,7 +112,7 @@ try
     Check(File.ReadAllBytes(Path.Combine(root,"huge","PRELOAD.img")).SequenceEqual(cust),"selected partition above 4 GiB extracted");
 
     // Run the actual UI entry points, render the bound rows, tick choices and start extraction.
-    AppBuilder.Configure<App>().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+    System.Environment.SetEnvironmentVariable("KIRIN_TOOL_SETTINGS_DIR", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kirin-tool-test-settings")); AppBuilder.Configure<App>().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
     var window = new MainWindow(); window.Show();
     Dispatcher.UIThread.RunJobs();
     var navigation=window.FindControl<ListBox>("NavigationListBox")!;

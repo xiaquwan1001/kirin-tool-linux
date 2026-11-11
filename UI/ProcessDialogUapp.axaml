@@ -26,11 +26,11 @@
                   Height="550"
                   WindowStartupLocation="CenterOwner"
                   CanResize="False" SystemDecorations="BorderOnly"
-                  Background="White">
+                  Background="{DynamicResource AppCardBrush}">
 
-    <Border Background="White" 
+    <Border Background="{DynamicResource AppCardBrush}" 
             CornerRadius="8" 
-            BorderBrush="LightGray" 
+            BorderBrush="{DynamicResource AppBorderBrush}" 
             BorderThickness="1">
         <Grid Margin="24">
             <Grid.RowDefinitions>
@@ -50,23 +50,23 @@
                           Text="{Binding OverallStatusText}" 
                           FontSize="16"
                           FontWeight="SemiBold"
-                          Foreground="Black"
+                          Foreground="{DynamicResource AppTextBrush}"
                           Margin="0,0,0,10"/>
 
                 <ProgressBar Grid.Row="1"
                             Value="{Binding OverallProgress}"
                             Maximum="100"
                             Height="8"
-                            Background="LightGray"
-                            Foreground="DodgerBlue"/>
+                            Background="{DynamicResource AppProgressTrackBrush}"
+                            Foreground="{DynamicResource AppAccentBrush}"/>
             </Grid>
 
             <ScrollViewer Grid.Row="1" 
                          x:Name="PartitionScrollViewer"
                          VerticalScrollBarVisibility="Auto"
                          HorizontalScrollBarVisibility="Disabled"
-                         Background="White"
-                         BorderBrush="LightGray"
+                         Background="{DynamicResource AppCardBrush}"
+                         BorderBrush="{DynamicResource AppBorderBrush}"
                          BorderThickness="1"
                          Padding="12"
                          MaxHeight="350">
@@ -101,14 +101,14 @@
                                               Text="{Binding Name}"
                                               FontSize="14"
                                               FontWeight="SemiBold"
-                                              Foreground="Black"
+                                              Foreground="{DynamicResource AppTextBrush}"
                                               VerticalAlignment="Center"
                                               Margin="8,0,0,0"/>
 
                                     <TextBlock Grid.Column="2"
                                               Text="{Binding FormattedSize}"
                                               FontSize="12"
-                                              Foreground="Gray"
+                                              Foreground="{DynamicResource AppMutedTextBrush}"
                                               VerticalAlignment="Center"
                                               Margin="8,0,0,0"/>
 
@@ -116,14 +116,14 @@
                                               Text="{Binding StatusText}"
                                               TextWrapping="Wrap" ToolTip.Tip="{Binding StatusText}"
                                               FontSize="12"
-                                              Foreground="Black"
+                                              Foreground="{DynamicResource AppTextBrush}"
                                               VerticalAlignment="Center"
                                               Margin="8,0,0,0"/>
 
                                     <TextBlock Grid.Column="4"
                                               Text="{Binding TimeElapsed}"
                                               FontSize="11"
-                                              Foreground="DarkGray"
+                                              Foreground="{DynamicResource AppMutedTextBrush}"
                                               VerticalAlignment="Center"
                                               Margin="8,0,0,0"/>
                                 </Grid>
@@ -136,7 +136,7 @@
             <TextBlock Grid.Row="2"
                       Text="{Binding CurrentOperationText}"
                       FontSize="14"
-                      Foreground="Black"
+                      Foreground="{DynamicResource AppTextBrush}"
                       Margin="0,20,0,10"
                       HorizontalAlignment="Center"
                       FontWeight="Medium"/>

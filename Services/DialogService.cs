@@ -1,7 +1,9 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Layout;
 using Avalonia.Platform.Storage;
+using System;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
@@ -19,6 +21,41 @@ public class DialogService
     public DialogService(Window owner)
     {
         _owner = owner;
+    }
+
+    /// <summary>
+    /// Resolves a theme brush so programmatic dialogs follow the light/dark
+    /// variant instead of hard-coding white.
+    /// </summary>
+    private static IBrush ThemeBrush(string key, IBrush fallback)
+    {
+        // The theme-less overload would resolve against the default (light)
+        // palette even when the app is running dark.
+        return Application.Current is { } app &&
+               app.TryFindResource(key, app.ActualThemeVariant, out var value) && value is IBrush brush
+            ? brush
+            : fallback;
+    }
+
+    private static IBrush DialogBackground => ThemeBrush("AppCardBrush", Brushes.White);
+
+    /// <summary>
+    /// Folder a picker should open in: the last directory the user picked from,
+    /// when it still exists.
+    /// </summary>
+    private static async Task<IStorageFolder?> SuggestedStartLocationAsync(TopLevel? topLevel)
+    {
+        var lastDirectory = UserSettings.LastDirectory;
+        if (topLevel?.StorageProvider is null || lastDirectory is null) return null;
+
+        try
+        {
+            return await topLevel.StorageProvider.TryGetFolderFromPathAsync(new Uri(lastDirectory));
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -53,7 +90,7 @@ public class DialogService
         {
             Title = title,
             SystemDecorations = SystemDecorations.BorderOnly,
-            Background = Brushes.White,
+            Background = DialogBackground,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             SizeToContent = SizeToContent.WidthAndHeight,
             MinWidth = 300,
@@ -101,7 +138,7 @@ public class DialogService
         {
             Title = title,
             SystemDecorations = SystemDecorations.BorderOnly,
-            Background = Brushes.White,
+            Background = DialogBackground,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             SizeToContent = SizeToContent.WidthAndHeight,
             MinWidth = 350,
@@ -165,7 +202,8 @@ public class DialogService
         var options = new FilePickerSaveOptions
         {
             Title = title,
-            SuggestedFileName = defaultName ?? ""
+            SuggestedFileName = defaultName ?? "",
+            SuggestedStartLocation = await SuggestedStartLocationAsync(topLevel)
         };
 
         if (filterName != null && extensions != null && extensions.Count > 0)
@@ -180,10 +218,35 @@ public class DialogService
         }
 
         var file = await topLevel.StorageProvider.SaveFilePickerAsync(options);
-        return file?.Path.LocalPath;
+        var path = file?.Path.LocalPath;
+        if (!string.IsNullOrWhiteSpace(path)) UserSettings.RememberDirectory(path);
+        return path;
+    }
+
+    /// <summary>
+    /// Show a folder picker and return the selected directory, or null if cancelled.
+    /// </summary>
+    public async Task<string?> ShowOpenFolderDialog(string title)
+    {
+        var topLevel = TopLevel.GetTopLevel(_owner);
+        if (topLevel?.StorageProvider == null) return null;
+
+        var options = new FolderPickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false,
+            SuggestedStartLocation = await SuggestedStartLocationAsync(topLevel)
+        };
+
+        var folders = await topLevel.StorageProvider.OpenFolderPickerAsync(options);
+        var path = folders?.FirstOrDefault()?.Path.LocalPath;
+        if (!string.IsNullOrWhiteSpace(path)) UserSettings.RememberDirectory(path);
+        return path;
     }
     /// <summary>
     /// Show an OpenFileDialog and return the selected path, or null if cancelled.
+    /// A literal "*" inside <paramref name="extensions"/> adds an "All files"
+    /// filter, which is how every caller used the legacy dialog.
     /// </summary>
     public async Task<string?> ShowOpenFileDialog(string title, List<string>? extensions = null, string? filterName = null)
     {
@@ -193,21 +256,28 @@ public class DialogService
         var options = new FilePickerOpenOptions
         {
             Title = title,
-            AllowMultiple = false
+            AllowMultiple = false,
+            SuggestedStartLocation = await SuggestedStartLocationAsync(topLevel)
         };
 
-        if (extensions != null && extensions.Count > 0)
+        var patterns = extensions?.Where(ext => !string.IsNullOrWhiteSpace(ext) && ext != "*")
+            .Select(ext => $"*{ext}").Where(pattern => pattern != "**").ToList() ?? new List<string>();
+        var filters = new List<FilePickerFileType>();
+        if (patterns.Count > 0)
         {
-            options.FileTypeFilter = new List<FilePickerFileType>
-            {
-                new FilePickerFileType(filterName ?? "Files")
-                {
-                    Patterns = extensions.ConvertAll(ext => $"*{ext}")
-                }
-            };
+            filters.Add(new FilePickerFileType(filterName ?? "Files") { Patterns = patterns });
         }
 
+        if (filters.Count == 0 || (extensions?.Contains("*") ?? false))
+        {
+            filters.Add(new FilePickerFileType("All files") { Patterns = new List<string> { "*" } });
+        }
+
+        options.FileTypeFilter = filters;
+
         var files = await topLevel.StorageProvider.OpenFilePickerAsync(options);
-        return files?.FirstOrDefault()?.Path.LocalPath;
+        var selected = files?.FirstOrDefault()?.Path.LocalPath;
+        if (!string.IsNullOrWhiteSpace(selected)) UserSettings.RememberDirectory(selected);
+        return selected;
     }
 }

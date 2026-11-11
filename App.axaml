@@ -20,9 +20,84 @@
 
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             x:Class="Kirin_Tool.App"
-             RequestedThemeVariant="Light">
+             x:Class="Kirin_Tool.App">
     <Application.Resources>
+        <ResourceDictionary>
+            <!--
+                Light/dark palettes. RequestedThemeVariant is chosen at startup from
+                UserSettings.theme (light by default) and can be switched from the
+                caption bar; every control references these keys with
+                {DynamicResource ...} so no colour is duplicated per control.
+            -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="AppWindowBackgroundBrush" Color="#FAFAFA"/>
+                    <SolidColorBrush x:Key="AppSidebarBrush" Color="#F4F4F4"/>
+                    <SolidColorBrush x:Key="AppCardBrush" Color="#FFFFFF"/>
+                    <SolidColorBrush x:Key="AppSubtleBrush" Color="#F5F5F5"/>
+                    <SolidColorBrush x:Key="AppInputBrush" Color="#FFFFFF"/>
+                    <SolidColorBrush x:Key="AppButtonBrush" Color="#FFFFFF"/>
+                    <SolidColorBrush x:Key="AppButtonBorderBrush" Color="#DDDDDD"/>
+                    <SolidColorBrush x:Key="AppBorderBrush" Color="#E5E5E5"/>
+                    <SolidColorBrush x:Key="AppTextBrush" Color="#303030"/>
+                    <SolidColorBrush x:Key="AppMutedTextBrush" Color="#666666"/>
+                    <SolidColorBrush x:Key="AppIconBrush" Color="#202020"/>
+                    <SolidColorBrush x:Key="AppNavHoverBrush" Color="#EDEDED"/>
+                    <SolidColorBrush x:Key="AppNavSelectedBrush" Color="#E6E6E6"/>
+                    <SolidColorBrush x:Key="AppNoticeBrush" Color="#FFF3CD"/>
+                    <SolidColorBrush x:Key="AppNoticeBorderBrush" Color="#FFE69C"/>
+                    <SolidColorBrush x:Key="AppNoticeTextBrush" Color="#1A1A1A"/>
+                    <SolidColorBrush x:Key="AppWarningTextBrush" Color="#9D5D00"/>
+                    <SolidColorBrush x:Key="AppAccentBrush" Color="#0067C0"/>
+                    <SolidColorBrush x:Key="AppAccentBorderBrush" Color="#005AA8"/>
+                    <SolidColorBrush x:Key="AppAccentTextBrush" Color="#FFFFFF"/>
+                    <SolidColorBrush x:Key="AppCautionBrush" Color="#FFF4CE"/>
+                    <SolidColorBrush x:Key="AppCautionBorderBrush" Color="#D6B656"/>
+                    <SolidColorBrush x:Key="AppDisabledBrush" Color="#F9F9F9"/>
+                    <SolidColorBrush x:Key="AppDisabledTextBrush" Color="#A3A3A3"/>
+                    <SolidColorBrush x:Key="AppDisabledBorderBrush" Color="#E6E6E6"/>
+                    <SolidColorBrush x:Key="AppProgressTrackBrush" Color="#E4E4E4"/>
+                    <SolidColorBrush x:Key="AppRowSuccessBrush" Color="#F0FFF0"/>
+                    <SolidColorBrush x:Key="AppRowFailureBrush" Color="#FFF0F0"/>
+                    <SolidColorBrush x:Key="AppRowActiveBrush" Color="#FFFAE6"/>
+                    <SolidColorBrush x:Key="AppCaptionCloseHoverBrush" Color="#E81123"/>
+                    <SolidColorBrush x:Key="AppOverlayBrush" Color="#91000000"/>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="AppWindowBackgroundBrush" Color="#1B1B1B"/>
+                    <SolidColorBrush x:Key="AppSidebarBrush" Color="#232323"/>
+                    <SolidColorBrush x:Key="AppCardBrush" Color="#2A2A2A"/>
+                    <SolidColorBrush x:Key="AppSubtleBrush" Color="#262626"/>
+                    <SolidColorBrush x:Key="AppInputBrush" Color="#2F2F2F"/>
+                    <SolidColorBrush x:Key="AppButtonBrush" Color="#333333"/>
+                    <SolidColorBrush x:Key="AppButtonBorderBrush" Color="#4A4A4A"/>
+                    <SolidColorBrush x:Key="AppBorderBrush" Color="#3A3A3A"/>
+                    <SolidColorBrush x:Key="AppTextBrush" Color="#EDEDED"/>
+                    <SolidColorBrush x:Key="AppMutedTextBrush" Color="#A8A8A8"/>
+                    <SolidColorBrush x:Key="AppIconBrush" Color="#E8E8E8"/>
+                    <SolidColorBrush x:Key="AppNavHoverBrush" Color="#2E2E2E"/>
+                    <SolidColorBrush x:Key="AppNavSelectedBrush" Color="#3A3A3A"/>
+                    <SolidColorBrush x:Key="AppNoticeBrush" Color="#3F3312"/>
+                    <SolidColorBrush x:Key="AppNoticeBorderBrush" Color="#6B5620"/>
+                    <SolidColorBrush x:Key="AppNoticeTextBrush" Color="#F5E6B8"/>
+                    <SolidColorBrush x:Key="AppWarningTextBrush" Color="#F0C674"/>
+                    <SolidColorBrush x:Key="AppAccentBrush" Color="#3AA0E8"/>
+                    <SolidColorBrush x:Key="AppAccentBorderBrush" Color="#2A86C4"/>
+                    <SolidColorBrush x:Key="AppAccentTextBrush" Color="#0B1A26"/>
+                    <SolidColorBrush x:Key="AppCautionBrush" Color="#3D3520"/>
+                    <SolidColorBrush x:Key="AppCautionBorderBrush" Color="#6E5F2A"/>
+                    <SolidColorBrush x:Key="AppDisabledBrush" Color="#2A2A2A"/>
+                    <SolidColorBrush x:Key="AppDisabledTextBrush" Color="#7C7C7C"/>
+                    <SolidColorBrush x:Key="AppDisabledBorderBrush" Color="#3A3A3A"/>
+                    <SolidColorBrush x:Key="AppProgressTrackBrush" Color="#3A3A3A"/>
+                    <SolidColorBrush x:Key="AppRowSuccessBrush" Color="#17301C"/>
+                    <SolidColorBrush x:Key="AppRowFailureBrush" Color="#331A1A"/>
+                    <SolidColorBrush x:Key="AppRowActiveBrush" Color="#332912"/>
+                    <SolidColorBrush x:Key="AppCaptionCloseHoverBrush" Color="#E81123"/>
+                    <SolidColorBrush x:Key="AppOverlayBrush" Color="#B3000000"/>
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
     </Application.Resources>
     <Application.Styles>
         <FluentTheme />

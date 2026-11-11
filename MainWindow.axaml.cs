@@ -165,6 +165,8 @@ namespace Kirin_Tool
             SetupNavigationItemHandlers();
             SetupEventHandlers();
             InitializeFullOta();
+            HookUserSettingsPersistence();
+            RestoreUserSettings();
 
             ShowWelcomePage();
         }
@@ -322,21 +324,15 @@ namespace Kirin_Tool
 
             try
             {
-                var openFileDialog = new OpenFileDialog
-                {
-                    Title = "Select Fastboot Configuration XML",
-                    Filters = new List<FileDialogFilter>
-                    {
-                        new FileDialogFilter { Name = "XML files", Extensions = new List<string> { "xml" } },
-                        new FileDialogFilter { Name = "All files", Extensions = new List<string> { "*" } }
-                    }
-                };
+                var selectedFile = await _dialogService.ShowOpenFileDialog(
+                    "Select Fastboot Configuration XML",
+                    new List<string> { "xml", "*" },
+                    "XML files");
 
-                var fileResult = await openFileDialog.ShowAsync(this);
-                if (fileResult == null || fileResult.Length == 0)
+                if (string.IsNullOrWhiteSpace(selectedFile))
                     return;
 
-                var selectedFile = fileResult[0];
+                UserSettings.FastbootConfigXml = selectedFile;
                 var partitions = _fastbootFlasherService.ParseFlashingXml(selectedFile);
 
                 if (partitions.Count == 0)
@@ -685,6 +681,9 @@ namespace Kirin_Tool
 
         private async void FullOtaFile_PropertyChanged(object sender, PropertyChangedEventArgs e)
         {
+            // Entry-time snapshot: settings restore starts the parse without
+            // letting a bad cached file interrupt startup with a dialog.
+            bool restoringSettings = _restoringUserSettings;
             if (e.PropertyName == nameof(FullOtaFile.FilePath) && sender is FullOtaFile otaFile && !string.IsNullOrEmpty(otaFile.FilePath))
             {
                 try
@@ -701,7 +700,8 @@ namespace Kirin_Tool
                 }
                 catch (Exception ex)
                 {
-                    await ShowMessageBox("Parse Error", $"Failed to parse {otaFile.DisplayName}: {ex.Message}");
+                    if (!restoringSettings)
+                        await ShowMessageBox("Parse Error", $"Failed to parse {otaFile.DisplayName}: {ex.Message}");
                     otaFile.FilePath = null;
                 }
             }
@@ -777,20 +777,14 @@ namespace Kirin_Tool
             if (sender is not Button button || button.Tag is not string fileType)
                 return;
 
-            var openFileDialog = new OpenFileDialog
-            {
-                Title = $"Select {GetFileDisplayName(fileType)} File",
-                Filters = new List<FileDialogFilter>
-                {
-                    new FileDialogFilter { Name = "APP files", Extensions = new List<string> { "APP" } },
-                    new FileDialogFilter { Name = "All files", Extensions = new List<string> { "*" } }
-                }
-            };
+            var selected = await _dialogService.ShowOpenFileDialog(
+                $"Select {GetFileDisplayName(fileType)} File",
+                new List<string> { "APP", "app", "*" },
+                "UPDATE.APP files");
 
-            var fileResult = await openFileDialog.ShowAsync(this);
-            if (fileResult != null && fileResult.Length > 0)
+            if (!string.IsNullOrWhiteSpace(selected))
             {
-                GetOtaFileByType(fileType).FilePath = fileResult[0];
+                GetOtaFileByType(fileType).FilePath = selected;
                 UpdateEditButtonsState();
             }
         }
@@ -2291,6 +2285,7 @@ namespace Kirin_Tool
             if (!string.IsNullOrWhiteSpace(fileResult))
             {
                 TxtOemInfoFile.Text = fileResult;
+                UserSettings.OemInfoFile = fileResult;
             }
         }
 
@@ -2346,6 +2341,13 @@ namespace Kirin_Tool
 
         private string GetSelectedCpu()
         {
+            // The Tag carries the canonical chip id (see CpuComboBox items).
+            if ((CpuComboBox.SelectedItem as ComboBoxItem)?.Tag is string tag &&
+                !string.IsNullOrEmpty(tag) && tag != "none")
+            {
+                return tag;
+            }
+
             string content = (CpuComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString();
             if (!string.IsNullOrEmpty(content) && content.Contains('('))
             {

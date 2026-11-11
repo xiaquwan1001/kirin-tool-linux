@@ -54,7 +54,7 @@ try {
  File.WriteAllText(Path.Combine(root,"commands.sh"),UdevRuleNotice.ApplyCommands);
  using(var syntax=System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("bash"){ArgumentList={"-n",Path.Combine(root,"commands.sh")}})!) {syntax.WaitForExit();Check(syntax.ExitCode==0,"copyable heredoc shell syntax valid; never executed");}
  Environment.SetEnvironmentVariable("KIRIN_APPIMAGE",null);
- AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions{UseHeadlessDrawing=false}).SetupWithoutStarting();
+ System.Environment.SetEnvironmentVariable("KIRIN_TOOL_SETTINGS_DIR", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kirin-tool-test-settings")); AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions{UseHeadlessDrawing=false}).SetupWithoutStarting();
  var window=new MainWindow();window.Show();Dispatcher.UIThread.RunJobs();
  var render=typeof(MainWindow).GetMethod("RenderUdevNotice",BindingFlags.Instance|BindingFlags.NonPublic)!;
  var notice=window.FindControl<Border>("UdevNotice")!;

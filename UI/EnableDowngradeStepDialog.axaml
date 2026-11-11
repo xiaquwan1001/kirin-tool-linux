@@ -13,7 +13,7 @@
 
   <!-- Content can exceed the fixed window height (wrapped step text); let it scroll instead of clipping. -->
   <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-  <Border Background="White" CornerRadius="8" BorderBrush="LightGray" BorderThickness="1">
+  <Border Background="{DynamicResource AppCardBrush}" CornerRadius="8" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1">
     <StackPanel Margin="32,24,32,24">
       <Grid Margin="0,12">
         <Grid.ColumnDefinitions>
@@ -31,7 +31,7 @@
         <TextBlock Grid.Column="2"
                     x:Name="Step1Icon"
                     Text="&#x23F3;"
-                    Foreground="Gray"
+                    Foreground="{DynamicResource AppMutedTextBrush}"
                     FontSize="20"
                     HorizontalAlignment="Center"/>
       </Grid>
@@ -52,7 +52,7 @@
         <TextBlock Grid.Column="2"
                     x:Name="Step2Icon"
                     Text="&#x23F3;"
-                    Foreground="Gray"
+                    Foreground="{DynamicResource AppMutedTextBrush}"
                     FontSize="20"
                     HorizontalAlignment="Center"/>
       </Grid>
@@ -73,7 +73,7 @@
         <TextBlock Grid.Column="2"
                     x:Name="Step3Icon"
                     Text="&#x23F3;"
-                    Foreground="Gray"
+                    Foreground="{DynamicResource AppMutedTextBrush}"
                     FontSize="20"
                     HorizontalAlignment="Center"/>
       </Grid>
@@ -94,7 +94,7 @@
         <TextBlock Grid.Column="2"
                     x:Name="Step4Icon"
                     Text="&#x23F3;"
-                    Foreground="Gray"
+                    Foreground="{DynamicResource AppMutedTextBrush}"
                     FontSize="20"
                     HorizontalAlignment="Center"/>
       </Grid>

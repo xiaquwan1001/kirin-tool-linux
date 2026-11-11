@@ -23,19 +23,8 @@
                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                  xmlns:ui="clr-namespace:Kirin_Tool.UI"
                  Title="{x:Static ui:WindowCaption.ApplicationTitle}" Height="700" Width="1000"
-                 WindowStartupLocation="CenterScreen" Background="#FAFAFA"
+                 WindowStartupLocation="CenterScreen" Background="{DynamicResource AppWindowBackgroundBrush}"
                  SystemDecorations="BorderOnly" MinWidth="1000" MinHeight="700">
-
-    <Window.Styles>
-        <Style Selector="Border.notice">
-            <Setter Property="Background" Value="#FFF3CD"/>
-            <Setter Property="BorderBrush" Value="#FFE69C"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="4"/>
-            <Setter Property="Padding" Value="16,12"/>
-            <Setter Property="Margin" Value="0,0,0,8"/>
-        </Style>
-    </Window.Styles>
 
     <Grid x:Name="RootGrid">
         <Grid.RowDefinitions>
@@ -51,7 +40,7 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Background="#F4F4F4">
+                <Border Grid.Column="0" Background="{DynamicResource AppSidebarBrush}">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -60,27 +49,28 @@
 
                         <StackPanel Grid.Row="0" Margin="16">
                             <TextBlock Text="CPU Model" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                            <!-- Tag carries the persisted cpu_model value; see UserSettings.cpu_model. -->
                             <ComboBox x:Name="CpuComboBox" HorizontalAlignment="Stretch" SelectedIndex="0">
-                                <ComboBoxItem Content="Select CPU Model..." IsEnabled="False"/>
-                                <ComboBoxItem Content="Kirin 65x_a (hisi65x_a)"/>
-                                <ComboBoxItem Content="Kirin 65x_b (hisi65x_b)"/>
-                                <ComboBoxItem Content="Kirin 620 (hisi620)"/>
-                                <ComboBoxItem Content="Kirin 620c (hisi620c)"/>
-                                <ComboBoxItem Content="Kirin 925 (hisi925)"/>
-                                <ComboBoxItem Content="Kirin 935 (hisi935)"/>
-                                <ComboBoxItem Content="Kirin 950 (hisi950)"/>
-                                <ComboBoxItem Content="Kirin 955 (hisi955)"/>
-                                <ComboBoxItem Content="Kirin 960 (hisi960)"/>
-                                <ComboBoxItem Content="Kirin 970 (hisi970)"/>
-                                <ComboBoxItem Content="Kirin 980 (hisi980)"/>
-                                <ComboBoxItem Content="Kirin 985 (hisi985)"/>
-                                <ComboBoxItem Content="Kirin 990 5G (hisi990)"/>
-                                <ComboBoxItem Content="Kirin 9000 (hisi9000) — Experimental"/>
-                                <ComboBoxItem Content="Kirin 710 (hisi710)"/>
-                                <ComboBoxItem Content="Kirin 710a (hisi710a)"/>
-                                <ComboBoxItem Content="Kirin 810 (hisi810)"/>
-                                <ComboBoxItem Content="Kirin 820 (hisi820)"/>
-                                <ComboBoxItem Content="Kirin K3v2 (hisik3v2)"/>
+                                <ComboBoxItem Content="Select CPU Model..." IsEnabled="False" Tag="none"/>
+                                <ComboBoxItem Content="Kirin 65x_a (hisi65x_a)" Tag="hisi65x_a"/>
+                                <ComboBoxItem Content="Kirin 65x_b (hisi65x_b)" Tag="hisi65x_b"/>
+                                <ComboBoxItem Content="Kirin 620 (hisi620)" Tag="hisi620"/>
+                                <ComboBoxItem Content="Kirin 620c (hisi620c)" Tag="hisi620c"/>
+                                <ComboBoxItem Content="Kirin 925 (hisi925)" Tag="hisi925"/>
+                                <ComboBoxItem Content="Kirin 935 (hisi935)" Tag="hisi935"/>
+                                <ComboBoxItem Content="Kirin 950 (hisi950)" Tag="hisi950"/>
+                                <ComboBoxItem Content="Kirin 955 (hisi955)" Tag="hisi955"/>
+                                <ComboBoxItem Content="Kirin 960 (hisi960)" Tag="hisi960"/>
+                                <ComboBoxItem Content="Kirin 970 (hisi970)" Tag="hisi970"/>
+                                <ComboBoxItem Content="Kirin 980 (hisi980)" Tag="hisi980"/>
+                                <ComboBoxItem Content="Kirin 985 (hisi985)" Tag="hisi985"/>
+                                <ComboBoxItem Content="Kirin 990 5G (hisi990)" Tag="hisi990"/>
+                                <ComboBoxItem Content="Kirin 9000 (hisi9000) — Experimental" Tag="hisi9000"/>
+                                <ComboBoxItem Content="Kirin 710 (hisi710)" Tag="hisi710"/>
+                                <ComboBoxItem Content="Kirin 710a (hisi710a)" Tag="hisi710a"/>
+                                <ComboBoxItem Content="Kirin 810 (hisi810)" Tag="hisi810"/>
+                                <ComboBoxItem Content="Kirin 820 (hisi820)" Tag="hisi820"/>
+                                <ComboBoxItem Content="Kirin K3v2 (hisik3v2)" Tag="hisik3v2"/>
                             </ComboBox>
                         </StackPanel>
 
@@ -166,16 +156,16 @@
 
                             <Border x:Name="UdevNotice" Classes="notice" IsVisible="False">
                                 <Grid ColumnDefinitions="20,*">
-                                    <ui:WindowsSymbol Symbol="ErrorCircle24" Filled="True" Foreground="#9D5D00" FontSize="16" VerticalAlignment="Top" Margin="0,2,0,0"/>
+                                    <ui:WindowsSymbol Symbol="ErrorCircle24" Filled="True" Foreground="{DynamicResource AppWarningTextBrush}" FontSize="16" VerticalAlignment="Top" Margin="0,2,0,0"/>
                                     <StackPanel Grid.Column="1" Margin="10,0,0,0" Spacing="8">
-                                        <TextBlock Text="Apply udev rules" FontWeight="SemiBold" Foreground="Black"/>
-                                        <TextBlock x:Name="UdevNoticeDescription" TextWrapping="Wrap" Foreground="Black"/>
+                                        <TextBlock Text="Apply udev rules" FontWeight="SemiBold" Foreground="{DynamicResource AppTextBrush}"/>
+                                        <TextBlock x:Name="UdevNoticeDescription" TextWrapping="Wrap" Foreground="{DynamicResource AppTextBrush}"/>
                                         <TextBox x:Name="UdevCommands" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="monospace" FontSize="12"/>
                                         <StackPanel Orientation="Horizontal" Spacing="8">
                                             <Button x:Name="CopyUdevCommandsButton" Content="Copy commands" Click="CopyUdevCommands_Click"/>
                                             <Button Content="Check again" Click="CheckUdevRules_Click"/>
                                         </StackPanel>
-                                        <TextBlock x:Name="UdevCopyStatus" TextWrapping="Wrap" FontSize="12" Foreground="Black"/>
+                                        <TextBlock x:Name="UdevCopyStatus" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource AppTextBrush}"/>
                                     </StackPanel>
                                 </Grid>
                             </Border>
@@ -190,22 +180,22 @@
                             <ui:WindowsExpander Header="Quick Start Guide" IsExpanded="True" HorizontalAlignment="Stretch" Margin="0,0,0,32">
 
                                 <StackPanel Spacing="0">
-                                    <Border Background="White" BorderBrush="#E5E5E5" BorderThickness="1" CornerRadius="4" Padding="14,12" MinHeight="56">
+                                    <Border Background="{DynamicResource AppCardBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="14,12" MinHeight="56">
                                         <Grid ColumnDefinitions="210,*">
                                             <TextBlock Text="Step 1: Select CPU Model" VerticalAlignment="Center"/>
-                                            <TextBlock Grid.Column="1" Text="Choose your device’s CPU model from the dropdown above" TextWrapping="Wrap" FontSize="12" Foreground="#666666" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="Choose your device’s CPU model from the dropdown above" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource AppMutedTextBrush}" VerticalAlignment="Center"/>
                                         </Grid>
                                     </Border>
-                                    <Border Background="White" BorderBrush="#E5E5E5" BorderThickness="1" CornerRadius="4" Padding="14,12" MinHeight="56">
+                                    <Border Background="{DynamicResource AppCardBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="14,12" MinHeight="56">
                                         <Grid ColumnDefinitions="210,*">
                                             <TextBlock Text="Step 2: Connect Device" VerticalAlignment="Center"/>
-                                            <TextBlock Grid.Column="1" Text="Connect your device in VCOM (USB COM 1.0) mode. Make sure that the drivers are installed." TextWrapping="Wrap" FontSize="12" Foreground="#666666" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="Connect your device in VCOM (USB COM 1.0) mode. Make sure that the drivers are installed." TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource AppMutedTextBrush}" VerticalAlignment="Center"/>
                                         </Grid>
                                     </Border>
-                                    <Border Background="White" BorderBrush="#E5E5E5" BorderThickness="1" CornerRadius="4" Padding="14,12" MinHeight="56">
+                                    <Border Background="{DynamicResource AppCardBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="14,12" MinHeight="56">
                                         <Grid ColumnDefinitions="210,*">
                                             <TextBlock Text="Step 3: Choose Operation" VerticalAlignment="Center"/>
-                                            <TextBlock Grid.Column="1" Text="Navigate to the appropriate section for your desired operation" TextWrapping="Wrap" FontSize="12" Foreground="#666666" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="Navigate to the appropriate section for your desired operation" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource AppMutedTextBrush}" VerticalAlignment="Center"/>
                                         </Grid>
                                     </Border>
                                 </StackPanel>
@@ -238,56 +228,56 @@
                                         <TextBlock x:Name="InfoFbLock"
                                                  Text="Not Read"
                                                  FontWeight="SemiBold"
-                                                 Foreground="#666666" TextWrapping="Wrap" />
+                                                 Foreground="{DynamicResource AppMutedTextBrush}" TextWrapping="Wrap" />
                                     </ui:WindowsCard>
 
                                     <ui:WindowsCard Header="User Lock">
                                         <TextBlock x:Name="InfoUserLock"
                                                  Text="Not Read"
                                                  FontWeight="SemiBold"
-                                                 Foreground="#666666" TextWrapping="Wrap" />
+                                                 Foreground="{DynamicResource AppMutedTextBrush}" TextWrapping="Wrap" />
                                     </ui:WindowsCard>
 
                                     <ui:WindowsCard Header="Device Model">
                                         <TextBlock x:Name="InfoDeviceModel"
                                                  Text="Not Read"
                                                  FontWeight="SemiBold"
-                                                 Foreground="#666666" TextWrapping="Wrap" />
+                                                 Foreground="{DynamicResource AppMutedTextBrush}" TextWrapping="Wrap" />
                                     </ui:WindowsCard>
                                     
                                     <ui:WindowsCard Header="Vendor / Country">
                                         <TextBlock x:Name="InfoVendorCountry"
                                                  Text="Not Read"
                                                  FontWeight="SemiBold"
-                                                 Foreground="#666666" TextWrapping="Wrap" />
+                                                 Foreground="{DynamicResource AppMutedTextBrush}" TextWrapping="Wrap" />
                                     </ui:WindowsCard>
 
                                     <ui:WindowsCard Header="Build Number">
                                         <TextBlock x:Name="InfoBuildNumber"
                                                  Text="Not Read"
                                                  FontWeight="SemiBold"
-                                                 Foreground="#666666" TextWrapping="Wrap" />
+                                                 Foreground="{DynamicResource AppMutedTextBrush}" TextWrapping="Wrap" />
                                     </ui:WindowsCard>
 
                                     <ui:WindowsCard Header="Base Version">
                                         <TextBlock x:Name="InfoBaseVersion"
                                                  Text="Not Read"
                                                  FontWeight="SemiBold"
-                                                 Foreground="#666666" TextWrapping="Wrap" />
+                                                 Foreground="{DynamicResource AppMutedTextBrush}" TextWrapping="Wrap" />
                                     </ui:WindowsCard>
 
                                     <ui:WindowsCard Header="Custom Version">
                                         <TextBlock x:Name="InfoCustomVersion"
                                                  Text="Not Read"
                                                  FontWeight="SemiBold"
-                                                 Foreground="#666666" TextWrapping="Wrap" />
+                                                 Foreground="{DynamicResource AppMutedTextBrush}" TextWrapping="Wrap" />
                                     </ui:WindowsCard>
 
                                     <ui:WindowsCard Header="Preload Version">
                                         <TextBlock x:Name="InfoPreloadVersion"
                                                  Text="Not Read"
                                                  FontWeight="SemiBold"
-                                                 Foreground="#666666" TextWrapping="Wrap" />
+                                                 Foreground="{DynamicResource AppMutedTextBrush}" TextWrapping="Wrap" />
                                     </ui:WindowsCard>
                                 </StackPanel>
                             </ui:WindowsExpander>
@@ -710,7 +700,7 @@
                                            IsEnabled="{Binding PreloadUpdateFile.HasFile, Mode=OneWay}" Symbol="Delete16"/>
                                         </Grid>
 
-                                    <Border Background="#F5F5F5"
+                                    <Border Background="{DynamicResource AppSubtleBrush}"
                                         CornerRadius="8" 
                                         Padding="16" 
                                         Margin="0,16,0,0">
@@ -1223,7 +1213,7 @@
             </Grid>
 
         <Grid x:Name="GlobalInteractionOverlay" Grid.RowSpan="2" IsVisible="False"
-              Background="#91000000"
+              Background="{DynamicResource AppOverlayBrush}"
               VerticalAlignment="Stretch" HorizontalAlignment="Stretch">
             <Border Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
                     CornerRadius="8"

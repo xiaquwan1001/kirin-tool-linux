@@ -11,7 +11,7 @@ using Kirin_Tool.UI;
 using Kirin_Tool.Services;
 using Kirin_Tool.Models;
 
-AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+System.Environment.SetEnvironmentVariable("KIRIN_TOOL_SETTINGS_DIR", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kirin-tool-test-settings")); AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
 int checks = 0;
 void Check(bool ok, string name) { if (!ok) throw new Exception(name); Console.WriteLine("PASS " + name); checks++; }
 void Pump() { Dispatcher.UIThread.RunJobs(); AvaloniaHeadlessPlatform.ForceRenderTimerTick(); Dispatcher.UIThread.RunJobs(); }
@@ -28,7 +28,8 @@ captionButtons[1].RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
 Check(window.WindowState==WindowState.Maximized,"caption maximizes");
 captionButtons[1].RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Pump();
 Check(window.WindowState==WindowState.Normal,"caption restores");
-Check(window.Title.Contains("v2.4.8") && window.Title.Contains("Linux port by Redminote11tech"),"version and Linux-port attribution appear in the window title");
+var appVersion = typeof(Kirin_Tool.MainWindow).Assembly.GetName().Version?.ToString(3);
+Check(!string.IsNullOrEmpty(appVersion) && window.Title.Contains("v" + appVersion) && window.Title.Contains("Linux port by Redminote11tech"),"version and Linux-port attribution appear in the window title (v" + appVersion + ")");
 Check(caption.GetVisualDescendants().OfType<TextBlock>().Any(t=>t.Text==window.Title),"caption and desktop title agree");
 Capture("welcome",window);
 var nav=window.FindControl<ListBox>("NavigationListBox")!;

@@ -6,7 +6,7 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Kirin_Tool;
 
-AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
+System.Environment.SetEnvironmentVariable("KIRIN_TOOL_SETTINGS_DIR", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kirin-tool-test-settings")); AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
 Exception? unhandled = null;
 Dispatcher.UIThread.UnhandledException += (_, e) => { unhandled=e.Exception; e.Handled=true; };
 var owner=new MainWindow();owner.Show();

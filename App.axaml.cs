@@ -21,6 +21,7 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Kirin_Tool.Services;
 
 namespace Kirin_Tool;
 
@@ -29,10 +30,17 @@ public partial class App : Application
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
+
+        // The persisted theme (light by default) is applied before the first
+        // window is created so nothing is rendered in the wrong variant.
+        UserSettings.EnsureInitialized();
+        RequestedThemeVariant = UserSettings.CurrentThemeVariant;
     }
 
     public override void OnFrameworkInitializationCompleted()
     {
+        UserSettings.ApplyTheme();
+
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.MainWindow = new MainWindow();

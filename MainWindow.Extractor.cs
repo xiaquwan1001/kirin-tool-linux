@@ -62,23 +62,25 @@ public partial class MainWindow
 
     private async void BrowseExtractionSource_Click(object? sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog
-        {
-            Title = "Select Base, Cust or Preload UPDATE.APP",
-            AllowMultiple = false,
-            Filters = new() { new FileDialogFilter { Name = "UPDATE.APP files", Extensions = new() { "app", "APP" } },
-                new FileDialogFilter { Name = "All files", Extensions = new() { "*" } } }
-        };
-        var files = await dialog.ShowAsync(this);
-        if (files is { Length: > 0 }) await LoadExtractionSourceAsync(files[0]);
+        var selected = await _dialogService.ShowOpenFileDialog(
+            "Select Base, Cust or Preload UPDATE.APP",
+            new() { "app", "APP", "*" },
+            "UPDATE.APP files");
+        if (string.IsNullOrWhiteSpace(selected)) return;
+
+        await LoadExtractionSourceAsync(selected);
+        // Only remember an archive that actually parsed, so the next start does
+        // not re-read a broken file.
+        if (_extractionSource is not null) UserSettings.ExtractorSourcePath = selected;
     }
 
     private async void BrowseExtractionDestination_Click(object? sender, RoutedEventArgs e)
     {
-        string? folder = await new OpenFolderDialog { Title = "Choose Extraction Folder" }.ShowAsync(this);
+        var folder = await _dialogService.ShowOpenFolderDialog("Choose Extraction Folder");
         if (string.IsNullOrWhiteSpace(folder)) return;
         _extractionDestination = folder;
         ExtractorDestinationPath.Text = folder;
+        UserSettings.ExtractorDestinationPath = folder;
         UpdateExtractionSelection();
     }
 
