@@ -4,10 +4,10 @@ Version 2.4.8 retains the portable.1 build baseline. Build in
 Ubuntu 20.04 / glibc 2.31 with baseline x86-64 flags, not on the rolling-release
 host. No x86-64-v3/AVX2 requirement is introduced by the native client/USB bridge.
 .NET/Skia may select optional CPU optimizations at runtime. The self-contained
-.NET 8 runtime is bundled; Linux desktop graphics/font libraries, ICU and OpenSSL
+.NET 10 runtime is bundled (the official linux-x64 runtime only needs glibc 2.27, so the 2.31 baseline still holds); Linux desktop graphics/font libraries, ICU and OpenSSL
 remain host dependencies. This does not mean literally every Linux system works.
 
-Build example inside a Ubuntu 20.04 container with .NET 8 SDK installed:
+Build example inside a Ubuntu 20.04 container with .NET 10 SDK installed:
 
 ```sh
 apt-get update

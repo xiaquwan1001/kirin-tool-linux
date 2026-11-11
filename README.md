@@ -156,7 +156,7 @@ Use separate output folders when extracting multiple archives with overlapping n
 
 ### Build from source
 
-Install the .NET 8 SDK and [native build prerequisites](fastboot-modern/README.md), then build all managed and native components together. The output directory must not already exist:
+Install the .NET 10 SDK (the app targets `net10.0`; .NET 8 reached end of support on 2026-11-10) and [native build prerequisites](fastboot-modern/README.md), then build all managed and native components together. The output directory must not already exist:
 
 ```bash
 git clone https://github.com/Redminote11tech/kirin-tool-linux.git
