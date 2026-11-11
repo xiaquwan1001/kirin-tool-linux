@@ -32,8 +32,39 @@ Huawei-parity build), and presence of `loaders/hisi990/fastboot.ktl` and `libkir
 ```
 
 `Depends` covers glibc, X11/ICE/SM, fontconfig/freetype, libusb, zlib, ICU and OpenSSL. The app tree is
-Qt/GTK-free (Avalonia/Skia). `postinst` reloads udev rules; add yourself to `adbusers` for non-desktop
-sessions.
+Qt/GTK-free (Avalonia/Skia). `postinst` reloads udev rules and runs a non-fatal runtime self-check; add
+yourself to `adbusers` for non-desktop sessions.
+
+### Dependency policy (ICU / OpenSSL)
+
+Two runtime dependencies cannot be pinned to a single package name, because their package names change
+between distributions and dpkg alternatives have **no wildcard support** — `Depends:` can only list
+exact package names joined with `|`:
+
+| Dependency | Written as | Why |
+|---|---|---|
+| ICU | `libicu78 \| libicu76 \| libicu74 \| libicu72 \| libicu71 \| libicu70 \| libicu66 \| libicu-dev` | the ICU `soname` grows with every release (20.04 = 66, 22.04 = 70, 24.04 = 74, 26.04 = 78) |
+| OpenSSL 3 | `libssl3t64 \| libssl3 \| libssl1.1` | 24.04+ renamed `libssl3` to `libssl3t64` for the 64-bit `time_t` transition |
+
+The deb ships a **self-contained** .NET app, but .NET still P/Invokes the *system* ICU (globalization) and
+OpenSSL, so the packages must be satisfiable from the target archive. Hard-coding one soname is what
+broke installs before: the file listed `libicu76 | libicu74 | ... | libicu66` and Ubuntu 26.04 (only
+`libicu78`) therefore rejected the package with `Unable to satisfy dependencies`. A hard-coded list is
+always one release behind, so the list is newest-first, keeps `libicu66` for the glibc 2.31 container
+builds, and ends with `libicu-dev`, which exists in every archive and pulls the matching runtime.
+
+Both lists live in one place at the top of `packaging/build-deb.sh` (`ICU_DEPENDS` / `SSL_DEPENDS`); a
+new distribution means adding one alternative there and nothing else.
+
+Guards against regression:
+
+- `packaging-smoke` in `cli-mcp-ci.yml` runs on a matrix (`ubuntu-latest` + `ubuntu-24.04`) and, after
+  building a deb from a synthetic publish tree, runs `apt-get -s --no-install-recommends install ./dist/*.deb`.
+  A simulation resolves the real `Depends` against that runner's archive without installing anything (no
+  root needed); "`but it is not installable`" / "`Unable to satisfy`" fails the job.
+- `postinst` additionally probes `ldconfig -p` for `libicuuc.so*` at install time and prints actionable
+  advice (`apt install libicu-dev`, or `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` as a last resort). The
+  check is diagnostic only: it never fails the installation.
 
 ## Releasing
 

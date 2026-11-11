@@ -22,6 +22,23 @@ PKG=kirin-tool-linux
 APP=/usr/lib/$PKG
 ARCH=amd64
 
+# ---- runtime dependencies ----
+# dpkg alternatives ("a | b") accept only exact package names: there is no
+# wildcard/soname-range syntax, so every ICU soname the app may meet has to be
+# listed explicitly. ICU sonames grow with each distribution:
+#   Ubuntu 20.04 = libicu66, 22.04/24.04 = libicu70/74, 26.04 = libicu78, ...
+# The app is a self-contained .NET build but .NET still P/Invokes the *system*
+# ICU, so keep this list newest-first, keep libicu66 for the glibc 2.31
+# container builds, and end with libicu-dev as the catch-all that always exists
+# in the archive. When a new distribution bumps the soname again, add one item
+# here (and nothing else).
+ICU_DEPENDS='libicu78 | libicu76 | libicu74 | libicu72 | libicu71 | libicu70 | libicu66 | libicu-dev'
+
+# Ubuntu 24.04+ renamed the OpenSSL 3 runtime package for the 64-bit time_t
+# transition (libssl3 -> libssl3t64), so both names have to be alternated;
+# libssl1.1 keeps older releases (20.04 and earlier) installable.
+SSL_DEPENDS='libssl3t64 | libssl3 | libssl1.1'
+
 [ -d "$PUBLISH" ] || { echo "✗ publish dir not found: $PUBLISH" >&2; exit 1; }
 [ -x "$PUBLISH/Kirin-Tool" ] || { echo "✗ $PUBLISH/Kirin-Tool is not executable (run packaging/publish.sh first)" >&2; exit 1; }
 if [ -n "$CLI_BINARY" ] && [ ! -x "$CLI_BINARY" ]; then echo "✗ CLI binary not executable: $CLI_BINARY" >&2; exit 1; fi
@@ -70,6 +87,25 @@ fi
 if ! getent group adbusers >/dev/null 2>&1; then
   echo "kirin-tool-linux: 提示：未发现 adbusers 组；普通用户需自行把 udev 规则里的 GROUP 改成有权限的组。" >&2
 fi
+
+# Runtime self-check (non-fatal). The app is a self-contained .NET build, but
+# .NET still loads the *system* ICU for globalization. A missing ICU makes the
+# GUI fail at startup on some distributions, so warn loudly -- and never fail
+# the installation because of a diagnostic, hence the trailing "exit 0".
+icu_missing=1
+if ldconfig -p 2>/dev/null | grep -q 'libicuuc\.so'; then icu_missing=0; fi
+if [ "$icu_missing" -ne 0 ]; then
+  # printf (a shell builtin) instead of cat + heredoc: the diagnostic must not be
+  # able to turn into a non-zero exit even on a stripped-down PATH.
+  printf '%s\n' \
+    'kirin-tool-linux: 警告：未检测到 ICU 运行库（libicuuc.so*）。' \
+    '  本程序是 self-contained .NET 构建，但仍需要系统 ICU 才能正常启动（大小写/排序/区域化）。' \
+    '  处置：' \
+    '    1) sudo apt install libicu-dev   # 或发行版对应的 libicu<版本号> 包' \
+    '    2) 若确实无法安装 ICU，可设置 DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 以不变模式运行' \
+    '       （会失去本地化/排序正确性，仅作兜底）。' \
+    '  安装本身已成功，此提示不影响安装结果。' >&2 2>/dev/null || true
+fi
 exit 0
 POSTINST
 chmod 755 "$SUITE/DEBIAN/postinst"
@@ -97,8 +133,8 @@ Description: Huawei Kirin flash / unlock / repair tool (GUI + headless CLI)
  Headless usage: kirin-tool-cli --help, or wire it as an MCP stdio server
  (kirin-tool-cli mcp).
 Depends: libc6 (>= 2.31), libx11-6, libice6, libsm6, libfontconfig1, libfreetype6,
- libusb-1.0-0, zlib1g, libicu76 | libicu74 | libicu72 | libicu71 | libicu70 | libicu66,
- libssl3 | libssl1.1
+ libusb-1.0-0, zlib1g, $ICU_DEPENDS,
+ $SSL_DEPENDS
 Conflicts: kirin-tool-linux-unstable
 Replaces: kirin-tool-linux-unstable
 Recommends: android-tools-adb, usbutils

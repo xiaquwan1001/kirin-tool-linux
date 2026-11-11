@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   build-cli:
-    name: build CLI + MCP entry (net8.0)
+    name: build CLI + MCP entry (net10.0)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -48,10 +48,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up .NET 8 SDK
+      - name: Set up .NET 10 SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Show SDK info
         run: dotnet --info
@@ -153,10 +153,21 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # The deb writer is distribution-sensitive: Depends names (libicu<soname>,
+  # libssl3 vs libssl3t64) differ per release, and a wrong name makes the package
+  # uninstallable on the user's machine while still building fine. Hence a matrix:
+  # ubuntu-latest (currently 24.04) plus an explicitly pinned 24.04 runner, each
+  # of which also *resolves* the Depends against that release's archive.
   packaging-smoke:
-    name: deb packaging smoke (synthetic publish tree)
-    runs-on: ubuntu-latest
+    name: deb packaging smoke (synthetic publish tree, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -191,3 +202,35 @@ jobs:
             grep -qF "$f" /tmp/contents.txt
           done
           echo 'deb packaging smoke OK'
+
+      # Guard against Depends drift: resolve the generated control file against
+      # *this* runner's archive. apt-get -s does a full dependency simulation
+      # without installing anything (no root needed), so an unsatisfiable
+      # "libicu<soname>" or "libssl3" is reported here instead of on a user's
+      # machine. Real-world failure this catches:
+      #   kirin-tool-linux : 依赖: libicu76 但无法安装它 或 libicu74 ... libicu66
+      - name: Assert Depends are satisfiable on this runner
+        run: |
+          set -euo pipefail
+          DEB="$(ls "$PWD"/dist/*.deb)"
+          # Runners normally ship a populated apt index; refresh it anyway so the
+          # simulation resolves against the same archive a user would see.
+          sudo apt-get update -qq
+          . /etc/os-release
+          echo "simulating install of $DEB on ${PRETTY_NAME}"
+          out=/tmp/apt-simulate.txt
+          set +e
+          apt-get -s --no-install-recommends install "$DEB" >"$out" 2>&1
+          rc=$?
+          set -e
+          cat "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::apt-get -s failed (rc=$rc) for $DEB on ${PRETTY_NAME}"
+            exit 1
+          fi
+          if grep -qiE 'unmet dependencies|not installable|Unable to satisfy|无法安装' "$out"; then
+            echo "::error::unsatisfiable Depends in $DEB on ${PRETTY_NAME}"
+            grep -iE 'libicu|libssl|not installable|无法安装|Unable to satisfy|依赖' "$out" || true
+            exit 1
+          fi
+          echo 'dependency simulation OK'

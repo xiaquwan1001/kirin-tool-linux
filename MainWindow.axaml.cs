@@ -372,7 +372,17 @@ namespace Kirin_Tool
                 }
 
                 var skipSecure = partitionSelector.SkipSecurePartitions;
-                await FlashPartitionsProcess(selectedPartitions, skipSecure);
+                bool allowRedline = await ConfirmRedlineWriteAsync(
+                    selectedPartitions
+                        .Where(p => !(skipSecure && IsSecurePartition(p.Name, p.Identifier)))
+                        .SelectMany(p => new[] { p.Name, p.Identifier }),
+                    "Flashing the selected partitions of the flashing XML");
+                if (!allowRedline)
+                {
+                    return;
+                }
+
+                await FlashPartitionsProcess(selectedPartitions, skipSecure, allowRedline);
             }
             catch (Exception ex)
             {
@@ -531,7 +541,7 @@ namespace Kirin_Tool
             return (allSuccessful, message, successCount, totalCount);
         }
 
-        private async Task FlashPartitionsProcess(List<FastbootPartition> selectedPartitions, bool skipSecure = false)
+        private async Task FlashPartitionsProcess(List<FastbootPartition> selectedPartitions, bool skipSecure = false, bool allowRedline = false)
         {
 
             var partitionInfos = ConvertToPartitionInfo(selectedPartitions);
@@ -552,7 +562,7 @@ namespace Kirin_Tool
 
                 var flashResult = await Task.Run(async () =>
                 {
-                    return await FlashPartitionsWithProgress(selectedPartitions, progressDialog, cancellationTokenSource.Token, skipSecure);
+                    return await FlashPartitionsWithProgress(selectedPartitions, progressDialog, cancellationTokenSource.Token, skipSecure, allowRedline);
                 }, cancellationTokenSource.Token);
 
                 progressDialog.SetOverallComplete(flashResult.IsSuccess, flashResult.Message);
@@ -588,7 +598,8 @@ namespace Kirin_Tool
         List<FastbootPartition> selectedPartitions,
         ProcessDialogUapp progressDialog,
         CancellationToken cancellationToken,
-        bool skipSecure = false)
+        bool skipSecure = false,
+        bool allowRedline = false)
         {
             int successCount = 0;
             int totalCount = selectedPartitions.Count;
@@ -601,11 +612,23 @@ namespace Kirin_Tool
                 {
                     var partition = selectedPartitions[i];
 
-                    if (skipSecure && IsSecurePartition(partition.Name, partition.Identifier))
+                    if (IsSecurePartition(partition.Name, partition.Identifier))
                     {
-                        progressDialog.CompletePartition(partition.Name, true, "Skipped");
-                        successCount++;
-                        continue;
+                        if (skipSecure)
+                        {
+                            progressDialog.CompletePartition(partition.Name, true, "Skipped");
+                            successCount++;
+                            continue;
+                        }
+
+                        // Defensive second gate: the entry point already asked the user, but a
+                        // redline partition is never written without that explicit opt-in.
+                        if (!allowRedline)
+                        {
+                            progressDialog.CompletePartition(partition.Name, false, "Blocked: redline partition");
+                            lastError = $"Blocked write to redline partition {partition.Name}";
+                            continue;
+                        }
                     }
 
                     try
@@ -922,6 +945,11 @@ namespace Kirin_Tool
                 return;
             }
 
+            if (!await ConfirmRedlineWriteAsync(allPartitions.Select(p => p.Partition.Name), "The USB Update flash"))
+            {
+                return;
+            }
+
             var flashDialog = new ProcessDialogUapp(allPartitions, cancellationTokenSource);
             flashDialog.IsUsbUpdateMode = true;
             flashDialog.Title = "USB Update Flash Progress";
@@ -1073,6 +1101,14 @@ namespace Kirin_Tool
                 return;
             }
 
+            bool allowRedline = await ConfirmRedlineWriteAsync(
+                allPartitions.Select(p => p.Partition.Name),
+                "The Full OTA flash");
+            if (!allowRedline)
+            {
+                return;
+            }
+
             var selectedFileTypes = new List<string>();
             if (BasePtableFile.HasFile) selectedFileTypes.Add("Base PTABLE");
             if (BaseUpdateFile.HasFile) selectedFileTypes.Add("Base UPDATE");
@@ -1097,7 +1133,7 @@ namespace Kirin_Tool
 
                 var flashResult = await Task.Run(async () =>
                 {
-                    return await FlashFullOtaPartitions(allPartitions, flashDialog, cancellationTokenSource.Token);
+                    return await FlashFullOtaPartitions(allPartitions, flashDialog, cancellationTokenSource.Token, allowRedline);
                 }, cancellationTokenSource.Token);
 
                 flashDialog.SetOverallComplete(flashResult.IsSuccess, flashResult.Message);
@@ -1132,7 +1168,8 @@ namespace Kirin_Tool
         private async Task<(bool IsSuccess, string Message)> FlashFullOtaPartitions(
         List<(PartitionInfo Partition, string Source)> partitions,
         ProcessDialogUapp progressDialog,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowRedline = false)
         {
             int successCount = 0;
             int totalCount = partitions.Count;
@@ -1206,6 +1243,13 @@ namespace Kirin_Tool
                     try
                     {
                         cancellationToken.ThrowIfCancellationRequested();
+
+                        if (!allowRedline && IsRedlinePartition(partition.Name))
+                        {
+                            progressDialog.CompletePartitionByIndex(i, false, "Blocked: redline partition");
+                            lastError = $"Blocked write to redline partition {partition.Name}";
+                            continue;
+                        }
 
                         progressDialog.UpdateCurrentPartitionByIndex(i, source == "Merged Super" ? "Preparing merged image..." : $"Extracting from {source}...", 25);
 
@@ -1671,12 +1715,61 @@ namespace Kirin_Tool
             return skipPartitions.Any(skip => lowerName.Contains(skip));
         }
 
+        // Device-keyed partitions: a write here is unrecoverable without a verified backup.
+        // Token list mirrors the CLI's FlashPolicy.Redline (Cli/Commands/OtaFlashRunner.cs);
+        // the exact-name list keeps the older GUI guard for the baseband calibration set.
+        private static readonly string[] RedlinePartitionTokens =
+        {
+            "oeminfo", "nvme", "modem_secure", "persist", "modemnvm",
+            "certification", "hisee_encos", "veritykey"
+        };
+
+        private static readonly string[] RedlinePartitionExactNames = { "nvm", "modemst1", "modemst2", "fsg" };
+
+        internal static bool IsRedlinePartition(string partitionName)
+        {
+            if (string.IsNullOrWhiteSpace(partitionName)) return false;
+
+            string lower = partitionName.Trim().ToLowerInvariant();
+            if (RedlinePartitionExactNames.Any(p => lower.Equals(p, StringComparison.Ordinal))) return true;
+
+            return RedlinePartitionTokens.Any(token => lower.Contains(token, StringComparison.Ordinal));
+        }
+
+        private static List<string> RedlinePartitionHits(IEnumerable<string> partitionNames)
+        {
+            return (partitionNames ?? Enumerable.Empty<string>())
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Where(IsRedlinePartition)
+                .Select(name => name.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Hard gate in front of every GUI write path. Returns false before a single write
+        /// when the pending set touches a redline partition and the user does not explicitly
+        /// confirm THIS operation; the confirmation is never remembered between operations.
+        /// </summary>
+        private async Task<bool> ConfirmRedlineWriteAsync(IEnumerable<string> partitionNames, string operation)
+        {
+            var hits = RedlinePartitionHits(partitionNames);
+            if (hits.Count == 0) return true;
+
+            string message =
+                $"{operation} would write {hits.Count} device-keyed (redline) partition(s):\n\n" +
+                string.Join("\n", hits.Select(name => $"- {name}")) +
+                "\n\nThese partitions carry the device identity, baseband calibration and key/DRM material. " +
+                "A wrong image is unrecoverable without a verified backup and can brick the device or permanently break the modem.\n\n" +
+                "Nothing has been written yet. Continue only if you have a verified backup of these partitions.";
+
+            bool confirmed = await _dialogService.ShowConfirmDialog("Redline Partition Write", message, "Write Anyway", "Cancel");
+            return confirmed;
+        }
+
         private bool IsSecurePartition(string name, string identifier)
         {
-            var securePartitions = new[] { "modem_secure", "oeminfo", "nvme", "nvm", "modemst1", "modemst2", "fsg", "persist" };
-            return securePartitions.Any(p => 
-                (name != null && name.Equals(p, StringComparison.OrdinalIgnoreCase)) ||
-                (identifier != null && identifier.Equals(p, StringComparison.OrdinalIgnoreCase)));
+            return IsRedlinePartition(name) || IsRedlinePartition(identifier);
         }
 
         private async Task HandleFrpRemove()
@@ -1784,6 +1877,12 @@ namespace Kirin_Tool
 
             var rescuePlan = RescuePartitionPlan.ForChip(GetSelectedCpu());
             var rescuePartitions = rescuePlan.Select(entry => entry.Image).ToList();
+
+            bool allowRedlineRescue = await ConfirmRedlineWriteAsync(rescuePartitions, "The rescue image flash");
+            if (!allowRedlineRescue)
+            {
+                return;
+            }
             var partitionInfos = rescuePartitions.Select(p => new PartitionInfo { Name = p, Size = 0, FormattedSize = "" }).ToList();
             var progressDialog = new ProcessDialogUapp(partitionInfos, cancellationTokenSource);
             progressDialog.Title = "Reboot to USB Update Progress";
@@ -1857,6 +1956,13 @@ namespace Kirin_Tool
                         if (pInfo == null)
                         {
                             progressDialog.CompletePartitionByIndex(i, false, "Not found in UPDATE.APP");
+                            allSuccess = false;
+                            continue;
+                        }
+
+                        if (!allowRedlineRescue && IsRedlinePartition(pName))
+                        {
+                            progressDialog.CompletePartitionByIndex(i, false, "Blocked: redline partition");
                             allSuccess = false;
                             continue;
                         }
@@ -1954,6 +2060,92 @@ namespace Kirin_Tool
             );
         }
 
+        private enum UnlockOutcome
+        {
+            Success,
+            Failed,
+            AlreadyUnlockedNoWrite,
+            Unknown
+        }
+
+        /// <summary>
+        /// Classifies "fastboot oem unlock" output. The temporary BootROM-injected loader
+        /// answers "already fastboot unlocked" without ever writing the userlock: nothing is
+        /// written, ro.boot.flash.locked stays 1 and the device is still locked after a
+        /// reboot. That answer must never be reported as a successful unlock.
+        /// </summary>
+        private static UnlockOutcome ClassifyUnlock(string output)
+        {
+            string lower = (output ?? string.Empty).ToLowerInvariant();
+
+            bool alreadyUnlocked = lower.Contains("already fastboot unlocked") ||
+                                   (lower.Contains("failed") && lower.Contains("already") && lower.Contains("unlocked")) ||
+                                   (lower.Contains("already") && lower.Contains("unlocked") && lower.Contains("remote"));
+            if (alreadyUnlocked) return UnlockOutcome.AlreadyUnlockedNoWrite;
+
+            // Failure wins over success: fastboot prints "OKAY" for every command it sent and
+            // still appends "FAILED" when the bootloader refuses the unlock. Reporting such a
+            // run as a success is the exact mis-reporting this classifier exists to prevent.
+            if (lower.Contains("error") || lower.Contains("failed")) return UnlockOutcome.Failed;
+
+            if (lower.Contains("the device will reboot and do factory reset") || lower.Contains("okay"))
+                return UnlockOutcome.Success;
+
+            return UnlockOutcome.Unknown;
+        }
+
+        private static string OutputTail(string output, int maxChars = 400)
+        {
+            string trimmed = (output ?? string.Empty).Trim();
+            if (trimmed.Length == 0) return "(the loader printed nothing)";
+            return trimmed.Length <= maxChars ? trimmed : "..." + trimmed.Substring(trimmed.Length - maxChars);
+        }
+
+        /// <summary>
+        /// Reports the classified unlock outcome. The classification and the fastboot exit
+        /// code must agree before anything is called a success.
+        /// </summary>
+        private async Task ShowUnlockOutcome(UnlockOutcome outcome, bool processSucceeded, string output)
+        {
+            switch (outcome)
+            {
+                case UnlockOutcome.AlreadyUnlockedNoWrite:
+                    await ShowMessageBox("No Write Performed",
+                        "The loader answered \"already fastboot unlocked\" (e.g. FAILED (remote: 'already fastboot unlocked')).\n\n" +
+                        "This reply comes from the temporary BootROM-injected loader. This unlock path never writes the userlock, so:\n" +
+                        "- no partition was written,\n" +
+                        "- nothing on the device changed,\n" +
+                        "- after a reboot the device is still locked (ro.boot.flash.locked stays 1).\n\n" +
+                        "The 'unlocked' line printed by 'fastboot oem get-bootinfo' is an artefact of that temporary loader, not a real unlock.\n\n" +
+                        "A real unlock needs a board-level (BD) bootloader or a patched fastboot build (route E).\n\n" +
+                        $"(fastboot exited successfully: {(processSucceeded ? "yes" : "no")})");
+                    break;
+
+                case UnlockOutcome.Success when processSucceeded:
+                    await ShowMessageBox("Success", "Your device's bootloader has been unlocked successfully!");
+                    break;
+
+                case UnlockOutcome.Success:
+                    await ShowMessageBox("Failed",
+                        "The loader printed an unlock message but fastboot did not exit successfully, so no unlock is confirmed.\n\n" +
+                        $"fastboot exit code was non-zero.\n\nLast output:\n{OutputTail(output)}");
+                    break;
+
+                case UnlockOutcome.Failed:
+                    await ShowMessageBox("Failed",
+                        "Failed to unlock the bootloader of your device.\n\n" +
+                        $"Last output:\n{OutputTail(output)}");
+                    break;
+
+                default:
+                    await ShowMessageBox("No Write Confirmed",
+                        "The unlock command printed neither OKAY nor ERROR, so this is treated as not written: no unlock is confirmed and " +
+                        "the device is expected to stay locked after a reboot.\n\n" +
+                        $"Last output:\n{OutputTail(output)}");
+                    break;
+            }
+        }
+
         private async Task HandleUnlockBootloader()
         {
             if (!await _fastbootClient.IsDeviceConnected())
@@ -1965,23 +2157,18 @@ namespace Kirin_Tool
             try
             {
                 string fullOutput = string.Empty;
-                bool alreadyUnlocked = false;
                 var outputLock = new object();
-                TaskCompletionSource<bool> alreadyUnlockedDetected = new TaskCompletionSource<bool>();
+                TaskCompletionSource<bool> alreadyUnlockedDetected =
+                    new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
                 var progress = new Progress<string>(output =>
                 {
                     lock (outputLock)
                     {
                         fullOutput = output;
-                        
-                        string lowerOutput = output.ToLower();
-                        
-                        if (!alreadyUnlocked && (lowerOutput.Contains("already fastboot unlocked") ||
-                                                 (lowerOutput.Contains("failed") && lowerOutput.Contains("already") && lowerOutput.Contains("unlocked")) ||
-                                                 (lowerOutput.Contains("already") && lowerOutput.Contains("unlocked") && lowerOutput.Contains("remote"))))
+
+                        if (ClassifyUnlock(output) == UnlockOutcome.AlreadyUnlockedNoWrite)
                         {
-                            alreadyUnlocked = true;
                             alreadyUnlockedDetected.TrySetResult(true);
                         }
                     }
@@ -1989,71 +2176,47 @@ namespace Kirin_Tool
 
                 var unlockTask = _fastbootClient.UnlockBootloaderAsync(progress);
 
-                var alreadyUnlockedTask = alreadyUnlockedDetected.Task;
-                var checkTask = await Task.WhenAny(unlockTask, Task.Delay(2000));
+                var firstCompleted = await Task.WhenAny(unlockTask, alreadyUnlockedDetected.Task, Task.Delay(2000));
+                bool outcomeKnown = firstCompleted == unlockTask || firstCompleted == alreadyUnlockedDetected.Task;
 
-                if (alreadyUnlockedTask.IsCompleted && alreadyUnlocked)
+                if (!outcomeKnown)
                 {
-                    await ShowMessageBox("Already Unlocked", "The device's bootloader is already unlocked.");
-                    return;
-                }
+                    var confirmResult = await _dialogService.ShowConfirmDialog("Action Needed", "Please press the POWER button on your device, then click 'I Pressed It'.", "I Pressed It", "Cancel");
 
-                if (checkTask == unlockTask)
-                {
-                    string currentOutput;
-                    lock (outputLock)
+                    if (confirmResult != true)
                     {
-                        currentOutput = fullOutput;
-                    }
-                    
-                    string lowerOutput = currentOutput.ToLower();
-                    if (lowerOutput.Contains("already fastboot unlocked") ||
-                        (lowerOutput.Contains("failed") && lowerOutput.Contains("already") && lowerOutput.Contains("unlocked")) ||
-                        (lowerOutput.Contains("already") && lowerOutput.Contains("unlocked") && lowerOutput.Contains("remote")))
-                    {
-                        await ShowMessageBox("Already Unlocked", "The device's bootloader is already unlocked.");
                         return;
                     }
                 }
 
-                var confirmResult = await _dialogService.ShowConfirmDialog("Action Needed", "Please press the POWER button on your device, then click 'I Pressed It'.", "I Pressed It", "Cancel");
-
-                if (confirmResult != true)
+                (bool IsSuccess, string Output) unlockResult;
+                if (unlockTask.IsCompleted)
                 {
-                    return;
+                    unlockResult = await unlockTask;
                 }
-
-                var unlockResult = await unlockTask;
-
-                string finalOutput = unlockResult.Output;
-                string lowerFinalOutput = finalOutput.ToLower();
-                
-                if (lowerFinalOutput.Contains("already fastboot unlocked") ||
-                    (lowerFinalOutput.Contains("failed") && lowerFinalOutput.Contains("already") && lowerFinalOutput.Contains("unlocked")) ||
-                    (lowerFinalOutput.Contains("already") && lowerFinalOutput.Contains("unlocked") && lowerFinalOutput.Contains("remote")))
+                else if (outcomeKnown)
                 {
-                    await ShowMessageBox("Already Unlocked", "The device's bootloader is already unlocked.");
-                    return;
-                }
-                
-                bool isSuccess = finalOutput.Contains("The device will reboot and do factory reset") ||
-                                finalOutput.ToUpper().Contains("OKAY");
-                
-                bool isFailure = finalOutput.ToUpper().Contains("ERROR") ||
-                               finalOutput.ToUpper().Contains("FAILED");
-
-                if (isSuccess)
-                {
-                    await ShowMessageBox("Success", "Your devices bootloader has been unlocked successfully!");
-                }
-                else if (isFailure)
-                {
-                    await ShowMessageBox("Failed", "Failed to unlock the bootloader of your device!");
+                    // The loader already refused the write; the process exits on its own.
+                    // Do not hang the UI if it does not.
+                    await Task.WhenAny(unlockTask, Task.Delay(5000));
+                    if (unlockTask.IsCompleted)
+                    {
+                        unlockResult = await unlockTask;
+                    }
+                    else
+                    {
+                        lock (outputLock)
+                        {
+                            unlockResult = (false, fullOutput);
+                        }
+                    }
                 }
                 else
                 {
-                    await ShowMessageBox("Completed", "Unlock process completed.");
+                    unlockResult = await unlockTask;
                 }
+
+                await ShowUnlockOutcome(ClassifyUnlock(unlockResult.Output), unlockResult.IsSuccess, unlockResult.Output);
             }
             catch (Exception ex)
             {
@@ -2241,6 +2404,13 @@ namespace Kirin_Tool
 
         private async Task FlashOemInfoToDevice(string filePath)
         {
+            // OEMInfo is a redline partition: the conversion prompt above is not an opt-in
+            // for the write itself.
+            if (!await ConfirmRedlineWriteAsync(new[] { "oeminfo" }, "Writing the converted OEMInfo"))
+            {
+                return;
+            }
+
             try
             {
                 var progressDialog = new ProgressDialog(new ObservableCollection<ProgressItemViewModel>

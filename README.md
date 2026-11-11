@@ -16,8 +16,10 @@ Extract UPDATE.APP partitions · Flash compatible Kirin devices · Read device i
 An unofficial, independently maintained Linux port of [Kirin-Tool](https://github.com/kethily-daniel/Kirin-Tool) for Huawei / HiSilicon Kirin devices.
 
 > **This checkout is the `xiaquwan1001` fork.** On top of upstream 2.4.8 it carries a headless CLI + MCP
-> stdio entry point and a real Full-OTA write path (`flash-ota`), the GUI scroll/focus fixes, and GUI QoL
-> (remembers the last CPU model / paths / folders across runs, plus Light / Dark / Follow-system theming). It builds
+> stdio entry point and a real Full-OTA write path (`flash-ota`), the GUI scroll/focus fixes, GUI QoL
+> (remembers the last CPU model / paths / folders across runs, plus Light / Dark / Follow-system theming),
+> and honest unlock reporting (a temporary loader's "already fastboot unlocked" is reported as *no write*,
+> and every GUI write path is gated on the device-keyed redline partitions). It targets **.NET 10** and builds
 > three Linux delivery formats itself — `.deb`, `.AppImage`, `.tar.gz` — and a single-file CLI binary;
 > see [docs/fork-release.md](docs/fork-release.md). The upstream PRs for these changes live in
 > `feat/cli-and-mcp-entry`, `feat/ota-flash` and `fix/gui-scroll-and-dialog-order`.
