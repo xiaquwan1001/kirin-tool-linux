@@ -38,10 +38,22 @@ build:
     dotnet restore KirinTool.Cli/KirinTool.Cli.csproj
     dotnet build Kirin-Tool.csproj -c Release --no-restore -p:NuGetAudit=false
     dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release --no-restore -p:NuGetAudit=false
+    # Stage a slim artifact: the raw bin tree is ~250 MB (Skia/Avalonia native
+    # runtimes for win/osx/arm/musl) and the coordinator rejects it with
+    # "413 Request Entity Too Large". Bundled firmware (loaders/, fastboot/) is
+    # licensed asset content, not a build product, so it is excluded too.
+    mkdir -p artifact/KirinTool.Cli
+    rsync -a --exclude 'runtimes/' --exclude 'loaders/' --exclude 'fastboot/' \
+             --exclude 'fastboot-modern/' --exclude '*.pdb' --exclude '*.dbg' \
+             KirinTool.Cli/bin/Release/net10.0/ artifact/KirinTool.Cli/
+    mkdir -p artifact/KirinTool.Cli/runtimes
+    rsync -a KirinTool.Cli/bin/Release/net10.0/runtimes/linux-x64 artifact/KirinTool.Cli/runtimes/
+    find artifact -type f -size +25M -print -delete
+    du -sh artifact/KirinTool.Cli
   artifacts:
     name: "kirin-tool-cli-$CI_COMMIT_SHORT_SHA"
     paths:
-      - KirinTool.Cli/bin/Release/net10.0/
+      - artifact/KirinTool.Cli/
     expire_in: 7 days
 
 # Same hardware-free suite list as cli-mcp-ci.yml. Hardware probes
@@ -66,7 +78,7 @@ smoke:
   needs: ["build"]
   script: |
     set -euo pipefail
-    cli=KirinTool.Cli/bin/Release/net10.0/KirinTool.Cli
+    cli="$CI_PROJECT_DIR/artifact/KirinTool.Cli/KirinTool.Cli"
     test -x "$cli"
 
     "$cli" --help | tee /tmp/help.txt
