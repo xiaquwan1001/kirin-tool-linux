@@ -81,7 +81,8 @@ namespace Kirin_Tool.Services.USBUpdate
                                 File.Delete(imgPath);
                                 File.Delete(headerPath);
                             }
-                            catch { }
+                            catch (IOException) { /* keep extracting if cleanup of empty image fails */ }
+                            catch (UnauthorizedAccessException) { /* keep extracting if cleanup of empty image fails */ }
                             continue;
                         }
                     }
@@ -273,7 +274,8 @@ namespace Kirin_Tool.Services.USBUpdate
                                 File.Delete(imgPath);
                                 File.Delete(headerPath);
                             }
-                            catch { }
+                            catch (IOException) { /* keep extracting if cleanup of empty image fails */ }
+                            catch (UnauthorizedAccessException) { /* keep extracting if cleanup of empty image fails */ }
                             continue;
                         }
                     }

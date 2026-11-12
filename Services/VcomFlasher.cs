@@ -24,6 +24,7 @@ using System.IO;
 using System.IO.Ports;
 using System.Linq;
 using System.Management;
+using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -51,7 +52,12 @@ namespace Kirin_Tool.Services
             // Keep Windows and other drivers on their original settings.
             bool bulkOnly = OperatingSystem.IsLinux() &&
                 LinuxSerialPortFinder.IsPortUsingDriver(portName, "option");
-            _serialPort = new SerialPort(portName, 115200)
+            // Close any previously opened instance first so a repeated
+            // Connect() (e.g. after replug) is idempotent instead of throwing
+            // "access denied" on a still-held port handle.
+            Dispose();
+
+            var serialPort = new SerialPort(portName, 115200)
             {
                 Handshake = bulkOnly ? Handshake.None : Handshake.RequestToSend,
 
@@ -60,7 +66,17 @@ namespace Kirin_Tool.Services
                 ReadTimeout = 10000,
                 WriteTimeout = 10000
             };
-            _serialPort.Open();
+            try
+            {
+                serialPort.Open();
+            }
+            catch
+            {
+                // Do not leak the half-open port instance on failure.
+                serialPort.Dispose();
+                throw;
+            }
+            _serialPort = serialPort;
         }
 
         public async Task ReconnectAfterCableAsync()
@@ -229,6 +245,7 @@ namespace Kirin_Tool.Services
             return null;
         }
 
+        [SupportedOSPlatform("windows")]
         private static string FindWindowsPortByVidPid(int vid, int pid)
         {
             string pattern = $"VID_{vid:X4}&PID_{pid:X4}";

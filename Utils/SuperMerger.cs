@@ -131,7 +131,13 @@ namespace Kirin_Tool.Utils
 
         private static T ReadStruct<T>(BinaryReader reader) where T : struct
         {
-            byte[] bytes = reader.ReadBytes(Marshal.SizeOf<T>());
+            int required = Marshal.SizeOf<T>();
+            byte[] bytes = reader.ReadBytes(required);
+            if (bytes.Length < required)
+            {
+                throw new EndOfStreamException(
+                    $"Short read while parsing {typeof(T).Name}: expected {required} bytes, got {bytes.Length}.");
+            }
             GCHandle handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
             try { return Marshal.PtrToStructure<T>(handle.AddrOfPinnedObject()); }
             finally { handle.Free(); }

@@ -80,8 +80,8 @@ internal static class McpServer
                             await WriteAsync(output, ErrorResponse(id, -32602, "Invalid params: missing tool name"));
                             break;
                         }
-                        JsonObject callResult = await CallToolAsync(parameters, log, cancellationToken);
-                        await WriteAsync(output, ResultResponse(id!, callResult));
+                        JsonObject callResponse = await CallToolAsync(id!, parameters, log, cancellationToken);
+                        await WriteAsync(output, callResponse);
                         break;
                     default:
                         if (!isNotification) await WriteAsync(output, ErrorResponse(id, -32601, $"Method not found: {method}"));
@@ -115,8 +115,20 @@ internal static class McpServer
             ["name"] = "kirin-tool",
             ["version"] = ToolInfo.Version,
         },
-        ["instructions"] = "Read-only tools run immediately. Write tools (flash_ota, flash_xml, vcom_unlock, oeminfo, downgrade_enable) require confirm:true, return a plan, and are gate-only in this build (exit 4, nothing is written).",
+        ["instructions"] = BuildInstructions(),
     };
+
+    private static string BuildInstructions()
+    {
+        string real = string.Join(", ", CliRunner.Commands.Where(command => command.WriteKind == CliWriteKind.RealWrite).Select(command => command.McpName));
+        string planOnly = string.Join(", ", CliRunner.Commands.Where(command => command.WriteKind == CliWriteKind.PlanOnly).Select(command => command.McpName));
+        string text = "Read-only tools run immediately. ";
+        if (real.Length > 0)
+            text += $"Tools that write the device ({real}) require confirm:true; a real write is performed — there is no dry-run in the MCP path. ";
+        if (planOnly.Length > 0)
+            text += $"Plan-only tools ({planOnly}) return a plan; confirmed still writes nothing.";
+        return text.TrimEnd();
+    }
 
     private static JsonArray BuildTools()
     {
@@ -131,6 +143,9 @@ internal static class McpServer
         var required = new JsonArray();
         foreach (CliParam parameter in command.Params)
         {
+            // Redline override is a deliberate CLI-only escape hatch; it never appears in
+            // the MCP schema and is rejected with -32602 in CallToolAsync.
+            if (parameter.Name == "allow-redline") continue;
             var schema = new JsonObject
             {
                 ["type"] = parameter.Type,
@@ -150,7 +165,9 @@ internal static class McpServer
             properties["confirm"] = new JsonObject
             {
                 ["type"] = "boolean",
-                ["description"] = "Acknowledge the printed plan. Required for write tools; true still does not write in this build (gate-only).",
+                ["description"] = command.WriteKind == CliWriteKind.RealWrite
+                    ? "true performs the real write; there is no dry-run in the MCP path"
+                    : "true only acknowledges the plan; nothing is written",
                 ["default"] = false,
             };
             required.Add("confirm");
@@ -176,7 +193,7 @@ internal static class McpServer
         return tool;
     }
 
-    private static async Task<JsonObject> CallToolAsync(JsonObject parameters, TextWriter log, CancellationToken cancellationToken)
+    private static async Task<JsonObject> CallToolAsync(JsonNode id, JsonObject parameters, TextWriter log, CancellationToken cancellationToken)
     {
         string? name = parameters["name"]?.GetValue<string>();
         var arguments = parameters["arguments"] as JsonObject;
@@ -185,7 +202,11 @@ internal static class McpServer
             string.Equals(candidate.McpName, name, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase));
         if (command == null)
-            return ToolResult($"Unknown tool: {name}", ExitCodes.Usage, stderr: null);
+            return ResultResponse(id, ToolResult($"Unknown tool: {name}", ExitCodes.Usage, stderr: null));
+
+        string? invalid = ValidateArguments(command, arguments);
+        if (invalid != null)
+            return ErrorResponse(id, -32602, "Invalid params: " + invalid);
 
         ParsedArgs parsed = ToParsedArgs(command, arguments);
         bool confirm = arguments?["confirm"]?.GetValue<bool>() == true;
@@ -223,7 +244,32 @@ internal static class McpServer
         if (text.Length == 0)
             text = new JsonObject { ["exitCode"] = exit }.ToJsonString();
 
-        return ToolResult(text, exit, diagnostics);
+        return ResultResponse(id, ToolResult(text, exit, diagnostics));
+    }
+
+    /// <summary>
+    /// Rejects malformed tool arguments with a caller-fixable -32602 instead of letting
+    /// them fall through to -32603: redline override is CLI-only, unknown argument names
+    /// are rejected, and boolean parameters (including confirm) must be real booleans.
+    /// </summary>
+    private static string? ValidateArguments(ICliCommand command, JsonObject? arguments)
+    {
+        if (arguments == null) return null;
+        var known = new HashSet<string>(command.Params.Select(parameter => parameter.Name)) { "confirm" };
+        foreach (KeyValuePair<string, JsonNode?> entry in arguments)
+        {
+            if (string.Equals(entry.Key, "allow-redline", StringComparison.Ordinal))
+                return "redline override is CLI-only ('allow-redline' is not accepted over MCP)";
+            if (!known.Contains(entry.Key))
+                return $"unknown argument '{entry.Key}' for tool {command.McpName}";
+            CliParam? parameter = command.Params.FirstOrDefault(candidate => candidate.Name == entry.Key);
+            if (entry.Key == "confirm" || parameter?.Type == "boolean")
+            {
+                if (entry.Value is not JsonValue value || !value.TryGetValue<bool>(out _))
+                    return $"'{entry.Key}' must be a boolean";
+            }
+        }
+        return null;
     }
 
     private static ParsedArgs ToParsedArgs(ICliCommand command, JsonObject? arguments)
@@ -266,8 +312,26 @@ internal static class McpServer
             structured = null;
         }
 
-        // Exit 4 is the gate refusing a write: the plan is a valid result, not a protocol error.
-        bool isError = exitCode != ExitCodes.Ok && exitCode != ExitCodes.Gated;
+        // Machine-readable gate signal from the command's JSON output, when present, is the
+        // authoritative way for clients to tell a refusal from a plan or a real write.
+        string? gate = null;
+        if (structured is JsonObject structuredObject
+            && structuredObject["gate"] is JsonValue gateValue
+            && gateValue.TryGetValue<string>(out string? gateString))
+            gate = gateString;
+
+        bool isError = gate switch
+        {
+            "refused" => true,
+            "plan-only" or "confirmed" => false,
+            _ => exitCode != ExitCodes.Ok && exitCode != ExitCodes.Gated,
+        };
+        var meta = new JsonObject
+        {
+            ["exitCode"] = exitCode,
+            ["stderr"] = stderr,
+        };
+        if (gate != null) meta["gate"] = gate;
         var result = new JsonObject
         {
             ["content"] = new JsonArray(new JsonObject
@@ -276,11 +340,7 @@ internal static class McpServer
                 ["text"] = text,
             }),
             ["isError"] = isError,
-            ["_meta"] = new JsonObject
-            {
-                ["exitCode"] = exitCode,
-                ["stderr"] = stderr,
-            },
+            ["_meta"] = meta,
         };
         if (structured != null) result["structuredContent"] = structured;
         return result;

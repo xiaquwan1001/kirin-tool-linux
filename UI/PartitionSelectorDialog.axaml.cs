@@ -30,8 +30,8 @@ namespace Kirin_Tool.UI
 {
     public partial class PartitionSelectorDialog : Window, INotifyPropertyChanged
     {
-        private ObservableCollection<PartitionInfo> _partitions;
-        private string _statusText;
+        private ObservableCollection<PartitionInfo> _partitions = new();
+        private string _statusText = string.Empty;
         private bool _updatingSelectAll = false;
         private bool? _selectAllState = false;
 

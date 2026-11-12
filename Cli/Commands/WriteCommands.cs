@@ -6,10 +6,10 @@ using Kirin_Tool.Utils;
 namespace Kirin_Tool.Cli.Commands;
 
 /// <summary>
-/// Gate for the second batch: write commands compute and print exactly what would be
-/// written, then refuse to touch the device. They require <c>--yes</c> (CLI) or
-/// <c>confirm: true</c> (MCP) even to leave "plan" mode, and the actual write path is
-/// intentionally not implemented in this build, so they still exit 4.
+/// Plan-only write commands: they compute and print exactly what would be written,
+/// then never touch the device. They require <c>--yes</c> (CLI) or <c>confirm: true</c>
+/// (MCP) even to acknowledge the plan, and always exit 4. Real-write commands
+/// (flash-ota / flash-xml) live below and do write once confirmed.
 /// </summary>
 internal abstract class GatedWriteCommand : ICliCommand
 {
@@ -17,7 +17,7 @@ internal abstract class GatedWriteCommand : ICliCommand
     public abstract string McpName { get; }
     public abstract string Summary { get; }
     public abstract string Usage { get; }
-    public bool IsWrite => true;
+    public CliWriteKind WriteKind => CliWriteKind.PlanOnly;
     public abstract IReadOnlyList<CliParam> Params { get; }
 
     protected abstract Task<WritePlan> BuildPlanAsync(ParsedArgs args, CliContext context, CancellationToken cancellationToken);
@@ -40,7 +40,9 @@ internal abstract class GatedWriteCommand : ICliCommand
         }
 
         bool confirmed = context.Yes || args.HasFlag("yes");
-        string status = confirmed ? "confirmed-but-write-path-not-implemented" : "plan-only";
+        // Machine-readable gate signal: "plan-only" before acknowledgement, "confirmed"
+        // once acknowledged (still nothing written — this class is plan-only by design).
+        string status = confirmed ? "confirmed" : "plan-only";
 
         var payload = new
         {
@@ -48,13 +50,8 @@ internal abstract class GatedWriteCommand : ICliCommand
             dryRun = true,
             applied = false,
             confirmed,
-            gate = new
-            {
-                required = "--yes (CLI) or confirm:true (MCP)",
-                status,
-                reason = "Write paths are gate-only in this build: the plan below was generated from the existing services, but nothing was flashed, erased or written.",
-                exitCode = ExitCodes.Gated,
-            },
+            gate = status,
+            gateReason = "plan-only command: the plan below was generated from the existing services, but nothing was flashed, erased or written.",
             plan = plan.Details,
             exitCode = ExitCodes.Gated,
         };
@@ -69,13 +66,13 @@ internal abstract class GatedWriteCommand : ICliCommand
             context.Output.WriteLine();
             context.Output.WriteLine($"gate: {status} (exit {ExitCodes.Gated})");
             if (!confirmed)
-                context.Output.WriteLine("re-run with --yes (CLI) or confirm:true (MCP) to acknowledge the plan; this build still will not write.");
+                context.Output.WriteLine("re-run with --yes (CLI) or confirm:true (MCP) to acknowledge the plan; nothing is ever written by this command.");
             else
-                context.Output.WriteLine("write path not implemented in this build; no device state was changed.");
+                context.Output.WriteLine("plan acknowledged; no device state was changed (plan-only command).");
         }
 
         if (!confirmed) context.Diag("gate: plan printed; re-run with --yes to acknowledge");
-        else context.Diag("gate: acknowledged, but the write path is not implemented in this build");
+        else context.Diag("gate: acknowledged; nothing was written (plan-only command)");
 
         return ExitCodes.Gated;
     }
@@ -89,8 +86,8 @@ internal sealed class FlashOtaCommand : ICliCommand
     public string Usage =>
         "flash-ota <file>... [--partitions a,b] [--exclude x,y] [--allow-redline] [--yes] [--json]\n" +
         "  files are flashed in the order given (base PTABLE, base UPDATE, cust PTABLE, cust UPDATE, preload PTABLE, preload UPDATE)\n" +
-        "  without --yes the plan is printed and nothing is written (exit 4)";
-    public bool IsWrite => true;
+        "  without --yes the plan is printed and nothing is written (exit 4); with --yes a real write happens";
+    public CliWriteKind WriteKind => CliWriteKind.RealWrite;
     public IReadOnlyList<CliParam> Params => new[]
     {
         new CliParam("file", "string[]", "UPDATE.APP / PTABLE.APP paths, in flash order", Required: true, Positional: true),
@@ -157,8 +154,26 @@ internal sealed class FlashOtaCommand : ICliCommand
             skipped = plan.Skipped.Select(entry => entry.Partition).ToList(),
         };
 
-        if (context.Json && !context.Yes)
-            context.WriteJson(new { command = Name, dryRun = true, applied = false, gate = "plan-only", plan = details, exitCode = ExitCodes.Gated });
+        // The gate decision comes before any output so stdout carries exactly one JSON
+        // object: a refusal used to print the plan-only document first, which made the
+        // stream unparsable for MCP clients and tests (two concatenated documents).
+        bool allowRedline = args.HasFlag("allow-redline");
+        bool redlineRefused = plan.Redlines.Count > 0 && !allowRedline;
+        bool confirmed = context.Yes || args.HasFlag("yes");
+
+        if (context.Json)
+        {
+            if (redlineRefused)
+                context.WriteJson(new
+                {
+                    command = Name, dryRun = true, applied = false, gate = "refused",
+                    redlines = plan.Redlines,
+                    reason = "redline partitions present without --allow-redline",
+                    plan = details, exitCode = ExitCodes.Gated,
+                });
+            else if (!confirmed)
+                context.WriteJson(new { command = Name, dryRun = true, applied = false, gate = "plan-only", plan = details, exitCode = ExitCodes.Gated });
+        }
         else
         {
             context.Output.WriteLine($"flash plan: {plan.Entries.Count} partitions, {TextFormat.Bytes(plan.TotalBytes)}");
@@ -167,14 +182,12 @@ internal sealed class FlashOtaCommand : ICliCommand
             context.Output.WriteLine($"skipped by policy: {plan.Skipped.Count} entr{(plan.Skipped.Count == 1 ? "y" : "ies")}");
         }
 
-        bool allowRedline = args.HasFlag("allow-redline");
-        if (plan.Redlines.Count > 0 && !allowRedline)
+        if (redlineRefused)
         {
             context.Diag($"refused: plan writes redline partitions ({string.Join(", ", plan.Redlines)}); pass --allow-redline to override");
             return ExitCodes.Gated;
         }
 
-        bool confirmed = context.Yes || args.HasFlag("yes");
         if (!confirmed)
         {
             context.Diag("gate: plan only; re-run with --yes to flash");
@@ -193,8 +206,10 @@ internal sealed class FlashOtaCommand : ICliCommand
             return ExitCodes.NoDevice;
         }
 
-        string workDirectory = args.Value("work-dir") is { Length: > 0 } workDirArg
-            ? Path.GetFullPath(workDirArg, context.WorkingDirectory)
+        string? workDirArg = args.Value("work-dir");
+        bool customStaging = workDirArg is { Length: > 0 };
+        string workDirectory = customStaging
+            ? Path.GetFullPath(workDirArg!, context.WorkingDirectory)
             : Path.Combine(Path.GetDirectoryName(paths[0]) ?? context.WorkingDirectory, ".kirintool-cli-tmp");
         try { Directory.CreateDirectory(workDirectory); }
         catch (Exception ex)
@@ -204,52 +219,81 @@ internal sealed class FlashOtaCommand : ICliCommand
         }
         context.Diag($"staging directory: {workDirectory}");
 
-        var (resolvedNames, unresolved) = await OtaFlashRunner.ResolveNamesAsync(
-            session.Client, plan.Entries.Select(entry => entry.Partition), context, cancellationToken);
-        if (unresolved.Count > 0)
+        try
         {
-            // The temporary loader publishes its own partition map, which can be narrower than the
-            // GPT a package was built for (e.g. no "kpatch" on ELS loaders). Skipping is safe for
-            // those; --strict-names keeps the old all-or-nothing behaviour.
-            if (args.HasFlag("strict-names"))
+            return await FlashStagedAsync(plan, session, workDirectory, args, context, cancellationToken);
+        }
+        finally
+        {
+            // The default staging directory is disposable scratch space next to the payload;
+            // an explicitly requested --work-dir is left alone for inspection.
+            if (!customStaging)
             {
-                context.Diag($"refused: {unresolved.Count} planned partition(s) do not exist on this loader: {string.Join(", ", unresolved)}");
-                return ExitCodes.DeviceRejected;
+                try
+                {
+                    Directory.Delete(workDirectory, recursive: true);
+                    context.Diag($"default staging directory removed: {workDirectory}");
+                }
+                catch (Exception ex)
+                {
+                    context.Diag($"warning: could not remove default staging directory {workDirectory}: {ex.Message}");
+                }
             }
-            context.Diag($"warning: skipping {unresolved.Count} partition(s) the loader does not expose: {string.Join(", ", unresolved)}");
-            var unresolvedNames = new HashSet<string>(unresolved.Select(line => line.Split(" -> ")[0]), StringComparer.OrdinalIgnoreCase);
-            plan = new OtaPlan
-            {
-                Entries = plan.Entries.Where(entry => !unresolvedNames.Contains(entry.Partition)).ToList(),
-                SuperParts = plan.SuperParts.Where(entry => !unresolvedNames.Contains(entry.Partition)).ToList(),
-                Skipped = plan.Skipped,
-                Redlines = plan.Redlines,
-                Warnings = plan.Warnings,
-                TotalBytes = plan.TotalBytes,
-            };
         }
 
-        List<OtaFlashOutcome> outcomes = await OtaFlashRunner.ExecuteAsync(plan, workDirectory, resolvedNames, session.Client, context, cancellationToken);
-        int ok = outcomes.Count(outcome => outcome.Ok);
-        var failed = outcomes.Where(outcome => !outcome.Ok).Select(outcome => new { partition = outcome.Partition, error = outcome.Error }).ToList();
-
-        if (context.Json)
-            context.WriteJson(new
+        static async Task<int> FlashStagedAsync(OtaPlan plan, FastbootSession session, string workDirectory, ParsedArgs args, CliContext context, CancellationToken cancellationToken)
+        {
+            var (resolvedNames, unresolved) = await OtaFlashRunner.ResolveNamesAsync(
+                session.Client, plan.Entries.Select(entry => entry.Partition), context, cancellationToken);
+            if (unresolved.Count > 0)
             {
-                command = Name,
-                dryRun = false,
-                applied = true,
-                fastboot = session.ExecutablePath,
-                flashed = ok,
-                total = outcomes.Count,
-                failed,
-                exitCode = ok == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected,
-            });
-        else
-            context.Output.WriteLine($"flashed {ok}/{outcomes.Count} partitions");
+                // The temporary loader publishes its own partition map, which can be narrower than the
+                // GPT a package was built for (e.g. no "kpatch" on ELS loaders). Skipping is safe for
+                // those; --strict-names keeps the old all-or-nothing behaviour.
+                if (args.HasFlag("strict-names"))
+                {
+                    context.Diag($"refused: {unresolved.Count} planned partition(s) do not exist on this loader: {string.Join(", ", unresolved)}");
+                    return ExitCodes.DeviceRejected;
+                }
+                context.Diag($"warning: skipping {unresolved.Count} partition(s) the loader does not expose: {string.Join(", ", unresolved)}");
+                var unresolvedNames = new HashSet<string>(unresolved.Select(line => line.Split(" -> ")[0]), StringComparer.OrdinalIgnoreCase);
+                plan = new OtaPlan
+                {
+                    Entries = plan.Entries.Where(entry => !unresolvedNames.Contains(entry.Partition)).ToList(),
+                    SuperParts = plan.SuperParts.Where(entry => !unresolvedNames.Contains(entry.Partition)).ToList(),
+                    Skipped = plan.Skipped,
+                    Redlines = plan.Redlines,
+                    Warnings = plan.Warnings,
+                    TotalBytes = plan.TotalBytes,
+                };
+            }
 
-        if (ok == 0) return ExitCodes.FileOrVerify;
-        return ok == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected;
+            List<OtaFlashOutcome> outcomes = await OtaFlashRunner.ExecuteAsync(plan, workDirectory, resolvedNames, session.Client, context, cancellationToken);
+            int ok = outcomes.Count(outcome => outcome.Ok);
+            var failed = outcomes.Where(outcome => !outcome.Ok).Select(outcome => new { partition = outcome.Partition, error = outcome.Error }).ToList();
+
+            // Exit code and JSON agree: nothing flashed is a file/verify failure (5), a full
+            // success is 0, and a partial write is a device rejection (3).
+            int exitCode = ok == 0 ? ExitCodes.FileOrVerify : (ok == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected);
+
+            if (context.Json)
+                context.WriteJson(new
+                {
+                    command = "flash-ota",
+                    dryRun = false,
+                    applied = true,
+                    gate = "applied",
+                    fastboot = session.ExecutablePath,
+                    flashed = ok,
+                    total = outcomes.Count,
+                    failed,
+                    exitCode,
+                });
+            else
+                context.Output.WriteLine($"flashed {ok}/{outcomes.Count} partitions");
+
+            return exitCode;
+        }
     }
 
     internal static List<string> SplitList(string? value) =>
@@ -264,14 +308,15 @@ internal sealed class FlashXmlCommand : ICliCommand
     public string Summary => "Flash the <image> entries of a Huawei flashing XML (writes only with --yes).";
     public string Usage =>
         "flash-xml <flashing.xml|dir> [--partitions a,b] [--exclude x,y] [--allow-redline] [--yes] [--json]\n" +
-        "  identifiers whose images are missing abort before any write; without --yes only the plan is printed (exit 4)";
-    public bool IsWrite => true;
+        "  identifiers whose images are missing abort before any write; without --yes only the plan is printed (exit 4); with --yes a real write happens";
+    public CliWriteKind WriteKind => CliWriteKind.RealWrite;
     public IReadOnlyList<CliParam> Params => new[]
     {
         new CliParam("path", "string", "flashing XML file, or a directory containing one", Required: true, Positional: true),
         new CliParam("partitions", "string", "comma separated whitelist of identifiers to flash"),
         new CliParam("exclude", "string", "comma separated identifiers to skip"),
         new CliParam("allow-redline", "boolean", "permit writing oeminfo/nvme/modem_secure/persist/modemnvm*/certification/hisee_encos/veritykey"),
+        new CliParam("strict-names", "boolean", "refuse instead of warning when the loader does not expose an identifier"),
         new CliParam("yes", "boolean", "acknowledge the plan and perform the write"),
         new CliParam("json", "boolean", "structured output"),
     };
@@ -313,7 +358,7 @@ internal sealed class FlashXmlCommand : ICliCommand
         {
             cancellationToken.ThrowIfCancellationRequested();
             string identifier = partition.Identifier ?? string.Empty;
-            if (onlySet != null && !onlySet.Contains(identifier)) { skipped.Add(identifier); continue; }
+            if (onlySet != null && !onlySet.Contains(identifier) && !onlySet.Contains(partition.Name ?? string.Empty)) { skipped.Add(identifier); continue; }
             if (excludeSet != null && (excludeSet.Contains(identifier) || excludeSet.Contains(partition.Name ?? string.Empty)))
             {
                 skipped.Add(identifier);
@@ -327,9 +372,22 @@ internal sealed class FlashXmlCommand : ICliCommand
         }
 
         bool allowRedline = args.HasFlag("allow-redline");
+        bool redlineRefused = redlines.Count > 0 && !allowRedline;
+        bool confirmed = context.Yes || args.HasFlag("yes");
 
-        if (context.Json && !context.Yes)
-            context.WriteJson(new
+        // One JSON document per invocation (see the same note in flash-ota): the
+        // refusal path used to append a second document to the plan-only one.
+        // Missing images are checked before the redline gate and win the reason, but both
+        // are policy refusals: the JSON carries gate=refused plus a reason that says which.
+        string? refusalReason = missing.Count > 0
+            ? $"missing image(s): {string.Join(", ", missing)}"
+            : redlineRefused
+                ? "redline identifiers present without --allow-redline"
+                : null;
+
+        if (context.Json)
+        {
+            var planPayload = new
             {
                 command = Name,
                 dryRun = true,
@@ -346,8 +404,23 @@ internal sealed class FlashXmlCommand : ICliCommand
                     image = partition.DumpPath,
                     redline = FlashPolicy.IsRedline(partition.Identifier ?? string.Empty),
                 }).ToList(),
-                exitCode = ExitCodes.Gated,
-            });
+            };
+            if (refusalReason != null)
+                context.WriteJson(new
+                {
+                    command = planPayload.command, dryRun = true, applied = false, gate = "refused",
+                    redlines, reason = refusalReason,
+                    xml = path, partitionCount = selected.Count, skipped, missingImages = missing,
+                    partitions = planPayload.partitions, exitCode = missing.Count > 0 ? ExitCodes.FileOrVerify : ExitCodes.Gated,
+                });
+            else if (!confirmed)
+                context.WriteJson(new
+                {
+                    command = planPayload.command, dryRun = true, applied = false, gate = "plan-only",
+                    xml = path, partitionCount = selected.Count, skipped, redlines, missingImages = missing,
+                    partitions = planPayload.partitions, exitCode = ExitCodes.Gated,
+                });
+        }
         else
         {
             context.Output.WriteLine($"flash plan for {path}: {selected.Count} images");
@@ -366,13 +439,12 @@ internal sealed class FlashXmlCommand : ICliCommand
             context.Diag($"refused: {missing.Count} image(s) missing: {string.Join(", ", missing)}");
             return ExitCodes.FileOrVerify;
         }
-        if (redlines.Count > 0 && !allowRedline)
+        if (redlineRefused)
         {
             context.Diag($"refused: plan writes redline identifiers ({string.Join(", ", redlines)}); pass --allow-redline to override");
             return ExitCodes.Gated;
         }
 
-        bool confirmed = context.Yes || args.HasFlag("yes");
         if (!confirmed)
         {
             context.Diag("gate: plan only; re-run with --yes to flash");
@@ -383,13 +455,32 @@ internal sealed class FlashXmlCommand : ICliCommand
         if (session == null) { context.Diag("error: fastboot binary not found"); return ExitCodes.NoDevice; }
         if (!session.Connected) { context.Diag("error: no device in fastboot mode"); return ExitCodes.NoDevice; }
 
+        // Resolve identifiers against the loader's own partition list before writing
+        // (same pre-flight as flash-ota). Default is warn-and-continue; --strict-names
+        // refuses before any write instead.
+        var (resolvedNames, unresolved) = await OtaFlashRunner.ResolveNamesAsync(
+            session.Client,
+            selected.Select(partition => partition.Identifier ?? string.Empty).Where(name => name.Length > 0),
+            context,
+            cancellationToken);
+        if (unresolved.Count > 0)
+        {
+            if (args.HasFlag("strict-names"))
+            {
+                context.Diag($"refused: {unresolved.Count} identifier(s) do not exist on this loader: {string.Join(", ", unresolved)}");
+                return ExitCodes.DeviceRejected;
+            }
+            context.Diag($"warning: {unresolved.Count} identifier(s) are not exposed by this loader and will still be attempted: {string.Join(", ", unresolved)}");
+        }
+
         var outcomes = new List<OtaFlashOutcome>();
         for (int i = 0; i < selected.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             FastbootPartition partition = selected[i];
-            // Huawei loaders match partition names case-sensitively; GPT names are lower case.
-            string flashName = (partition.Identifier ?? string.Empty).ToLowerInvariant();
+            string flashName = resolvedNames.TryGetValue(partition.Identifier ?? string.Empty, out string? deviceName)
+                ? deviceName
+                : (partition.Identifier ?? string.Empty).ToLowerInvariant();
             context.Diag($"[{i + 1}/{selected.Count}] flash {flashName} <- {TextFormat.Bytes(new FileInfo(partition.DumpPath!).Length)}");
             ProcessResult result = await session.Client.FlashPartition(flashName, partition.DumpPath!);
             bool ok = result.IsSuccess && (result.Output ?? string.Empty).Contains("OKAY", StringComparison.OrdinalIgnoreCase);
@@ -398,23 +489,26 @@ internal sealed class FlashXmlCommand : ICliCommand
         }
 
         int okCount = outcomes.Count(outcome => outcome.Ok);
+        // JSON exitCode matches the real return code: nothing flashed is a file/verify
+        // failure (5), a full success is 0, a partial write is a device rejection (3).
+        int exitCode = okCount == 0 ? ExitCodes.FileOrVerify : (okCount == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected);
         if (context.Json)
             context.WriteJson(new
             {
                 command = Name,
                 dryRun = false,
                 applied = true,
+                gate = "applied",
                 fastboot = session.ExecutablePath,
                 flashed = okCount,
                 total = outcomes.Count,
                 failed = outcomes.Where(outcome => !outcome.Ok).Select(outcome => new { partition = outcome.Partition, error = outcome.Error }).ToList(),
-                exitCode = okCount == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected,
+                exitCode,
             });
         else
             context.Output.WriteLine($"flashed {okCount}/{outcomes.Count} images");
 
-        if (okCount == 0) return ExitCodes.FileOrVerify;
-        return okCount == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected;
+        return exitCode;
     }
 }
 

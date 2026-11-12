@@ -2,10 +2,9 @@ name: cli-mcp-ci
 
 # Lightweight CI for the headless CLI + stdio MCP entry points.
 #
-# Why a separate workflow instead of extending build.yml: the upstream release
-# pipeline (build.yml) only triggers on v* tags and builds the native fastboot
-# payload, the AppImage (glibc 2.31 container) and the pacman package. None of
-# that runs on a branch push, so it cannot gate the CLI/MCP change set. This
+# Why a separate workflow instead of extending build.yml: build.yml is
+# workflow_dispatch-only in this fork (no branch or tag triggers), so it can
+# never gate a branch push. This
 # workflow is deliberately narrow: restore, build the two C# projects, run
 # hardware-free smoke tests, upload the CLI build output. Firmware/loaders and
 # the bundled fastboot payload are excluded from the artifact on purpose
@@ -20,11 +19,11 @@ on:
   push:
     branches:
       - main
-      - feat/cli-and-mcp-entry
+      - 'feat/**'
+      - 'fix/**'
   pull_request:
     branches:
       - main
-      - feat/cli-and-mcp-entry
   workflow_dispatch:
 
 permissions:
@@ -73,31 +72,21 @@ jobs:
       - name: Build CLI project (Release)
         run: dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release --no-restore -p:NuGetAudit=false
 
-      # Hardware-free tests, run after the two builds so they exercise the exact
-      # assemblies under test. tests/FlashPolicy pins the shared write policy
-      # (Utils/FlashPolicy.cs: skip list + redline set) and re-checks the CLI side
-      # by driving "KirinTool.Cli flash-ota" against a synthetic UPDATE.APP that
-      # stops at the plan gate. tests/StableParity keeps the frozen release
-      # boundary intact.
-      - name: Test - flash policy (shared redline/skip policy + CLI plan gate)
-        run: dotnet run --project tests/FlashPolicy -c Release -p:NuGetAudit=false
-
-      - name: Test - stable parity (frozen boundary)
-        run: dotnet run --project tests/StableParity -c Release -p:NuGetAudit=false
-
-      # The rest of the hardware-free harnesses. They were only run by hand before,
-      # so a regression in parsing/serial/sparse/flash-detail handling could ship.
-      # Hardware probes (tests/VcomOpenProbe, tests/UsbUpdateProbe) and the pixel
-      # comparison (tests/VisualParity, font-dependent) stay out on purpose.
-      - name: Test - hardware-free suites
+      # Hardware-free harnesses, run after the two builds so they exercise the exact
+      # assemblies under test. tests/suites.txt is the single source of truth shared
+      # with .gitlab-ci.yml; hardware probes (VcomOpenProbe, UsbUpdateProbe) and the
+      # pixel comparison (VisualParity) are excluded there on purpose. WriteGates,
+      # McpProtocol and OtaPlan drive the CLI binary produced above (out-of-process,
+      # gate-only: they assert nothing is ever written).
+      - name: Test - hardware-free suites (tests/suites.txt)
         run: |
           set -euo pipefail
-          for t in FastbootReads VcomPromptUi GuiQol Extractor UsbDiagnostics UsbRedlineGate \
-                   UsbTransport UsbUpdateUi OemInfoUi UdevNotice Kirin9000; do
+          while read -r t; do
+            case "$t" in ''|'#'*) continue ;; esac
             echo "::group::$t"
             dotnet run --project "tests/$t" -c Release -p:NuGetAudit=false
             echo "::endgroup::"
-          done
+          done < tests/suites.txt
 
       # The runner has no phone in fastboot mode. BinaryLocator also probes PATH
       # and /usr/bin, so a tiny stub is enough to exercise "doctor" end to end

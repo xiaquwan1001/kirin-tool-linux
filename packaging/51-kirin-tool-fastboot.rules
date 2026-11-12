@@ -1,5 +1,7 @@
 # Fastboot uses the USB device node. uaccess grants the active local desktop
 # user access; adbusers supports sessions without logind uaccess.
+# NOTE: adbusers only exists on Arch/CachyOS. packaging/build-deb.sh rewrites this
+# line to GROUP="plugdev" for the .deb, because Debian/Ubuntu ship no adbusers group.
 ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="12d1", MODE="0660", GROUP="adbusers", TAG+="uaccess"
 
 # VCOM and USB Update use tty nodes. DBAdapter product IDs vary by firmware, so

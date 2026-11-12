@@ -379,8 +379,9 @@ namespace Kirin_Tool.UI
                 var scrollPosition = index * itemHeight;
                 PartitionScrollViewer.Offset = new Vector(PartitionScrollViewer.Offset.X, Math.Max(0, scrollPosition - 100));
             }
-            catch (Exception ex)
+            catch (Exception)
             {
+                // Best-effort UI scroll/cancel/close; nothing useful to recover.
             }
         }
 
@@ -404,8 +405,9 @@ namespace Kirin_Tool.UI
                     }
                 });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
+                // Best-effort UI scroll/cancel/close; nothing useful to recover.
             }
         }
 
@@ -421,8 +423,9 @@ namespace Kirin_Tool.UI
                     this.Close();
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
+                // Best-effort UI scroll/cancel/close; nothing useful to recover.
             }
         }
 

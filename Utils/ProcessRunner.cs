@@ -85,9 +85,11 @@ namespace Kirin_Tool.Utils
             }
             catch (OperationCanceledException)
             {
-                process.Kill();
+                // Kill the whole tree so child processes do not outlive the timeout.
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(3000);
                 WriteLog(executablePath, arguments, $"[Process Timed Out after {timeout.TotalSeconds} seconds]");
-                throw new TimeoutException($"Process timed out after {(int)timeout.TotalSeconds} seconds");
+                throw new TimeoutException($"Process timed out after {timeout.TotalSeconds:F0} seconds");
             }
         }
 

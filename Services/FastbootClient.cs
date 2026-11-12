@@ -230,8 +230,10 @@ namespace Kirin_Tool.Services
                         }
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
+                    // Reader failed (stream closed / process killed); the exit
+                    // status below still determines the result, so just stop.
                 }
             });
 
@@ -257,8 +259,9 @@ namespace Kirin_Tool.Services
                         }
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
+                    // See stdout reader: swallowing is intentional, exit status rules.
                 }
             });
 
@@ -274,14 +277,15 @@ namespace Kirin_Tool.Services
                 return (false, $"Process timed out after {UnlockTimeoutMinutes} minutes");
             }
 
-            await Task.Delay(500);
-            try
-            {
-                await Task.WhenAny(outputTask, errorTask, Task.Delay(2000));
-            }
-            catch { }
+            // The process has exited, so both pipes will reach EOF; drain them
+            // fully instead of guessing a delay. Readers append under outputLock.
+            await Task.WhenAll(outputTask, errorTask);
 
-            string output = combinedBuilder.ToString();
+            string output;
+            lock (outputLock)
+            {
+                output = combinedBuilder.ToString();
+            }
             return (process.ExitCode == 0, output);
         }
 

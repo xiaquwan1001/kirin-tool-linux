@@ -175,7 +175,7 @@ internal static class OtaFlashRunner
                     continue;
                 }
 
-                if (only != null && !only.Contains(partition.Name))
+                if (only != null && !only.Contains(partition.Name) && !only.Contains(source))
                 {
                     skipped.Add(candidate);
                     continue;

@@ -1,0 +1,20 @@
+# Hardware-free test harnesses run by BOTH CI pipelines (.github/workflows/cli-mcp-ci.yml
+# and .gitlab-ci.yml read this file and loop over it). One harness name per line; it must
+# match the directory name under tests/. Deliberately excluded: VcomOpenProbe and
+# UsbUpdateProbe (need real USB hardware) and VisualParity (font-dependent pixel diff).
+FlashPolicy
+StableParity
+FastbootReads
+VcomPromptUi
+GuiQol
+Extractor
+UsbDiagnostics
+UsbRedlineGate
+UsbTransport
+UsbUpdateUi
+OemInfoUi
+UdevNotice
+Kirin9000
+WriteGates
+McpProtocol
+OtaPlan

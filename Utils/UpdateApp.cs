@@ -127,7 +127,7 @@ namespace Kirin_Tool.Utils
 
         }
 
-        private PartitionInfo ReadPartition(long startPosition)
+        private PartitionInfo? ReadPartition(long startPosition)
         {
             try
             {
@@ -200,7 +200,7 @@ namespace Kirin_Tool.Utils
 
         private long FileLengthRemaining(long offset) => _fileStream.Length - offset;
 
-        private PartitionInfo InvalidEntry(string message)
+        private PartitionInfo? InvalidEntry(string message)
         {
             if (_strict) throw new InvalidDataException(message);
             return null;

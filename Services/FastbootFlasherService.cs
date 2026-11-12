@@ -113,8 +113,9 @@ namespace Kirin_Tool.Services
             }
             catch (Exception ex)
             {
-                // return (false, $"Flash failed: {ex.Message}");
-                return (false, $"Failed");
+                // Surface the real failure to the caller; swallowing it made every
+                // exception look like a generic "Failed" with no diagnostic value.
+                return (false, $"Flash failed: {ex.Message}");
             }
         }
 

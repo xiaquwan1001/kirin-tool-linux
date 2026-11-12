@@ -455,8 +455,12 @@ internal sealed class DumpCommand : ICliCommand
 {
     public string Name => "dump";
     public string McpName => "dump";
-    public string Summary => "Dump one device partition to a host file via oem dump-emmc (read-only on the device).";
-    public string Usage => "dump <partition> -o <dir> [--json]";
+    public string Summary => "Dump one device partition to a host file (oem dump-emmc, falling back to oem dump-storage; read-only on the device).";
+    public string Usage =>
+        "dump <partition> -o <dir> [--json]\n" +
+        "  tries 'oem dump-emmc' first and falls back to 'oem dump-storage'\n" +
+        "  note: temporary VCOM loaders (e.g. hisi990 v0.5) answer both with \"invalid command\",\n" +
+        "        so dump needs an in-device bootloader that implements the oem dump extension";
     public bool IsWrite => false;
     public IReadOnlyList<CliParam> Params => new[]
     {

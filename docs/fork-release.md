@@ -11,7 +11,7 @@ binaries stay compatible with **glibc 2.31** (the AppImage script refuses to bui
 | `kirin-tool-linux-<ver>-x86_64.AppImage` | portable GUI | no install; bundled runtime, fastboot and loaders |
 | `kirin-tool-linux_<ver>_amd64.deb` | GUI + headless CLI | self-contained; installs to `/usr/lib/kirin-tool-linux` |
 | `kirin-tool-linux-<ver>-x86_64.tar.gz` | same tree as the deb | for `~/opt` style installs, no root |
-| `kirin-tool-cli-<ver>-linux-x86_64` | single-file CLI | ~49 MB compressed bundle; also an MCP stdio server |
+| `kirin-tool-cli-<ver>-linux-x86_64` | single-file CLI | ~50 MiB compressed bundle (v2.4.12: 52.3 MB); also an MCP stdio server |
 | `SHA256SUMS-<ver>.txt` | checksums | verify before flashing anything |
 
 All four come from the same commit and are smoke-tested in CI before upload:
@@ -33,7 +33,8 @@ Huawei-parity build), and presence of `loaders/hisi990/fastboot.ktl` and `libkir
 
 `Depends` covers glibc, X11/ICE/SM, fontconfig/freetype, libusb, zlib, ICU and OpenSSL. The app tree is
 Qt/GTK-free (Avalonia/Skia). `postinst` reloads udev rules and runs a non-fatal runtime self-check; add
-yourself to `adbusers` for non-desktop sessions.
+yourself to `adbusers` on Arch/CachyOS, or `plugdev` + `uucp` on Debian/Ubuntu (the deb rewrites the
+USB rule to `GROUP="plugdev"`), for non-desktop sessions.
 
 ### Dependency policy (ICU / OpenSSL)
 

@@ -93,7 +93,7 @@ namespace Kirin_Tool.Utils
         }
 
         public static DirectoryInfo? ResolveSerialDevice(string port, string ttyClassRoot = "/sys/class/tty")
-        {
+        { // note: may return null when the device link cannot be resolved
             // Resolve the class symlink FIRST. The relative device link is
             // relative to its real parent, not /sys/class/tty/<name>.
             var entry = new DirectoryInfo(Path.Combine(ttyClassRoot, Path.GetFileName(port)));
@@ -123,7 +123,7 @@ namespace Kirin_Tool.Utils
                     string.Equals(product, $"{productId.Value:X4}", StringComparison.OrdinalIgnoreCase));
         }
 
-        private static string GetUsbDescriptor(DirectoryInfo usbDevice)
+        private static string GetUsbDescriptor(DirectoryInfo? usbDevice)
         {
             var values = new List<string>();
             for (DirectoryInfo? directory = usbDevice; directory != null; directory = directory.Parent)

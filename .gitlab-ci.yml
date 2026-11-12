@@ -32,6 +32,8 @@ build:
   timeout: 20m
   script: |
     set -euo pipefail
+    # Drop leftovers from an earlier failed run of this shared checkout before staging.
+    rm -rf artifact dist publish-fake
     dotnet --version
     test "$(dotnet --version | cut -d. -f1)" = "10" || { echo "need .NET 10 SDK"; exit 1; }
     dotnet restore Kirin-Tool.csproj
@@ -56,21 +58,22 @@ build:
       - artifact/KirinTool.Cli/
     expire_in: 7 days
 
-# Same hardware-free suite list as cli-mcp-ci.yml. Hardware probes
-# (VcomOpenProbe, UsbUpdateProbe) and the pixel comparison (VisualParity) stay
-# out on purpose: they need a phone / a specific font stack.
+# Hardware-free harnesses, read from tests/suites.txt so this list cannot drift
+# from .github/workflows/cli-mcp-ci.yml. Hardware probes (VcomOpenProbe,
+# UsbUpdateProbe) and the pixel comparison (VisualParity) stay out on purpose:
+# they need a phone / a specific font stack. WriteGates, McpProtocol and OtaPlan
+# need the CLI binary from the build stage (already in the shared checkout).
 tests:
   stage: test
   timeout: 30m
   needs: ["build"]
   script: |
     set -euo pipefail
-    for t in FlashPolicy StableParity FastbootReads VcomPromptUi GuiQol Extractor \
-             UsbDiagnostics UsbRedlineGate UsbTransport UsbUpdateUi OemInfoUi \
-             UdevNotice Kirin9000; do
+    while read -r t; do
+      case "$t" in ''|'#'*) continue ;; esac
       echo "=== $t ==="
       dotnet run --project "tests/$t" -c Release -p:NuGetAudit=false
-    done
+    done < tests/suites.txt
 
 smoke:
   stage: test
@@ -78,6 +81,8 @@ smoke:
   needs: ["build"]
   script: |
     set -euo pipefail
+    # Clean this job's own outputs from a previous run of the shared checkout.
+    rm -f /tmp/help.txt /tmp/doctor.json /tmp/mcp.out /tmp/mcp.err
     cli="$CI_PROJECT_DIR/artifact/KirinTool.Cli/KirinTool.Cli"
     test -x "$cli"
 

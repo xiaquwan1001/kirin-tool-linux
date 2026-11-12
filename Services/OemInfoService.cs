@@ -28,11 +28,14 @@ namespace Kirin_Tool.Services
     public class OemInfoService
     {
         private readonly FastbootClient _fastbootClient;
-        private readonly string _tempOemInfoPath = Path.Combine(Path.GetTempPath(), "temp_oeminfo.img");
+        private readonly string _tempOemInfoPath;
 
         public OemInfoService(FastbootClient fastbootClient)
         {
             _fastbootClient = fastbootClient;
+            // Per-instance temp path so concurrent service instances never
+            // clobber or delete each other's pulled OEMInfo image.
+            _tempOemInfoPath = Path.Combine(Path.GetTempPath(), $"temp_oeminfo_{Guid.NewGuid():N}.img");
         }
 
         public async Task<OemInfoConversionResult> ConvertOemInfo(
@@ -84,6 +87,15 @@ namespace Kirin_Tool.Services
             {
                 result.ErrorMessage = $"Error during conversion: {ex.Message}";
                 return result;
+            }
+            finally
+            {
+                // The pulled temp image is fully consumed once conversion ran
+                // (or failed); clean it up on every path.
+                if (pullFromDevice)
+                {
+                    CleanupTempFiles();
+                }
             }
         }
 

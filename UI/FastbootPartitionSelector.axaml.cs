@@ -31,7 +31,7 @@ namespace Kirin_Tool.UI
 {
     public partial class FastbootPartitionSelector : Window, INotifyPropertyChanged
     {
-        private ObservableCollection<FastbootPartition> _partitions;
+        private ObservableCollection<FastbootPartition> _partitions = new();
         private bool _updatingSelectAll = false;
         private bool? _selectAllState = false;
         private bool _skipSecurePartitions = true;
@@ -184,8 +184,9 @@ namespace Kirin_Tool.UI
             {
                 this.Close();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
+                // Closing an already-closed window is not an error worth surfacing.
             }
         }
 
@@ -197,8 +198,9 @@ namespace Kirin_Tool.UI
             {
                 this.Close();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
+                // Closing an already-closed window is not an error worth surfacing.
             }
         }
 

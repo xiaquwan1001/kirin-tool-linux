@@ -5,6 +5,7 @@ using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Kirin_Tool.Services;
 using Kirin_Tool.UI;
+using Kirin_Tool.Utils;
 
 namespace Kirin_Tool;
 
@@ -62,26 +63,44 @@ public partial class MainWindow
 
     private async void BrowseExtractionSource_Click(object? sender, RoutedEventArgs e)
     {
-        var selected = await _dialogService.ShowOpenFileDialog(
-            "Select Base, Cust or Preload UPDATE.APP",
-            new() { "app", "APP", "*" },
-            "UPDATE.APP files");
-        if (string.IsNullOrWhiteSpace(selected)) return;
+        try
+        {
+            var selected = await _dialogService.ShowOpenFileDialog(
+                "Select Base, Cust or Preload UPDATE.APP",
+                new() { "app", "APP", "*" },
+                "UPDATE.APP files");
+            if (string.IsNullOrWhiteSpace(selected)) return;
 
-        await LoadExtractionSourceAsync(selected);
-        // Only remember an archive that actually parsed, so the next start does
-        // not re-read a broken file.
-        if (_extractionSource is not null) UserSettings.ExtractorSourcePath = selected;
+            await LoadExtractionSourceAsync(selected);
+            // Only remember an archive that actually parsed, so the next start does
+            // not re-read a broken file.
+            if (_extractionSource is not null) UserSettings.ExtractorSourcePath = selected;
+        }
+        catch (Exception ex)
+        {
+            // async void: an unhandled exception here kills the process.
+            ProcessRunner.WriteDiagnostic("BrowseExtractionSource_Click", ex.ToString());
+            await ShowMessageBox("File Picker Error", ex.Message);
+        }
     }
 
     private async void BrowseExtractionDestination_Click(object? sender, RoutedEventArgs e)
     {
-        var folder = await _dialogService.ShowOpenFolderDialog("Choose Extraction Folder");
-        if (string.IsNullOrWhiteSpace(folder)) return;
-        _extractionDestination = folder;
-        ExtractorDestinationPath.Text = folder;
-        UserSettings.ExtractorDestinationPath = folder;
-        UpdateExtractionSelection();
+        try
+        {
+            var folder = await _dialogService.ShowOpenFolderDialog("Choose Extraction Folder");
+            if (string.IsNullOrWhiteSpace(folder)) return;
+            _extractionDestination = folder;
+            ExtractorDestinationPath.Text = folder;
+            UserSettings.ExtractorDestinationPath = folder;
+            UpdateExtractionSelection();
+        }
+        catch (Exception ex)
+        {
+            // async void: an unhandled exception here kills the process.
+            ProcessRunner.WriteDiagnostic("BrowseExtractionDestination_Click", ex.ToString());
+            await ShowMessageBox("Folder Picker Error", ex.Message);
+        }
     }
 
     private void SelectExtractionAll_Click(object? sender, RoutedEventArgs e)

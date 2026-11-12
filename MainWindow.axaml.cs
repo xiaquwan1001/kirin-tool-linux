@@ -594,6 +594,9 @@ namespace Kirin_Tool
             }
         }
 
+        // TODO(battery-gate): project convention is to refuse writes below 50% battery;
+        // the Huawei loader getvar field name for battery level is not yet confirmed on
+        // a real device, so no gate is implemented here.
         private async Task<(bool IsSuccess, string Message)> FlashPartitionsWithProgress(
         List<FastbootPartition> selectedPartitions,
         ProcessDialogUapp progressDialog,
@@ -644,14 +647,19 @@ namespace Kirin_Tool
 
                         var result = await _fastbootFlasherService.FlashPartitionAsync(partition.Identifier, partition.DumpPath);
 
-                        if (result.IsSuccess)
+                        // Exit code 0 alone is not proof: a write only counts when the
+                        // fastboot client printed OKAY for it.
+                        bool flashConfirmed = result.IsSuccess &&
+                            (result.Message ?? string.Empty).Contains("OKAY", StringComparison.OrdinalIgnoreCase);
+
+                        if (flashConfirmed)
                         {
                             progressDialog.CompletePartition(partition.Name, true);
                             successCount++;
                         }
                         else
                         {
-                            progressDialog.CompletePartition(partition.Name, false, "Flash failed");
+                            progressDialog.CompletePartition(partition.Name, false, FlashFailureDescription(result.Message));
                             lastError = result.Message;
                         }
                     }
@@ -905,6 +913,9 @@ namespace Kirin_Tool
             }
         }
 
+        // TODO(battery-gate): project convention is to refuse writes below 50% battery;
+        // the Huawei loader getvar field name for battery level is not yet confirmed on
+        // a real device, so no gate is implemented here.
         private async Task StartUsbUpdateFlash()
         {
             using var cancellationTokenSource = new CancellationTokenSource();
@@ -995,6 +1006,24 @@ namespace Kirin_Tool
                         var partitionItems = partitions.Select(p => (new PartitionInfo { Name = p.PartitionName }, p.SourceLabel)).ToList();
                         flashDialog.ReplacePartitions(partitionItems);
                     });
+
+                    // F2 redline diff: partitions that only become visible after unpacking
+                    // were never covered by the pre-scan confirmation. Ask once more for
+                    // exactly that delta, before the service's post-discovery write gate.
+                    var newRedlineHits = RedlinePartitionHits(partitions.Select(p => p.PartitionName))
+                        .Where(name => !redlinePreScan.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        .ToList();
+                    if (newRedlineHits.Count > 0 &&
+                        !ConfirmRedlineDeltaOnBackground(newRedlineHits, "The USB Update flash (partitions discovered after unpacking)"))
+                    {
+                        // Declined (or timed out): cancel before any write happens; the
+                        // service throws on the token right after its redline gate.
+                        cancellationTokenSource.Cancel();
+                        Dispatcher.UIThread.InvokeAsync(() =>
+                            flashDialog.SetOverallComplete(false,
+                                "USB Update flash aborted: newly discovered redline partition(s) were not confirmed: " +
+                                string.Join(", ", newRedlineHits)));
+                    }
                 };
 
                 _usbUpdateFlasherService.OnPartitionProgress += (index, name, progress) =>
@@ -1172,6 +1201,9 @@ namespace Kirin_Tool
             }
         }
 
+        // TODO(battery-gate): project convention is to refuse writes below 50% battery;
+        // the Huawei loader getvar field name for battery level is not yet confirmed on
+        // a real device, so no gate is implemented here.
         private async Task<(bool IsSuccess, string Message)> FlashFullOtaPartitions(
         List<(PartitionInfo Partition, string Source)> partitions,
         ProcessDialogUapp progressDialog,
@@ -1278,17 +1310,19 @@ namespace Kirin_Tool
                         string flashPartitionName = partition.Name;
                         var flashResult = await _fastbootClient.FlashPartition(flashPartitionName, tempFilePath);
 
-                        if (flashResult.IsSuccess)
+                        // Exit code 0 alone is not proof: a write only counts when the
+                        // fastboot client printed OKAY for it.
+                        bool flashConfirmed = flashResult.IsSuccess &&
+                            (flashResult.Output ?? string.Empty).Contains("OKAY", StringComparison.OrdinalIgnoreCase);
+
+                        if (flashConfirmed)
                         {
                             progressDialog.CompletePartitionByIndex(i, true);
                             successCount++;
                         }
                         else
                         {
-                            string shortError = flashResult.Output;
-                            if (shortError.Length > 200) shortError = shortError.Substring(0, 200) + "...";
-
-                            progressDialog.CompletePartitionByIndex(i, false, $"Failed");
+                            progressDialog.CompletePartitionByIndex(i, false, FlashFailureDescription(flashResult.Output));
                             lastError = $"Command: fastboot {flashResult.Arguments}\nOutput: {flashResult.Output}";
                         }
                     }
@@ -1647,8 +1681,47 @@ namespace Kirin_Tool
             return IsRedlinePartition(name) || IsRedlinePartition(identifier);
         }
 
+        /// <summary>
+        /// Runs the redline confirmation for a diff computed on a worker thread (the USB
+        /// Update post-discovery callback) and blocks that worker until the UI answers.
+        /// Returns false on decline or timeout so the caller can cancel before any write.
+        /// </summary>
+        private bool ConfirmRedlineDeltaOnBackground(List<string> newRedlineHits, string operation)
+        {
+            var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Dispatcher.UIThread.Post(async () =>
+            {
+                try { answer.TrySetResult(await ConfirmRedlineWriteAsync(newRedlineHits, operation)); }
+                catch (Exception ex)
+                {
+                    ProcessRunner.WriteDiagnostic("ConfirmRedlineDeltaOnBackground", ex.ToString());
+                    answer.TrySetResult(false);
+                }
+            });
+
+            // Bounded wait: if the dialog can never be answered, abort instead of
+            // deadlocking the flash worker thread.
+            var completed = Task.WhenAny(answer.Task, Task.Delay(TimeSpan.FromMinutes(10))).GetAwaiter().GetResult();
+            return completed == answer.Task && answer.Task.Result;
+        }
+
         private async Task HandleFrpRemove()
         {
+            // Irreversible erase: ask before the first erase command is sent.
+            bool confirmed = await _dialogService.ShowConfirmDialog(
+                "FRP Lock Removal",
+                "This will PERMANENTLY erase FRP-related data. The following commands run in order:\n\n" +
+                "  1. erase frp\n" +
+                "  2. erase config\n" +
+                "  3. oem frp-erase\n\n" +
+                "The erased data cannot be recovered. Continue only if you accept this.",
+                "Erase Permanently", "Cancel");
+            if (!confirmed)
+            {
+                await ShowMessageBox("Cancelled", "FRP Lock removal aborted; nothing was erased.");
+                return;
+            }
+
             var frpDialog = new FrpStepDialog();
             var dialogTask = _dialogService.ShowDialog(frpDialog);
 
@@ -1757,6 +1830,9 @@ namespace Kirin_Tool
             await dialogTask;
         }
 
+        // TODO(battery-gate): project convention is to refuse writes below 50% battery;
+        // the Huawei loader getvar field name for battery level is not yet confirmed on
+        // a real device, so no gate is implemented here.
         private async Task HandleRebootToUsbUpdate()
         {
             using var cancellationTokenSource = new CancellationTokenSource();
@@ -1875,7 +1951,11 @@ namespace Kirin_Tool
                         string flashCmd = rescuePlan[i].Target;
 
                         var flashResult = await _fastbootClient.FlashPartition(flashCmd, imgPath);
-                        if (flashResult.IsSuccess)
+                        // Exit code 0 alone is not proof: a write only counts when the
+                        // fastboot client printed OKAY for it.
+                        bool flashConfirmed = flashResult.IsSuccess &&
+                            (flashResult.Output ?? string.Empty).Contains("OKAY", StringComparison.OrdinalIgnoreCase);
+                        if (flashConfirmed)
                         {
                             progressDialog.CompletePartitionByIndex(i, true);
                         }
@@ -1959,6 +2039,25 @@ namespace Kirin_Tool
             if (string.IsNullOrWhiteSpace(newSn))
             {
                 await ShowMessageBox("Input Error", "New Serial Number cannot be empty.");
+                return;
+            }
+
+            // Show the current value next to the new one; a failed read must not be
+            // silently presented as the device's real serial number.
+            string currentSn;
+            try { currentSn = await _fastbootClient.ReadNveVariable("SN"); }
+            catch { currentSn = "(read failed)"; }
+
+            string confirmMessage =
+                "This PERMANENTLY rewrites the NVE serial number. This change is NOT recoverable " +
+                "without a verified backup of the original value.\n\n" +
+                $"Current SN: {currentSn}\n" +
+                $"New SN:     {newSn}\n\n" +
+                "Write the new serial number now?";
+            bool confirmed = await _dialogService.ShowConfirmDialog("Write Serial Number", confirmMessage, "Write Permanently", "Cancel");
+            if (!confirmed)
+            {
+                await ShowMessageBox("Cancelled", "Serial number write aborted; nothing was changed.");
                 return;
             }
 
@@ -2429,11 +2528,20 @@ namespace Kirin_Tool
 
         private async void BrowseOemInfoFile_Click(object sender, RoutedEventArgs e)
         {
-            var fileResult = await _dialogService.ShowOpenFileDialog("Select OEMInfo File", new List<string> { "img", "*" });
-            if (!string.IsNullOrWhiteSpace(fileResult))
+            try
             {
-                TxtOemInfoFile.Text = fileResult;
-                UserSettings.OemInfoFile = fileResult;
+                var fileResult = await _dialogService.ShowOpenFileDialog("Select OEMInfo File", new List<string> { "img", "*" });
+                if (!string.IsNullOrWhiteSpace(fileResult))
+                {
+                    TxtOemInfoFile.Text = fileResult;
+                    UserSettings.OemInfoFile = fileResult;
+                }
+            }
+            catch (Exception ex)
+            {
+                // async void: an unhandled exception here kills the process.
+                ProcessRunner.WriteDiagnostic("BrowseOemInfoFile_Click", ex.ToString());
+                await ShowMessageBox("File Picker Error", ex.Message);
             }
         }
 
@@ -2717,21 +2825,30 @@ namespace Kirin_Tool
 
         private async void RebootDevice_Click(object sender, RoutedEventArgs e)
         {
-            if (!await AllowChipOperationAsync("reboot")) return;
-            if (!await _fastbootClient.IsDeviceConnected())
+            try
             {
-                await ShowMessageBox("Device Not Found", "No device detected in fastboot mode. Please connect your device and try again.");
-                return;
-            }
+                if (!await AllowChipOperationAsync("reboot")) return;
+                if (!await _fastbootClient.IsDeviceConnected())
+                {
+                    await ShowMessageBox("Device Not Found", "No device detected in fastboot mode. Please connect your device and try again.");
+                    return;
+                }
 
-            var result = await _fastbootClient.RebootAsync();
-            if (result.IsSuccess)
-            {
-                await ShowMessageBox("Success", "Rebooted successfully!");
+                var result = await _fastbootClient.RebootAsync();
+                if (result.IsSuccess)
+                {
+                    await ShowMessageBox("Success", "Rebooted successfully!");
+                }
+                else
+                {
+                    await ShowMessageBox("Error", $"Failed to reboot device: {result.Output}");
+                }
             }
-            else
+            catch (Exception ex)
             {
-                await ShowMessageBox("Error", $"Failed to reboot device: {result.Output}");
+                // async void: an unhandled exception here kills the process.
+                ProcessRunner.WriteDiagnostic("RebootDevice_Click", ex.ToString());
+                await ShowMessageBox("Error", $"Reboot failed: {ex.Message}");
             }
         }
     }

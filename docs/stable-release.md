@@ -1,5 +1,13 @@
 # Kirin Tool Linux 2.4.8
 
+> **Fork note (2026-11-12).** This document describes the inherited upstream **2.4.8** baseline, not the
+> current release of this fork. The fork's own releases start at 2.4.9; the latest is **2.4.12** and ships
+> `.deb`, `.AppImage`, `.tar.gz` and a single-file CLI (no pacman package). For install commands and asset
+> names use [fork-release.md](fork-release.md) and the fork's
+> [releases page](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest). Version numbers and
+> file names below (2.4.8, `kirin-tool-linux-2.4.8-1-x86_64.pkg.tar.zst`) no longer exist in this fork's
+> releases, so do not copy them verbatim.
+
 October 24, 2026. Stable and main share one source tree; beta remains separate.
 The frozen Windows source reference remains 45440d47296ef4c250fc03730259dbeebb245ebc.
 No newer Windows Kirin GUI source or new loader was imported. Preserve LICENSE and notices.

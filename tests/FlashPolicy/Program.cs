@@ -11,7 +11,6 @@ using Kirin_Tool.Utils;
 string root = Path.GetFullPath(args.Length == 0 ? "." : args[0]);
 int checks = 0;
 void Check(bool ok, string name) { if (!ok) throw new Exception("FAIL " + name); Console.WriteLine("PASS " + name); checks++; }
-void Skip(string name, string why) { Console.WriteLine("SKIP " + name + " - " + why); }
 
 // ---- 1. ShouldSkip: package-descriptor metadata never reaches the writer ----
 foreach (string name in new[] {
@@ -82,7 +81,10 @@ try
 
     if (cli == null)
     {
-        Skip("cli redline plan", "build KirinTool.Cli first (dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release)");
+        // A missing CLI binary is a setup failure, not a pass: CI must not silently skip
+        // the CLI-level redline gate assertion.
+        Console.WriteLine("FAIL cli redline plan - KirinTool.Cli binary not found; build it first (dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release)");
+        Environment.ExitCode = 1;
     }
     else
     {
@@ -114,7 +116,7 @@ try
 
         using JsonDocument plan = JsonDocument.Parse(planOut);
         JsonElement planNode = plan.RootElement.GetProperty("plan");
-        Check(plan.RootElement.GetProperty("gate").GetString() == "plan-only", "plan is plan-only, nothing written");
+        Check(plan.RootElement.GetProperty("gate").GetString() == "refused", "redline plan is reported as refused, nothing written");
         Check(plan.RootElement.GetProperty("applied").GetBoolean() == false, "applied=false: the gate refused before any write");
         JsonElement redlines = planNode.GetProperty("redlines");
         Check(redlines.GetArrayLength() == 1 && redlines[0].GetString() == "OEMINFO", "plan lists OEMINFO as redline");
