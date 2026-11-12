@@ -20,8 +20,9 @@ variables:
   DOTNET_CLI_TELEMETRY_OPTOUT: "true"
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
   DOTNET_ROLL_FORWARD: "Major"
-  # The host already has a warm package cache; do not re-download per pipeline.
-  NUGET_PACKAGES: "$HOME/.nuget/packages"
+  # Do not set NUGET_PACKAGES here: GitLab does not expand $HOME in variables
+  # (it becomes "/.nuget", i.e. EACCES). The runner's default ~/.nuget/packages
+  # is already warm on this host.
 
 default:
   interruptible: true
