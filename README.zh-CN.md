@@ -232,7 +232,7 @@ v2.4.13 界面的 headless 渲染（commit `47fb3da`，来自真实 Avalonia 控
 | [Fork 来源与许可](docs/FORK-NOTICE.md) | 许可立场与上游关系。 |
 | [UPDATE.APP 提取](docs/partition-extractor.md) · [AppImage 与 udev](docs/portable-appimage.md) · [原生 fastboot 同构](docs/native-fastboot-parity-v2.4.5.md) | 继承基线的指南。 |
 | [v2.4.13 发行说明](docs/release-notes/v2.4.13.md) · [截图](docs/screenshots.md) | 本次发布，以及截图怎么拍的。 |
-| [社区帖（酷安）](docs/coolapk/) | 实用向介绍。v2.4.13 帖存档 [docs/coolapk/v2.4.13-post.md](docs/coolapk/v2.4.13-post.md)；当前实用向草稿 [docs/coolapk/refresh-post-draft.md](docs/coolapk/refresh-post-draft.md)。 |
+| [社区帖（酷安）](https://www.coolapk.com/feed/75025716) | refresh 版的实用向介绍，正文存档 [docs/coolapk/refresh-post.md](docs/coolapk/refresh-post.md)；技术记录只在本仓库。 |
 
 ### 从源码构建
 

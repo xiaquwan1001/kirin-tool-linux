@@ -253,7 +253,7 @@ device was connected, so device fields show the UI's native "Not Read" state. Pr
 | [Fork provenance](docs/FORK-NOTICE.md) | License position and upstream relationship. |
 | [UPDATE.APP extraction](docs/partition-extractor.md) · [AppImage & udev](docs/portable-appimage.md) · [Native fastboot parity](docs/native-fastboot-parity-v2.4.5.md) | Inherited-baseline guides. |
 | [v2.4.13 release notes](docs/release-notes/v2.4.13.md) · [screenshots](docs/screenshots.md) | This release, and how the screenshots were captured. |
-| [Community posts (酷安)](docs/coolapk/) | Usage-oriented introductions (Chinese). The v2.4.13 post is archived as [docs/coolapk/v2.4.13-post.md](docs/coolapk/v2.4.13-post.md); the current usage-first draft is [docs/coolapk/refresh-post-draft.md](docs/coolapk/refresh-post-draft.md). |
+| [Community post (酷安)](https://www.coolapk.com/feed/75025716) | Usage-oriented introduction of the refresh line, archived as [docs/coolapk/refresh-post.md](docs/coolapk/refresh-post.md). Technical record stays here. |
 
 ### Build from source
 
