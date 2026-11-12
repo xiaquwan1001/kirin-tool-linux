@@ -1,69 +1,167 @@
-<div align="center">
+# Kirin Tool for Linux · refresh
 
-<img src="packaging/kirin-tool.png" alt="Kirin Tool application icon" width="96" height="96">
+[English](README.md) · **[简体中文](README.zh-CN.md)**
 
-# Kirin Tool for Linux
+**Huawei / HiSilicon Kirin devices from Linux: UPDATE.APP extraction, a Huawei-parity fastboot engine and
+real Full-OTA writes — through a GUI, a headless CLI and an MCP server that share a single implementation,
+with every destructive step gated, confirmed and backed up first.**
 
-**Flash, extract and rescue Huawei Kirin devices from Linux — with a GUI, a headless CLI and an MCP server, all behind the same write-safety gates.**
+[![Latest release](https://img.shields.io/github/v/release/xiaquwan1001/kirin-tool-linux-refresh?style=flat-square&color=5865f2)](https://github.com/xiaquwan1001/kirin-tool-linux-refresh/releases/latest)
+[![Release build](https://img.shields.io/github/actions/workflow/status/xiaquwan1001/kirin-tool-linux-refresh/release-linux.yml?style=flat-square&label=release%20build)](https://github.com/xiaquwan1001/kirin-tool-linux-refresh/actions/workflows/release-linux.yml)
+[![Platform](https://img.shields.io/badge/Linux-x86__64-1793d1?style=flat-square&logo=linux&logoColor=white)](#install)
+[![License](https://img.shields.io/badge/source_available-BSL_1.1-8b5cf6?style=flat-square)](LICENSE)
 
-[![Latest release](https://img.shields.io/github/v/release/xiaquwan1001/kirin-tool-linux?style=flat-square&color=5865f2)](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest) [![Release build](https://img.shields.io/github/actions/workflow/status/xiaquwan1001/kirin-tool-linux/release-linux.yml?style=flat-square&label=release%20build)](https://github.com/xiaquwan1001/kirin-tool-linux/actions/workflows/release-linux.yml) [![Platform](https://img.shields.io/badge/Linux-x86__64-1793d1?style=flat-square&logo=linux&logoColor=white)](#install) [![License](https://img.shields.io/badge/source_available-BSL_1.1-8b5cf6?style=flat-square)](LICENSE)
-
-[**Download**](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest) · [What this fork adds](#what-this-fork-adds-over-upstream) · [Safety model](#safety-model) · [Install](#install) · [CLI & MCP](#cli--mcp-quick-start) · [Docs](#documentation)
-
-</div>
-
-An unofficial, independently maintained Linux port of [Kirin-Tool](https://github.com/kethily-daniel/Kirin-Tool) for Huawei / HiSilicon Kirin devices, built on **.NET 10 / Avalonia**. Current release: **v2.4.13**.
+[**Download**](https://github.com/xiaquwan1001/kirin-tool-linux-refresh/releases/latest) ·
+[Why "-refresh"](#why-this-repo-is-called--refresh) ·
+[Changes vs upstream](#what-this-line-changes-vs-upstream) ·
+[Design trade-offs](#design-decisions-worth-arguing-about) ·
+[Field notes](#field-notes--what-flashing-a-kirin-device-actually-looks-like) ·
+[Safety model](#safety-model) · [Install](#install) · [CLI & MCP](#cli--mcp-quick-start) · [Docs](#documentation)
 
 > [!WARNING]
-> Flashing, unlocking and rebranding can erase data or damage a device. Back up your data, use firmware matching your device, and read the [safety model](#safety-model) before writing anything. You are responsible for device operations; a successful host build does not establish hardware compatibility.
+> Flashing, unlocking and rebranding can erase data or leave a device unbootable. A successfully built
+> host tool proves nothing about your device. Back up, match firmware to model, read the
+> [safety model](#safety-model) before writing anything. You own the device operations.
 
-## 60-second overview
+This repository is a **technical record first**: what this line changes relative to the upstream Linux
+port, why each of those changes exists, and what we actually observed while flashing a Kirin 990 5G
+device on Linux. Usage-oriented, less formal write-ups live on the community side (酷安), not here.
 
-| | |
+---
+
+## Why this repo is called `-refresh`
+
+The code lineage is three steps deep, and two of them share the same repository name:
+
+| | Project | What it is |
+| :--- | :--- | :--- |
+| Upstream of everything | [kethily-daniel/Kirin-Tool](https://github.com/kethily-daniel/Kirin-Tool) | original Windows/WPF tool, BSL 1.1 at v2.4.2 |
+| The repo this is forked from | [Redminote11tech/kirin-tool-linux](https://github.com/Redminote11tech/kirin-tool-linux) | independent Avalonia port of v2.4.2 to Linux |
+| **This repository** | `xiaquwan1001/kirin-tool-linux-refresh` | the maintained **refresh line** of that port |
+
+Three reasons the suffix is part of the name, not just decoration:
+
+1. **A plain fork is indistinguishable.** The inherited repo is literally named `kirin-tool-linux`;
+   a fork with the same name makes "which one do I clone / which release do I install" ambiguous in
+   search results and in every link people paste.
+2. **This is a divergence, not a mirror.** Upstream replaced BSL 1.1 with a view-only *Kirin-Tool
+   Read-Only Reference License* on 2026-09-11; this line **stopped syncing** at that point. Every build
+   after that is our own work on top of the BSL-era v2.4.2 base — calling it an upstream mirror would
+   be factually wrong. Provenance and the license position are recorded in [docs/FORK-NOTICE.md](docs/FORK-NOTICE.md).
+3. **"refresh" is what actually happened to it.** The line was re-audited end to end (write paths,
+   MCP contract, GUI success criteria, packaging), re-verified on real hardware, and given its own
+   release pipeline. The name should say so.
+
+Channel split, for the record: **this repository is the technical showcase (diffs, rationale,
+hardware findings, honest limits)**, while the community posts (酷安) are the practical showcase (what it is
+nice for, how to use it). If the two ever disagree, this repository is the source of truth.
+
+## What this line changes vs upstream
+
+Baseline = the inherited Avalonia port of upstream v2.4.2/v2.4.8, as taken over. Everything below is
+added or changed afterwards; the exhaustive per-release list is in
+[docs/refresh-changelog.md](docs/refresh-changelog.md).
+
+| Change | Why it exists |
 | :--- | :--- |
-| **What it can do** | Extract UPDATE.APP firmware, inspect devices over fastboot/adb, and write Full-OTA / flashing.xml plans through a temporary VCOM loader — from a GUI, a headless CLI or an MCP server (one shared implementation). |
-| **What it cannot do** | It cannot guarantee your device is supported (only Kirin 990 5G / P40 Pro is fully verified), it cannot bypass firmware or loader permissions, and plan-only commands (`vcom-unlock`, `oeminfo`, `downgrade-enable`) never write — they only print a plan. |
-| **Safety boundaries** | Redline identity/security partitions are refused unless the **human** overrides — `--allow-redline` exists only in the CLI, never over MCP, so an AI client cannot redline-override on its own. Every write reports a machine-readable `gate` (`plan-only`/`refused`/`confirmed`/`applied`) and counts as success only on a device `OKAY`. Pre-op backups are **best effort** — a loader without dump support warns and continues, it never blocks. |
-| **Who it is for** | People who drive Huawei devices from scripts or AI agents (CLI + MCP are built for automation) and want every destructive step gated, confirmed and backed up first. Not a one-click repair tool. |
+| **CLI + MCP server as first-class entries** (`kirin-tool-cli`, `Kirin-Tool --mcp`) sharing one `CliRunner` with the GUI | flashing is scriptable and agent-driven now; three code paths would drift apart within a week. One implementation, three faces. |
+| **`CliWriteKind` generates every contract string** (MCP `initialize.instructions`, each tool's `confirm` description, CLI help) | an earlier build described `flash_ota` as "gate-only in this build" while it really wrote to the device. Generated text cannot drift from the implementation. |
+| **Machine-readable `gate`: `plan-only` / `refused` / `confirmed` / `applied`**, and a refusal emits exactly **one** JSON document | clients branched on exit codes only — and 4 means both "not confirmed" and "refused". Two JSON documents on the refusal path also broke parsers. |
+| **Redline override is CLI-only**: MCP rejects `allow-redline` with JSON-RPC `-32602` | identity/security partitions (`oeminfo`, `nvme`, `persist`, `modem_secure`, `modemnvm*`, `certification`, `hisee_encos`, `veritykey`, …) are effectively irreversible. A human types the override; an AI client cannot grant it to itself. |
+| **Success = exit 0 *and* device `OKAY`** | a rejected write used to render as "flash completed" because the process exited 0. Now a temporary loader's "already fastboot unlocked" is reported as *no write*. |
+| **SN (NVE) rewrite and FRP erase require an explicit dialog showing old vs new values**; USB Update re-confirms redline partitions discovered only after unpacking | these were one click away from silent execution, and unpacking can surface partitions the pre-flight check never saw. |
+| **Automatic pre-op backup** before every real write (redline partitions of the plan + `ptable`, timestamped dir, `manifest.json` with size/SHA256/status) | the write we can most easily regret is the one we cannot undo. Details and flags below. |
+| **Low-battery banner (warning only)** | see [why it is not a gate](#why-the-battery-is-a-warning-and-not-a-gate). |
+| **`flash-xml` skips identifiers the loader does not expose** (warning), `--strict-names` refuses with exit 3 | a human-authored XML may legitimately mention aliases; failing hard by default blocked nothing useful but confused everybody. |
+| **Plan-only commands really never write** (`vcom-unlock`, `oeminfo`, `downgrade-enable` → exit 4 always) | see the oeminfo field note: those writes are not offline-computable, so the honest product is a plan. |
+| **Own release pipeline** (deb / AppImage / tar.gz / single-file CLI from one commit) with a deb `Depends` policy and `apt-get -s` simulation on three Ubuntu generations | upstream releases never matched Linux runtime reality: ICU sonames move every release, `libssl3` became `libssl3t64` on 24.04+, and dpkg alternatives have no wildcards. [docs/fork-release.md](docs/fork-release.md). |
+| **Dual CI, single source of truth for tests** (`tests/suites.txt`, 17 hardware-free harnesses, GitHub Actions + GitLab CI) | a test that only one pipeline runs is a test that will rot. `FlashPolicy` now fails hard when the CLI binary is missing instead of skipping. |
+| **`StableParity` hash boundary** around `loaders/`, the fastboot payload, `SuperMerger`, `VcomFlasher`, USB Update | hardware blobs and serial protocol must not move by accident; only behaviour-preserving edits are allowed there. |
+| **Crash handlers and robustness fixes** (process-tree kill on timeout, `SerialPort` leak, per-instance temp files, truncated sparse header rejection) | a GUI that dies silently mid-flash is worse than one that reports a crash. |
 
-## What this fork adds over upstream
+## Design decisions worth arguing about
 
-The inherited base is the **Redminote11tech** Linux port of upstream **2.4.8** (see [docs/stable-release.md](docs/stable-release.md) — treat its old install file names as the inherited baseline, not current assets). This fork (`xiaquwan1001`) adds:
+**Backups are best effort, not a gate.** A temporary VCOM loader typically answers `invalid command` to
+`oem dump-emmc` / `oem dump-storage` — exactly the loader we use for the one flashing path that works
+on ELS-AN00. Making an incomplete backup block the write would therefore block the working path and
+push people to `--no-backup` permanently. So: it degrades, records `unsupported`/`failed` per partition
+with a reason, warns on stderr/UI, and offers `--require-backup` for those who want the strict version.
+Cost: silence is possible if you ignore warnings — which is why the manifest states per-partition status
+instead of just "backup done".
 
-| Area | What this fork adds |
+**The MCP path has no dry-run, but still cannot redline-override.** Faking a dry-run would be the same
+lie the old "gate-only" wording told. Instead the contract is explicit ("`confirm: true` performs the
+real write; there is no dry-run in the MCP path"), the redline refusal is structural rather than
+policy-based, and every call returns a `gate` value a client can branch on without parsing prose.
+
+**`flash-ota` and `flash-xml` default differently on unknown identifiers** — skip (ota) vs skip-with-warning
+(xml, `--strict-names` to refuse). The OTA plan comes from a firmware package: an identifier the loader
+does not expose means a firmware/loader mismatch you should notice. An XML plan is authored by a human
+and may mention aliases that only resolve on some loaders; refusing by default there would reject
+legitimate configurations.
+
+**The battery level is a warning and not a gate.** The read is best effort (temporary loaders usually
+answer `invalid command`), and a gate built on an unreliable read either blocks everything or protects
+nothing. So the 50 % rule stays a human convention, printed as a non-modal banner, with an honest
+"could not read" line instead of a fake percentage.
+
+**The native fastboot engine is not optional.** Google platform-tools 37 fails wholesale against Huawei
+loaders (`getvar partition-size` and friends), so the bundled Huawei-parity client is the only thing
+that talks to these devices; see [docs/native-fastboot-parity-v2.4.5.md](docs/native-fastboot-parity-v2.4.5.md)
+for what is reconstructed, what is tested and what is honestly unproven.
+
+## Field notes — what flashing a Kirin device actually looks like
+
+Everything here was learned on a Huawei P40 Pro (ELS-AN00, Kirin 990 5G) from Linux. It is the reason
+the safety model looks the way it does.
+
+| Symptom / belief | What is really going on |
 | :--- | :--- |
-| **Headless CLI + MCP server** | Every tool is also a command (`KirinTool.Cli`) and an MCP tool over stdio (`kirin-tool-cli mcp` / `Kirin-Tool --mcp`); one shared implementation. See [docs/cli-mcp.md](docs/cli-mcp.md). |
-| **Real OTA flashing** | `flash-ota` performs a real Full-OTA write through a temporary VCOM loader — verified end to end on a Huawei P40 Pro / ELS-AN00: **46/46 partitions written, device booting 22 s after reboot**. |
-| **Redline gates in all three entries** | Device-keyed partitions (`oeminfo`, `nvme`, `modem_secure`, `persist`, `modemnvm*`, `certification`, `hisee_encos`, `veritykey`, …) require an explicit override in the GUI, in the CLI and over MCP. |
-| **Honest success reporting** | A fastboot write only counts as successful when the device replies `OKAY` — exit 0 alone no longer hides a rejected write. A temporary loader's "already fastboot unlocked" is reported as *no write*. |
-| **Destructive-op confirmations** | Serial-number (NVE) rewrite and FRP erase require an explicit GUI confirmation showing old vs. new values; USB Update re-confirms any redline partitions discovered only after unpacking. |
-| **Crash safety net** | Global unhandled-exception handlers log and surface UI crashes instead of dying silently. |
-| **Self-published packages** | `.deb`, `.AppImage`, `.tar.gz` and a single-file CLI binary, all built from the same commit and smoke-tested in CI. See [docs/fork-release.md](docs/fork-release.md). |
-| **Dual CI** | GitHub Actions + GitLab CI run the same hardware-free test suites; whichever reports first is used. |
+| "fastboot sees the device, so the tool is broken" | The device in `18d1:d00d` may be a *temporary* fastboot that exists only in RAM after a BootROM injection — `reboot` erases it. It is not a phone you can boot from. |
+| `oem unlock` says "already fastboot unlocked" | Meaningless on the temporary loader. Unlocking can only happen on the board (BD) bootloader; a retail bootloader answers `invalid command`. And `oem get-bootinfo` reporting `unlocked` is a lie — only a write probe tells the truth. |
+| "the loader printed a partition table, let's script it" | The temporary loader publishes 90 entries including factory ones and without `kpatch`; the real GPT has 74. Never treat the loader's ptable as a partition map. |
+| "I flashed every partition manually, that is equivalent to Full-OTA" | It is not: Full-OTA also carries `ptable`, the official `userdata`/`cache` skeleton and version metadata. Use `flash-ota`. |
+| "the package extracted fine, so the plan is fine" | Base `UPDATE.APP` SUPER comes as **two sparse segments** that must be merged; taking only the large one writes ~2.1 GiB of zeros and guarantees a black screen. |
+| "the GUI works, the BD package should too" | BD packages can ship a **gzip-compressed** SUPER. The CLI detects the `0x1f8b` magic and decompresses; the GUI merger path does not yet, which shows up as a 45/46 half-flash. Known gap, listed below. |
+| "cross-version is fine, the GPT has 74 entries either way" | Both do — but `boot` 25→30 MB, `super` 6728→6992 MB, `kpatch` 66→61 MB, `preas` 296→32 MB. Write `ptable` first. |
+| "mix the newest xloader with the loader I already had" | Boot-chain suites are same-generation or nothing: mixing produces a black device with zero enumeration or `load hhee failed`. Intermittent `12d1:3609` appearances mean the chain is failing; recovery is a manual pin short — there is no software EDL exit. |
+| "just edit `Display_Version` in oeminfo to skip a version check" | `oeminfo` is 96 MiB sparse with 32 B-aligned sections and an HMAC keyed per device, which cannot be recomputed offline. That is why `oeminfo` is plan-only in the CLI/MCP. |
+| "serial open failed, must be a permissions problem" | On `12d1:3609` with the `option` driver, pyserial fails with `errno 71` (DTR stall). Raw `os.open` + termios 8N1, never touching DTR/RTS, is what works. A half-open BootROM session (HEAD sent, payload not) answers all zeros — unplug, hold power 15 s, re-short. Do not "fix" the frame format. |
+| "flashing died at 60 %, the tool is at fault" | Check the battery first: mid-write power loss is unrecoverable on these devices. Keep ≥ 50 %; the tool warns, it does not block. |
+
+The one end-to-end result worth quoting: `flash-ota` through a temporary VCOM loader on ELS-AN00 →
+**46/46 partitions OKAY, device boots ~22 s after reboot**.
 
 ## Safety model
 
-**What actually writes to a device:** `flash-ota`, `flash-xml` (CLI/MCP) and the GUI flashing / USB Update / rescue workflows. These are real writes — there is no dry-run after confirmation. `flash-xml` skips identifiers the loader does not expose (with a warning); pass `--strict-names` to refuse instead of skipping (exit 3).
+**Writes:** `flash-ota`, `flash-xml` (CLI/MCP) and the GUI flashing / USB Update / rescue workflows. Real
+writes — there is no dry-run after confirmation. `flash-xml` skips identifiers the loader does not
+expose; `--strict-names` refuses instead (exit 3).
 
-**What never writes:** `vcom-unlock`, `oeminfo`, `downgrade-enable` are plan-only: even with `--yes` they only acknowledge the plan (exit 4, nothing written).
+**Never writes:** `vcom-unlock`, `oeminfo`, `downgrade-enable` — plan-only, exit 4, even with `--yes`.
 
-**Redline partitions.** Identity- and security-critical partitions (see list above) are refused unless explicitly overridden:
+**Redline partitions** are refused unless a human overrides: `--allow-redline` in the CLI, a dialog
+listing the exact partitions in the GUI, and nothing at all over MCP.
 
-- **CLI:** requires `--allow-redline`.
-- **GUI:** shows a confirmation dialog listing the exact redline partitions.
-- **MCP:** does **not** accept `allow-redline` at all — the parameter is rejected with JSON-RPC `-32602` ("redline override is CLI-only"). An AI client cannot redline-override on its own.
+**Gate signals.** Every write command with `--json` and every MCP write tool reports `gate`:
+`plan-only`, `refused` (with `reason`), `confirmed` (plan acknowledged, nothing written) or `applied`.
+Branch on `gate`, not on the exit code. Exit codes: 0 ok / 1 usage / 2 no device / 3 device refused
+(includes `--strict-names`) / 4 gate refusal / 5 file or verification failure.
 
-**Gate signals.** Every CLI write command with `--json` and every MCP write tool reports a machine-readable `gate` string: `plan-only`, `refused` (with a `reason`), `confirmed` (plan-only acknowledged) or `applied` (real write executed). Clients should branch on `gate`, not just the exit code.
+**Pre-op backup.** Before the first real write, the redline partitions of the plan plus `ptable` are
+dumped into a timestamped directory (`--backup-dir`, else `$KIRIN_BACKUP_DIR`, else
+`~/.local/share/kirin-tool/backups/`) with a `manifest.json` (tool version, UTC time, fastboot path,
+device model/SN when readable, trigger command, write plan, and per-partition file/size/SHA256/status).
+Existing backup directories are never overwritten. `--require-backup` turns an incomplete backup into a
+refusal; `--no-backup` skips it. A read-only `backup` command does the same on demand.
 
-**Battery banner (warning only, by decision).** A read of `battery-soc` / `battery-capacity` (best effort; temporary loaders usually answer `invalid command`) drives a non-modal banner on the device page: below 50% it warns about a mid-write power loss, at or above 50% it stays hidden, and an unreadable level shows one quiet line. **It never blocks a write** — the 50% rule stays a human convention, not a gate.
-
-**Pre-operation backup.** Before any real write (CLI flash-ota / flash-xml, and every GUI write path), Kirin Tool automatically backs up the redline partitions of the write plan plus `ptable` into a timestamped directory (`--backup-dir`, else `$KIRIN_BACKUP_DIR`, else `~/.local/share/kirin-tool/backups/`) and records a `manifest.json` with per-partition file, size, SHA256 and status. The backup is **best effort**: loaders without dump support degrade to a recorded `unsupported` status and a stderr/UI warning — the write is **not** blocked (pass `--require-backup` in the CLI to refuse writes on an incomplete backup, or `--no-backup` to skip it). Existing backup directories are never overwritten.
-
-Unverified hardware behavior stays unverified: see [Verified on hardware](#verified-on-hardware--not-verified).
+Unverified behaviour stays unverified — see [Verified / not verified](#verified-on-hardware--not-verified).
 
 ## Install
 
-Prebuilt files are on the [releases page](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest); no separate .NET runtime is needed. Exact asset names per release: [docs/fork-release.md](docs/fork-release.md).
+Prebuilt files are on the [releases page](https://github.com/xiaquwan1001/kirin-tool-linux-refresh/releases/latest);
+no separate .NET runtime is needed. Asset names, deb layout, dependency policy:
+[docs/fork-release.md](docs/fork-release.md).
 
 | Format | Install |
 | :--- | :--- |
@@ -72,14 +170,15 @@ Prebuilt files are on the [releases page](https://github.com/xiaquwan1001/kirin-
 | **tar.gz** | `tar xf kirin-tool-linux-<ver>-x86_64.tar.gz -C ~/opt/kirin-tool-linux && ~/opt/kirin-tool-linux/Kirin-Tool` |
 | **CLI binary** | download `kirin-tool-cli-<ver>-linux-x86_64`, `chmod +x`, run — doubles as an MCP stdio server |
 
-If USB access is denied, add yourself to the relevant groups and reconnect:
+Asset and package names intentionally keep the historical `kirin-tool-linux` string: renaming the
+repository must not silently change the deb package name (that would break upgrades).
+
+If USB access is denied, add yourself to the right groups and reconnect:
 
 ```bash
 sudo usermod -aG plugdev,uucp "$USER"   # Debian/Ubuntu (adbusers on Arch/CachyOS)
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
-
-Log out and back in after changing groups. The GUI also shows an **Apply udev rules** notice with copyable commands when usable rules cannot be confirmed. See [docs/portable-appimage.md](docs/portable-appimage.md).
 
 ## CLI & MCP quick start
 
@@ -87,14 +186,12 @@ Log out and back in after changing groups. The GUI also shows an **Apply udev ru
 kirin-tool-cli doctor                                   # what's connected, which fastboot/adb was picked
 kirin-tool-cli info                                     # device info, capabilities, rescue plan
 kirin-tool-cli extract UPDATE.APP out/                  # extract all partitions
-kirin-tool-cli flash-ota base.app --json                # prints the write plan, exits 4 — nothing written
+kirin-tool-cli flash-ota base.app --json                # prints the write plan, gate=plan-only, exit 4
 kirin-tool-cli flash-ota base.app --yes                 # REAL WRITE of all non-redline partitions
 kirin-tool-cli backup --json                            # read-only dump of identity partitions + manifest
 ```
 
-`--allow-redline` (CLI only) is required on top of `--yes` if the plan includes redline partitions. Exit codes and the full command table: [docs/cli-mcp.md](docs/cli-mcp.md).
-
-MCP server configuration (newline-delimited JSON-RPC 2.0 over stdio):
+MCP server (newline-delimited JSON-RPC 2.0 over stdio):
 
 ```json
 {
@@ -107,24 +204,15 @@ MCP server configuration (newline-delimited JSON-RPC 2.0 over stdio):
 }
 ```
 
-MCP tools: `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`, `flash_ota`, `flash_xml`, `vcom_unlock`, `oeminfo`, `downgrade_enable`. Write tools require `confirm: true` and never accept `allow-redline`.
-
-## v2.4.13 highlights
-
-- **MCP contract matches reality**: `flash_ota` / `flash_xml` are documented as real writes, plan-only tools stay plan-only — and it cannot drift again (generated from `CliWriteKind`). Full notes: [docs/release-notes/v2.4.13.md](docs/release-notes/v2.4.13.md).
-- **MCP cannot redline-override**: `allow-redline` over MCP is rejected with JSON-RPC `-32602`; the override stays CLI-only.
-- **No more false successes**: GUI fastboot writes require exit 0 **and** a device `OKAY` (XML partitions, Full OTA, rescue); refusals emit a single machine-readable `gate` document.
-- **Automatic pre-op backup** before every real write: redline partitions of the plan plus `ptable` go into a timestamped directory with a SHA256 `manifest.json` — best effort, with `--require-backup` / `--no-backup` / `--backup-dir` controls and a read-only `backup` command.
-- **Low-battery banner** on the device page (below 50%) is a warning only — it never blocks a write.
-- **flash-xml honesty**: identifiers the loader does not expose are skipped with a warning; `--strict-names` refuses instead (exit 3).
-- **17 hardware-free test harnesses** (new: WriteGates, McpProtocol, OtaPlan, PreOpBackup) run in dual CI (GitHub Actions + GitLab CI).
+Tools: `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`, `flash_ota`, `flash_xml`,
+`vcom_unlock`, `oeminfo`, `downgrade_enable`. Write tools require `confirm: true` and never accept
+`allow-redline`. Full command table and gates: [docs/cli-mcp.md](docs/cli-mcp.md).
 
 ## Screenshots
 
-All six are headless renders of the v2.4.13 UI (`v2.4.13`, commit `47fb3da`), captured from the real
-Avalonia controls — no upstream or older-release images. Capture details and per-file provenance:
-[docs/screenshots.md](docs/screenshots.md). No device was connected for these captures, so device fields
-show the UI's native "Not Read" state.
+Headless renders of the v2.4.13 UI, captured from the real Avalonia controls (commit `47fb3da`) — no
+device was connected, so device fields show the UI's native "Not Read" state. Provenance per file:
+[docs/screenshots.md](docs/screenshots.md).
 
 | Main window (light) | Main window (dark) |
 | :-- | :-- |
@@ -138,87 +226,63 @@ show the UI's native "Not Read" state.
 | :-- | :-- |
 | ![Redline confirmation dialog](docs/images/screenshot-redline-confirm.png) | ![kirin-tool-cli doctor and flash-ota plan](docs/images/screenshot-cli-doctor.png) |
 
-## Verified on hardware / Not verified
+## Verified on hardware / not verified
 
 | Verified on hardware | Not verified |
 | :--- | :--- |
-| **Huawei P40 Pro (ELS-AN00)**: `flash-ota` through a temporary VCOM loader — 46/46 partitions written, device boots ~22 s after `fastboot reboot` | Other devices and chipsets (Kirin 980 / 9000 evidence exists from earlier work, but no full OTA run) |
-| Device information, fastboot reads and extraction flows on the same device | BD-package gzip SUPER images (merger path not validated on hardware) |
+| **Huawei P40 Pro (ELS-AN00)**: `flash-ota` through a temporary VCOM loader — 46/46 partitions written, boots ~22 s after reboot | Other devices and chipsets (Kirin 980 / 9000 evidence exists from earlier work, but no full OTA run) |
+| Device information, fastboot reads and extraction on the same device | BD-package gzip SUPER images (the GUI merger path is not validated on hardware) |
 | Kirin 990 5G loader families used by the ELS-AN00 rescue flow | Kirin 990 4G (**unsupported** — do not substitute 5G loaders), Kirin 9000 rescue writes (device-rejected), hardware USB Update equivalence |
 
-Limits of the native fastboot engine and the Mate 40 Pro rescue investigation: [docs/native-fastboot-parity-v2.4.5.md](docs/native-fastboot-parity-v2.4.5.md), [docs/mate40-bootloader-analysis.md](docs/mate40-bootloader-analysis.md).
+## Known gaps
 
-## Features
-
-| Tool | What you can do |
-| :--- | :--- |
-| **UPDATE.APP Extractor Tools** | Open Base, Cust or Preload firmware, view every archive entry, tick partitions, choose an output folder. No phone needed. |
-| **Huawei fastboot** | Bundled native AOSP-based client with reconstructed Huawei dump/upload, memory, UFS-eye and UltraFlash extensions; staging/fetch, slots, fastbootd, logical partitions, image plans. No Wine. |
-| **Device information** | Model, vendor/country, lock state, firmware versions; NVE SN and OEM SN / PSID as separate queries. |
-| **Firmware and loader workflows** | Flash, dump, rebrand and bootloader-unlock workflows on supported devices, subject to firmware permissions and loader requirements. |
-| **USB Update** | Linux userspace libusb transport, no DKMS module. See [docs/usb-update-userspace.md](docs/usb-update-userspace.md). |
-| **Portable desktop app** | AppImage with .NET runtime and libusb bundled; reusable **Apply udev rules** notice. |
-
-Full feature details: [docs/features.md](docs/features.md).
+- GUI-side gzip SUPER handling is missing (CLI has it) → BD packages can end in a 45/46 half-flash.
+- Battery level cannot be read reliably on temporary loaders; the 50 % rule remains a human convention.
+- `VcomOpenProbe` / `UsbUpdateProbe` are excluded from CI (real USB hardware); `VisualParity` is excluded
+  (font-dependent pixel diff).
+- Only one device family has a full-OTA run.
 
 ## Documentation
 
 | Guide | Details |
 | :--- | :--- |
 | [Docs index](docs/INDEX.md) | All guides in one table. |
-| [CLI & MCP](docs/cli-mcp.md) | Commands, gates, exit codes, MCP protocol details. |
-| [Fork release pipeline](docs/fork-release.md) | Assets, deb layout, dependency policy, releasing. |
+| [Refresh changelog](docs/refresh-changelog.md) | Per-release changes of this line, with reasons. |
+| [CLI & MCP](docs/cli-mcp.md) | Commands, write kinds, gates, exit codes, MCP protocol. |
+| [Fork release pipeline](docs/fork-release.md) | Assets, deb layout, ICU/OpenSSL dependency policy, CI map. |
 | [Fork provenance](docs/FORK-NOTICE.md) | License position and upstream relationship. |
 | [UPDATE.APP extraction](docs/partition-extractor.md) · [AppImage & udev](docs/portable-appimage.md) · [Native fastboot parity](docs/native-fastboot-parity-v2.4.5.md) | Inherited-baseline guides. |
-| [v2.4.13 release notes](docs/release-notes/v2.4.13.md) · [screenshots](docs/screenshots.md) | What changed in this release and how the screenshots were captured. |
-| [Chinese write-up (酷安)](https://www.coolapk.com/feed/75023844) | Community post introducing v2.4.13, with the same six screenshots (archived in [docs/coolapk/v2.4.13-post.md](docs/coolapk/v2.4.13-post.md)). |
+| [v2.4.13 release notes](docs/release-notes/v2.4.13.md) · [screenshots](docs/screenshots.md) | This release, and how the screenshots were captured. |
+| [Community posts (酷安)](docs/coolapk/) | Usage-oriented introductions (Chinese). The v2.4.13 post is archived as [docs/coolapk/v2.4.13-post.md](docs/coolapk/v2.4.13-post.md); the current usage-first draft is [docs/coolapk/refresh-post-draft.md](docs/coolapk/refresh-post-draft.md). |
 
 ### Build from source
 
 Install the **.NET 10 SDK** and the [native build prerequisites](fastboot-modern/README.md), then:
 
 ```bash
-git clone https://github.com/xiaquwan1001/kirin-tool-linux.git
-cd kirin-tool-linux
+git clone https://github.com/xiaquwan1001/kirin-tool-linux-refresh.git
+cd kirin-tool-linux-refresh
 ./packaging/publish.sh publish-out
 ./publish-out/Kirin-Tool
 ```
 
 ### Issues
 
-[Open an issue](https://github.com/xiaquwan1001/kirin-tool-linux/issues) with the app version, distribution, device model/chipset, firmware, connection mode, attempted operation and relevant error lines. Redact serial numbers, PSIDs, IMEIs and other private identifiers before sharing logs.
+[Open an issue](https://github.com/xiaquwan1001/kirin-tool-linux-refresh/issues) with the app version,
+distribution, device model/chipset, firmware, connection mode, attempted operation and the relevant
+error lines. Redact serial numbers, PSIDs and IMEIs before sharing logs.
 
 ## Credits and license
 
-This Linux fork derives from upstream **v2.4.2**, distributed under BSL 1.1, and is maintained independently by **[Redminote11tech](https://github.com/Redminote11tech)** (the Linux port this repo forks from). It does not sync newer upstream source. Original copyright notices are retained.
+This Linux line derives from upstream **v2.4.2** (BSL 1.1 at fork time), ported to Avalonia by
+**[Redminote11tech](https://github.com/Redminote11tech)**, and is maintained independently by
+**[xiaquwan1001](https://github.com/xiaquwan1001)**. It does not sync upstream after 2026-09-11.
+Original copyright notices are retained.
 
 - **Kethily Daniel & NDXCode** — original Kirin-Tool authors.
 - **[TASZK Security Labs SL](https://taszk.io)** — head resend bootrom exploit.
 - **[kasnria001](https://github.com/kasnria001)** — decrypted xloaders and community help.
-- **Redminote11tech** — Linux port and maintenance (upstream of this fork).
-- **[xiaquwan1001](https://github.com/xiaquwan1001)** — this fork: CLI/MCP, `flash-ota`, redline gates, packaging and CI.
+- **Redminote11tech** — Linux port and maintenance (upstream of this line).
 
-The [LICENSE](LICENSE) is authoritative: **BSL 1.1**, no Additional Use Grant, changing to **GPL-3.0-or-later** after each version's four-year Change Date. Read the license before copying, modifying or using the software; production use is restricted until the applicable Change Date. Bundled third-party components retain their own licenses; corresponding native sources accompany releases. Details: [docs/FORK-NOTICE.md](docs/FORK-NOTICE.md).
-
-<details>
-<summary><strong>Support the original authors</strong></summary>
-
-Donate through [Ko-fi](https://ko-fi.com/kirintool), or use the original authors' cryptocurrency addresses:
-
-BTC: `bc1q70khwtwdp0jtpvfmct4gu8ktktzv5rurk0kdky`
-
-ETH: `0xF7585F5d27bB7f10558a99CBa53459Be1969b090`
-
-LTC: `ltc1qmyuy4vqevmszxjpl3dqdtkqpg7fper5vw48ulz`
-
-SOL: `4CrT7dSL6kTCkJU4Fu4DT1LisU4rLFwbpE5GFS5wdEcR`
-
-USDT SPL(SOL): `4CrT7dSL6kTCkJU4Fu4DT1LisU4rLFwbpE5GFS5wdEcR`
-
-USDT Tether (TRC20): `TD2sJbEmYa93sJhDBmTrvqmScqQSVTCfCK`
-
-</details>
-
----
-
-*Independent community software, unaffiliated with Huawei or HiSilicon and not sponsored or endorsed by the original Kirin-Tool authors. Huawei, HiSilicon and Kirin names and trademarks belong to their respective owners.*
+Distributed under **BSL 1.1** (see [LICENSE](LICENSE)) — non-production, personal, non-commercial use.
+Not affiliated with, sponsored by or endorsed by the upstream authors or Huawei.

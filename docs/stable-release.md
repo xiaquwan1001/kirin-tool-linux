@@ -4,7 +4,7 @@
 > current release of this fork. The fork's own releases start at 2.4.9; the latest is **2.4.13** and ships
 > `.deb`, `.AppImage`, `.tar.gz` and a single-file CLI (no pacman package). For install commands and asset
 > names use [fork-release.md](fork-release.md) and the fork's
-> [releases page](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest). Version numbers and
+> [releases page](https://github.com/xiaquwan1001/kirin-tool-linux-refresh/releases/latest). Version numbers and
 > file names below (2.4.8, `kirin-tool-linux-2.4.8-1-x86_64.pkg.tar.zst`) no longer exist in this fork's
 > releases, so do not copy them verbatim.
 

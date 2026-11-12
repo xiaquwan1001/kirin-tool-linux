@@ -49,7 +49,7 @@ Features 表（指向 features.md）→ Documentation 表 → Build from source 
 
 > Unofficial Linux port of Kirin-Tool for Huawei Kirin devices: UPDATE.APP extraction, native Huawei fastboot, and real Full-OTA flashing (verified 46/46 on P40 Pro). Headless CLI + MCP stdio server with device-keyed redline gates in GUI, CLI and MCP. Self-built deb/AppImage/tar.gz. .NET 10 / Avalonia.
 
-**homepage**: https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest
+**homepage**: https://github.com/xiaquwan1001/kirin-tool-linux-refresh/releases/latest
 
 **topics**: huawei, kirin, hisilicon, fastboot, firmware, flashing, avalonia, dotnet, linux, mcp, update-app, p40-pro
 

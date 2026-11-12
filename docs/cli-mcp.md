@@ -1,5 +1,5 @@
 # CLI 与 MCP 入口（本地 fork 实验）
-> **Where to get the CLI / MCP server:** part of every fork release — install the `.deb` (`kirin-tool-cli`) or grab the single-file `kirin-tool-cli-<ver>-linux-x86_64` asset from the [releases page](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest). Install overview: [README §Install](../README.md#install); package layout and CI: [fork-release.md](fork-release.md). Entry points: `KirinTool.Cli` (headless) or `Kirin-Tool --mcp` (GUI binary speaking MCP on stdio).
+> **Where to get the CLI / MCP server:** part of every fork release — install the `.deb` (`kirin-tool-cli`) or grab the single-file `kirin-tool-cli-<ver>-linux-x86_64` asset from the [releases page](https://github.com/xiaquwan1001/kirin-tool-linux-refresh/releases/latest). Install overview: [README §Install](../README.md#install); package layout and CI: [fork-release.md](fork-release.md). Entry points: `KirinTool.Cli` (headless) or `Kirin-Tool --mcp` (GUI binary speaking MCP on stdio).
 
 Quick example — plan first, write only after explicit confirmation:
 

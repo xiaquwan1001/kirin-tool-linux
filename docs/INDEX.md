@@ -4,7 +4,8 @@ Fork-relevant guides first; inherited-baseline guides follow. Entry point: [READ
 
 | Guide | What it covers |
 | :--- | :--- |
-| [README](../README.md) | Overview, safety model, install, quick start. |
+| [README](../README.md) · [中文 README](../README.zh-CN.md) | Overview, what this line changes vs upstream, design trade-offs, field notes, safety model, install. |
+| [refresh-changelog.md](refresh-changelog.md) | Per-release changes of the refresh line (with reasons) and known gaps. |
 | [cli-mcp.md](cli-mcp.md) | CLI commands, write kinds, redline gate, gate signals, exit codes, MCP stdio protocol. |
 | [fork-release.md](fork-release.md) | Fork release pipeline: deb / AppImage / tar.gz / CLI assets, deb layout, ICU/OpenSSL dependency policy, CI map. |
 | [features.md](features.md) | Feature overview across GUI, CLI and MCP. |

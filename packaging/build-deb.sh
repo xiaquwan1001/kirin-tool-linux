@@ -129,7 +129,7 @@ Priority: optional
 Architecture: $ARCH
 Installed-Size: $INSTALLED_SIZE
 Maintainer: Qianhui Xu <xiaqinghuan@mail.ustc.edu.cn>
-Homepage: https://github.com/xiaquwan1001/kirin-tool-linux
+Homepage: https://github.com/xiaquwan1001/kirin-tool-linux-refresh
 Description: Huawei Kirin flash / unlock / repair tool (GUI + headless CLI)
  Kirin Tool for Linux bundles a Huawei-parity fastboot, the loader set needed for
  VCOM/BootROM flashing, a GTK-free Avalonia GUI and a headless CLI/MCP entry point.

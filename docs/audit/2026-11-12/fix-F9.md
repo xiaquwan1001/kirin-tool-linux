@@ -52,5 +52,5 @@
 ## 仓库元数据建议
 
 - **description**（≤350 字符，实测 ~340）：`Flash, extract and rescue Huawei Kirin devices from Linux — Avalonia GUI, headless CLI and MCP server behind shared write-safety gates: redline partitions CLI-only override, machine-readable gate signals, OKAY-verified writes and best-effort pre-op backups. Unofficial fork; BSL 1.1.`
-- **homepage**：`https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest`（或 docs 站点若有）
+- **homepage**：`https://github.com/xiaquwan1001/kirin-tool-linux-refresh/releases/latest`（或 docs 站点若有）
 - **topics**（GitHub 上限 20）：`huawei`, `kirin`, `hisilicon`, `fastboot`, `flash-tool`, `android`, `linux`, `avalonia`, `dotnet`, `mcp`, `mcp-server`, `cli`, `firmware`, `bootloader`, `update-app`, `device-rescue`
