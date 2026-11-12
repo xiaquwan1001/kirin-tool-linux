@@ -1,7 +1,7 @@
 # Kirin Tool Linux 2.4.8
 
 > **Fork note (2026-11-12).** This document describes the inherited upstream **2.4.8** baseline, not the
-> current release of this fork. The fork's own releases start at 2.4.9; the latest is **2.4.12** and ships
+> current release of this fork. The fork's own releases start at 2.4.9; the latest is **2.4.13** and ships
 > `.deb`, `.AppImage`, `.tar.gz` and a single-file CLI (no pacman package). For install commands and asset
 > names use [fork-release.md](fork-release.md) and the fork's
 > [releases page](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest). Version numbers and

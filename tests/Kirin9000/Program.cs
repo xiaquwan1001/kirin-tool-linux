@@ -59,7 +59,7 @@ try {
   using var w=new BinaryWriter(File.Create(path)); w.Write(new byte[12]);
   foreach(string name in names) { w.Write(new byte[]{0x55,0xaa,0x5a,0xa5});w.Write(102);w.Write(0);w.Write(System.Text.Encoding.ASCII.GetBytes("HWTEST00"));w.Write(0);w.Write(4u);w.Write(new byte[32]);var bytes=new byte[32];System.Text.Encoding.ASCII.GetBytes(name).CopyTo(bytes,0);w.Write(bytes);w.Write(new byte[10]);w.Write(new byte[4]);while(w.BaseStream.Position%4!=0)w.Write((byte)0); }
  }
- void PumpUntil(Func<bool> ready) {var until=DateTime.UtcNow.AddSeconds(15);while(!ready()){Dispatcher.UIThread.RunJobs();if(DateTime.UtcNow>until)throw new Exception("Stub rescue timed out");Thread.Sleep(10);}Dispatcher.UIThread.RunJobs();}
+ void PumpUntil(Func<bool> ready) {var until=DateTime.UtcNow.AddSeconds(45);while(!ready()){Dispatcher.UIThread.RunJobs();if(DateTime.UtcNow>until)throw new Exception("Stub rescue timed out");Thread.Sleep(10);}Dispatcher.UIThread.RunJobs();} // 45s: the pre-op backup runs first and may spawn dump attempts
  foreach(bool complete in new[]{false,true}) {
   File.WriteAllText(calls,"");string app=Path.Combine(fixtureDir,"UPDATE.APP");
   Fixture(app,complete?new[]{"ERECOVERY","ERECOVERY_RAMDISK","ERECOVERY_VENDOR"}:new[]{"ERECOVERY_RAMDISK","ERECOVERY_VENDOR"});

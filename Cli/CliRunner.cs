@@ -14,6 +14,7 @@ public static class CliRunner
         new GetVarCommand(),
         new ExtractCommand(),
         new DumpCommand(),
+        new BackupCommand(),
         new FlashOtaCommand(),
         new FlashXmlCommand(),
         new VcomUnlockCommand(),

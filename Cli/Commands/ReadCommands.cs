@@ -544,3 +544,92 @@ internal sealed class DumpCommand : ICliCommand
         name.Length is > 0 and <= 64 &&
         name.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.');
 }
+
+/// <summary>
+/// Read-only backup command: dumps a chosen partition set (default: identity partitions
+/// + ptable) into a timestamped directory with a manifest.json. Best effort per
+/// partition; exit 5 only when the run is incomplete (loader without dump support,
+/// dump failures).
+/// </summary>
+internal sealed class BackupCommand : ICliCommand
+{
+    public string Name => "backup";
+    public string McpName => "backup";
+    public string Summary => "Dump identity partitions (or a chosen set) into a timestamped backup directory with a manifest (read-only).";
+    public string Usage =>
+        "backup [partition...] [--partitions a,b] [--backup-dir <dir>] [--json]\n" +
+        "  without partitions the default identity set is dumped (ptable, oeminfo, nvm, modemst1/2, fsg, persist, modemnvm_1/2)\n" +
+        "  every dump is best effort; unsupported loaders are recorded, never fatal\n" +
+        "  backup directory: --backup-dir, else $KIRIN_BACKUP_DIR, else ~/.local/share/kirin-tool/backups/<timestamp>";
+    public bool IsWrite => false;
+    public IReadOnlyList<CliParam> Params => new[]
+    {
+        new CliParam("partition", "string[]", "partition names to dump (positional, optional)", Positional: true),
+        new CliParam("partitions", "string", "comma separated partition names (same as positional)"),
+        new CliParam("backup-dir", "string", "target directory (default: $KIRIN_BACKUP_DIR or ~/.local/share/kirin-tool/backups)"),
+    };
+
+    public async Task<int> ExecuteAsync(ParsedArgs args, CliContext context, CancellationToken cancellationToken)
+    {
+        var names = args.Positionals.ToList();
+        names.AddRange(FlashOtaCommand.SplitList(args.Value("partitions")));
+        bool explicitSet = names.Count > 0;
+
+        var session = await FastbootSession.TryOpenAsync();
+        if (session == null)
+        {
+            context.Diag("error: fastboot binary not found; set KIRIN_FASTBOOT or install platform-tools");
+            return ExitCodes.FileOrVerify;
+        }
+        if (!session.Connected)
+        {
+            context.Diag("error: no fastboot device detected");
+            return ExitCodes.NoDevice;
+        }
+
+        var flasher = new FastbootFlasherService(session.Client);
+        var backup = new PreOpBackup(flasher, variable => DeviceVars.TryReadAsync(session.Client, variable));
+        PreOpBackupResult result = await backup.RunAsync(new PreOpBackupOptions
+        {
+            Trigger = "backup",
+            WritePartitions = explicitSet ? names : PreOpBackup.DefaultIdentitySet,
+            KeepAllPartitions = explicitSet,
+            BackupDir = args.Value("backup-dir"),
+            FastbootPath = session.ExecutablePath,
+        }, cancellationToken);
+
+        if (context.Json)
+        {
+            context.WriteJson(new
+            {
+                command = "backup",
+                dir = result.Directory,
+                manifest = result.ManifestPath,
+                complete = result.Complete,
+                error = result.Error,
+                partitions = result.Partitions.Select(p => new
+                {
+                    name = p.Name,
+                    file = p.File,
+                    size = p.Size,
+                    sha256 = p.Sha256,
+                    status = p.Status,
+                    reason = p.Reason,
+                }).ToList(),
+            });
+        }
+        else
+        {
+            context.Output.WriteLine($"backup directory: {result.Directory ?? "(not created)"}");
+            if (result.Error != null) context.Output.WriteLine($"error: {result.Error}");
+            foreach (var p in result.Partitions)
+            {
+                string detail = p.Status == "ok" ? $"{p.File} ({p.Size} bytes)" : p.Reason ?? "unknown";
+                context.Output.WriteLine($"  {p.Name,-20} {p.Status,-12} {detail}");
+            }
+            context.Output.WriteLine($"backup {(result.Complete ? "complete" : "incomplete")} ({result.OkCount}/{result.TotalCount})");
+        }
+
+        return result.Complete ? ExitCodes.Ok : ExitCodes.FileOrVerify;
+    }
+}

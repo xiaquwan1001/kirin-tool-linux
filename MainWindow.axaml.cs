@@ -594,9 +594,9 @@ namespace Kirin_Tool
             }
         }
 
-        // TODO(battery-gate): project convention is to refuse writes below 50% battery;
-        // the Huawei loader getvar field name for battery level is not yet confirmed on
-        // a real device, so no gate is implemented here.
+        // Battery below 50% is surfaced as a non-modal warning banner on the Device
+        // Information page (see RefreshBatteryBannerAsync); writes are deliberately
+        // NOT blocked here — warning-only by decision 2026-11-12.
         private async Task<(bool IsSuccess, string Message)> FlashPartitionsWithProgress(
         List<FastbootPartition> selectedPartitions,
         ProcessDialogUapp progressDialog,
@@ -607,6 +607,9 @@ namespace Kirin_Tool
             int successCount = 0;
             int totalCount = selectedPartitions.Count;
             string lastError = string.Empty;
+
+            // Pre-op backup before the first write; best effort, never aborts the flash.
+            await RunPreOpBackupAsync(selectedPartitions.Select(p => p.Name), "gui-xml", progressDialog);
 
             try
             {
@@ -686,6 +689,51 @@ namespace Kirin_Tool
                 : $"Flash completed with {successCount}/{totalCount} successful.";
 
             return (allSuccessful, message);
+        }
+
+        /// <summary>
+        /// Best-effort pre-op backup (redline members of the write plan + ptable) run
+        /// before every real GUI write path. Dump failures only surface as a progress/
+        /// status line — the write itself is never blocked (strict mode is CLI-only).
+        /// </summary>
+        private async Task<PreOpBackupResult?> RunPreOpBackupAsync(
+            IEnumerable<string> partitionNames, string trigger, ProcessDialogUapp? progressDialog = null)
+        {
+            try
+            {
+                SetProgressDialogOperation(progressDialog, "Backing up identity partitions (pre-op backup)...");
+                var backup = new PreOpBackup(
+                    _fastbootFlasherService,
+                    async variable =>
+                    {
+                        try { return await _fastbootClient.GetVarAsync(variable); }
+                        catch { return null; }
+                    });
+                var result = await backup.RunAsync(new PreOpBackupOptions
+                {
+                    Trigger = trigger,
+                    WritePartitions = partitionNames.ToList(),
+                });
+
+                string summary = !result.Attempted
+                    ? $"warning: pre-op backup failed: {result.Error}"
+                    : result.Complete
+                        ? $"Pre-op backup complete ({result.OkCount}/{result.TotalCount}): {result.Directory}"
+                        : $"warning: pre-op backup incomplete ({result.OkCount}/{result.TotalCount}); backup directory: {result.Directory}";
+                SetProgressDialogOperation(progressDialog, summary);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                SetProgressDialogOperation(progressDialog, $"warning: pre-op backup failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static void SetProgressDialogOperation(ProcessDialogUapp? dialog, string message)
+        {
+            if (dialog == null) return;
+            Dispatcher.UIThread.InvokeAsync(() => { dialog.CurrentOperationText = message; });
         }
 
         public bool ShowFullOtaWarning
@@ -913,9 +961,9 @@ namespace Kirin_Tool
             }
         }
 
-        // TODO(battery-gate): project convention is to refuse writes below 50% battery;
-        // the Huawei loader getvar field name for battery level is not yet confirmed on
-        // a real device, so no gate is implemented here.
+        // Battery below 50% is surfaced as a non-modal warning banner on the Device
+        // Information page (see RefreshBatteryBannerAsync); writes are deliberately
+        // NOT blocked here — warning-only by decision 2026-11-12.
         private async Task StartUsbUpdateFlash()
         {
             using var cancellationTokenSource = new CancellationTokenSource();
@@ -1035,6 +1083,9 @@ namespace Kirin_Tool
                 {
                     flashDialog.CompletePartitionByIndex(index, success, message);
                 };
+
+                // Pre-op backup before the USB Update flash; best effort, never aborts.
+                await RunPreOpBackupAsync(allPartitions.Select(p => p.Partition.Name), "gui-usb-update", flashDialog);
 
                 await Task.Run(() => _usbUpdateFlasherService.FlashPartitions(filesData, cancellationTokenSource.Token, allowRedline: allowRedline));
 
@@ -1201,9 +1252,9 @@ namespace Kirin_Tool
             }
         }
 
-        // TODO(battery-gate): project convention is to refuse writes below 50% battery;
-        // the Huawei loader getvar field name for battery level is not yet confirmed on
-        // a real device, so no gate is implemented here.
+        // Battery below 50% is surfaced as a non-modal warning banner on the Device
+        // Information page (see RefreshBatteryBannerAsync); writes are deliberately
+        // NOT blocked here — warning-only by decision 2026-11-12.
         private async Task<(bool IsSuccess, string Message)> FlashFullOtaPartitions(
         List<(PartitionInfo Partition, string Source)> partitions,
         ProcessDialogUapp progressDialog,
@@ -1214,6 +1265,9 @@ namespace Kirin_Tool
             int totalCount = partitions.Count;
             string lastError = string.Empty;
             string tempDirectory = null;
+
+            // Pre-op backup before the first write; best effort, never aborts the flash.
+            await RunPreOpBackupAsync(partitions.Select(p => p.Partition.Name), "gui-full-ota", progressDialog);
 
             try
             {
@@ -1830,9 +1884,9 @@ namespace Kirin_Tool
             await dialogTask;
         }
 
-        // TODO(battery-gate): project convention is to refuse writes below 50% battery;
-        // the Huawei loader getvar field name for battery level is not yet confirmed on
-        // a real device, so no gate is implemented here.
+        // Battery below 50% is surfaced as a non-modal warning banner on the Device
+        // Information page (see RefreshBatteryBannerAsync); writes are deliberately
+        // NOT blocked here — warning-only by decision 2026-11-12.
         private async Task HandleRebootToUsbUpdate()
         {
             using var cancellationTokenSource = new CancellationTokenSource();
@@ -1909,6 +1963,9 @@ namespace Kirin_Tool
 
                 bool allSuccess = true;
                 string baseUpdatePath = UsbUpdateFile.FilePath;
+
+                // Pre-op backup before the rescue write; best effort, never aborts.
+                await RunPreOpBackupAsync(rescuePartitions, "gui-rescue", progressDialog);
 
                 using (var updateApp = new UpdateApp(baseUpdatePath))
                 {
@@ -2788,6 +2845,9 @@ namespace Kirin_Tool
             {
                 DeviceInfoExpander.IsExpanded = true;
             }
+
+            // Read-only, warning-only battery hint (see ChipCapabilities partial).
+            await RefreshBatteryBannerAsync();
         }
 
         private string ParseOemLine(string output, string key, string fallback)

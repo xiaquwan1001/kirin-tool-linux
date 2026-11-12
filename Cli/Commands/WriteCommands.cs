@@ -97,6 +97,9 @@ internal sealed class FlashOtaCommand : ICliCommand
         new CliParam("allow-redline", "boolean", "permit writing oeminfo/nvme/modem_secure/persist/modemnvm*/certification/hisee_encos/veritykey"),
         new CliParam("work-dir", "string", "staging directory for extracted images (default: <dir of first file>/.kirintool-cli-tmp)"),
         new CliParam("strict-names", "boolean", "refuse instead of skipping partitions the loader does not expose"),
+        new CliParam("no-backup", "boolean", "skip the automatic pre-op backup of redline partitions + ptable"),
+        new CliParam("backup-dir", "string", "directory for the pre-op backup (default: $KIRIN_BACKUP_DIR or ~/.local/share/kirin-tool/backups)"),
+        new CliParam("require-backup", "boolean", "abort instead of writing when the pre-op backup is incomplete"),
         new CliParam("yes", "boolean", "acknowledge the plan and perform the write"),
         new CliParam("json", "boolean", "structured output"),
     };
@@ -206,6 +209,13 @@ internal sealed class FlashOtaCommand : ICliCommand
             return ExitCodes.NoDevice;
         }
 
+        // Pre-op backup runs before any staging or writing; dump failures degrade to
+        // warnings (see PreOpBackupCli) and only --require-backup turns them into a refusal.
+        PreOpBackupResult backup = await PreOpBackupCli.RunForWriteAsync(
+            args, context, "flash-ota", plan.Entries.Select(entry => entry.Partition), session, cancellationToken);
+        int backupRefusal = PreOpBackupCli.RefusalExit(args, backup, context);
+        if (backupRefusal != ExitCodes.Ok) return backupRefusal;
+
         string? workDirArg = args.Value("work-dir");
         bool customStaging = workDirArg is { Length: > 0 };
         string workDirectory = customStaging
@@ -221,7 +231,7 @@ internal sealed class FlashOtaCommand : ICliCommand
 
         try
         {
-            return await FlashStagedAsync(plan, session, workDirectory, args, context, cancellationToken);
+            return await FlashStagedAsync(plan, session, workDirectory, args, context, backup, cancellationToken);
         }
         finally
         {
@@ -241,7 +251,7 @@ internal sealed class FlashOtaCommand : ICliCommand
             }
         }
 
-        static async Task<int> FlashStagedAsync(OtaPlan plan, FastbootSession session, string workDirectory, ParsedArgs args, CliContext context, CancellationToken cancellationToken)
+        static async Task<int> FlashStagedAsync(OtaPlan plan, FastbootSession session, string workDirectory, ParsedArgs args, CliContext context, PreOpBackupResult backup, CancellationToken cancellationToken)
         {
             var (resolvedNames, unresolved) = await OtaFlashRunner.ResolveNamesAsync(
                 session.Client, plan.Entries.Select(entry => entry.Partition), context, cancellationToken);
@@ -284,6 +294,7 @@ internal sealed class FlashOtaCommand : ICliCommand
                     applied = true,
                     gate = "applied",
                     fastboot = session.ExecutablePath,
+                    backup = PreOpBackupCli.JsonPayload(backup),
                     flashed = ok,
                     total = outcomes.Count,
                     failed,
@@ -308,6 +319,7 @@ internal sealed class FlashXmlCommand : ICliCommand
     public string Summary => "Flash the <image> entries of a Huawei flashing XML (writes only with --yes).";
     public string Usage =>
         "flash-xml <flashing.xml|dir> [--partitions a,b] [--exclude x,y] [--allow-redline] [--yes] [--json]\n" +
+        "  unresolved identifiers are skipped unless --strict-names (which refuses with exit 3)\n" +
         "  identifiers whose images are missing abort before any write; without --yes only the plan is printed (exit 4); with --yes a real write happens";
     public CliWriteKind WriteKind => CliWriteKind.RealWrite;
     public IReadOnlyList<CliParam> Params => new[]
@@ -316,7 +328,10 @@ internal sealed class FlashXmlCommand : ICliCommand
         new CliParam("partitions", "string", "comma separated whitelist of identifiers to flash"),
         new CliParam("exclude", "string", "comma separated identifiers to skip"),
         new CliParam("allow-redline", "boolean", "permit writing oeminfo/nvme/modem_secure/persist/modemnvm*/certification/hisee_encos/veritykey"),
-        new CliParam("strict-names", "boolean", "refuse instead of warning when the loader does not expose an identifier"),
+        new CliParam("strict-names", "boolean", "refuse instead of skipping identifiers the loader does not expose"),
+        new CliParam("no-backup", "boolean", "skip the automatic pre-op backup of redline identifiers + ptable"),
+        new CliParam("backup-dir", "string", "directory for the pre-op backup (default: $KIRIN_BACKUP_DIR or ~/.local/share/kirin-tool/backups)"),
+        new CliParam("require-backup", "boolean", "abort instead of writing when the pre-op backup is incomplete"),
         new CliParam("yes", "boolean", "acknowledge the plan and perform the write"),
         new CliParam("json", "boolean", "structured output"),
     };
@@ -375,6 +390,53 @@ internal sealed class FlashXmlCommand : ICliCommand
         bool redlineRefused = redlines.Count > 0 && !allowRedline;
         bool confirmed = context.Yes || args.HasFlag("yes");
 
+        // Name-resolution pre-flight moved to the plan phase (aligned with flash-ota's
+        // skip semantics, but earlier): an unconfirmed plan already shows which
+        // identifiers this loader does not expose, and the default is to SKIP them
+        // with a warning instead of attempting the write anyway. --strict-names
+        // still refuses before any write (exit 3).
+        bool strictNames = args.HasFlag("strict-names");
+        // The pre-flight is best effort on purpose: an unconfirmed plan must still work
+        // without a device (offline planning), so "no device" only means the loader's
+        // partition names could not be checked. A real write (--yes) still requires the
+        // device below, and --strict-names needs one because it refuses on resolution.
+        FastbootSession? session = await FastbootSession.TryOpenAsync();
+        bool deviceReady = session is { Connected: true };
+        Dictionary<string, string> resolvedNames = new(StringComparer.OrdinalIgnoreCase);
+        List<string> unresolved = new();
+        if (deviceReady && missing.Count == 0)
+        {
+            (resolvedNames, unresolved) = await OtaFlashRunner.ResolveNamesAsync(
+                session!.Client,
+                selected.Select(partition => partition.Identifier ?? string.Empty).Where(name => name.Length > 0),
+                context,
+                cancellationToken);
+        }
+        else if (strictNames)
+        {
+            context.Diag("error: --strict-names needs a connected device to resolve loader partition names");
+            return ExitCodes.NoDevice;
+        }
+        else if (missing.Count == 0)
+            context.Diag("warning: no device in fastboot mode; loader partition names were not checked");
+
+        var unresolvedNames = new HashSet<string>(unresolved.Select(line => line.Split(" -> ")[0]), StringComparer.OrdinalIgnoreCase);
+        if (unresolved.Count > 0 && strictNames)
+        {
+            context.Diag($"refused: {unresolved.Count} identifier(s) do not exist on this loader: {string.Join(", ", unresolved)}");
+            return ExitCodes.DeviceRejected;
+        }
+        var writeList = new List<FastbootPartition>();
+        var skippedUnresolved = new List<string>();
+        foreach (FastbootPartition partition in selected)
+        {
+            string identifier = partition.Identifier ?? string.Empty;
+            if (unresolvedNames.Contains(identifier)) skippedUnresolved.Add(identifier);
+            else writeList.Add(partition);
+        }
+        if (skippedUnresolved.Count > 0)
+            context.Diag($"warning: skipping {skippedUnresolved.Count} identifier(s) the loader does not expose: {string.Join(", ", skippedUnresolved)}");
+
         // One JSON document per invocation (see the same note in flash-ota): the
         // refusal path used to append a second document to the plan-only one.
         // Missing images are checked before the redline gate and win the reason, but both
@@ -393,11 +455,12 @@ internal sealed class FlashXmlCommand : ICliCommand
                 dryRun = true,
                 applied = false,
                 xml = path,
-                partitionCount = selected.Count,
+                partitionCount = writeList.Count,
                 skipped,
+                skippedUnresolved,
                 redlines,
                 missingImages = missing,
-                partitions = selected.Select(partition => new
+                partitions = writeList.Select(partition => new
                 {
                     identifier = partition.Identifier,
                     name = partition.Name,
@@ -410,21 +473,21 @@ internal sealed class FlashXmlCommand : ICliCommand
                 {
                     command = planPayload.command, dryRun = true, applied = false, gate = "refused",
                     redlines, reason = refusalReason,
-                    xml = path, partitionCount = selected.Count, skipped, missingImages = missing,
+                    xml = path, partitionCount = writeList.Count, skipped, skippedUnresolved, missingImages = missing,
                     partitions = planPayload.partitions, exitCode = missing.Count > 0 ? ExitCodes.FileOrVerify : ExitCodes.Gated,
                 });
             else if (!confirmed)
                 context.WriteJson(new
                 {
                     command = planPayload.command, dryRun = true, applied = false, gate = "plan-only",
-                    xml = path, partitionCount = selected.Count, skipped, redlines, missingImages = missing,
+                    xml = path, partitionCount = writeList.Count, skipped, skippedUnresolved, redlines, missingImages = missing,
                     partitions = planPayload.partitions, exitCode = ExitCodes.Gated,
                 });
         }
         else
         {
-            context.Output.WriteLine($"flash plan for {path}: {selected.Count} images");
-            context.Output.WriteLine(TextFormat.Table(selected.Select(partition => new[]
+            context.Output.WriteLine($"flash plan for {path}: {writeList.Count} images");
+            context.Output.WriteLine(TextFormat.Table(writeList.Select(partition => new[]
             {
                 partition.Identifier ?? "?",
                 partition.Name ?? "?",
@@ -432,6 +495,7 @@ internal sealed class FlashXmlCommand : ICliCommand
                 partition.DumpPath ?? "(unresolved)",
             }).ToList(), "IDENTIFIER", "NAME", "STATE", "PATH"));
             if (skipped.Count > 0) context.Output.WriteLine($"skipped: {string.Join(", ", skipped)}");
+            if (skippedUnresolved.Count > 0) context.Output.WriteLine($"skipped unresolved (loader does not expose): {string.Join(", ", skippedUnresolved)}");
         }
 
         if (missing.Count > 0)
@@ -451,37 +515,24 @@ internal sealed class FlashXmlCommand : ICliCommand
             return ExitCodes.Gated;
         }
 
-        FastbootSession? session = await FastbootSession.TryOpenAsync();
+        // The plan phase opened the session best effort; a real write needs it now.
         if (session == null) { context.Diag("error: fastboot binary not found"); return ExitCodes.NoDevice; }
         if (!session.Connected) { context.Diag("error: no device in fastboot mode"); return ExitCodes.NoDevice; }
 
-        // Resolve identifiers against the loader's own partition list before writing
-        // (same pre-flight as flash-ota). Default is warn-and-continue; --strict-names
-        // refuses before any write instead.
-        var (resolvedNames, unresolved) = await OtaFlashRunner.ResolveNamesAsync(
-            session.Client,
-            selected.Select(partition => partition.Identifier ?? string.Empty).Where(name => name.Length > 0),
-            context,
-            cancellationToken);
-        if (unresolved.Count > 0)
-        {
-            if (args.HasFlag("strict-names"))
-            {
-                context.Diag($"refused: {unresolved.Count} identifier(s) do not exist on this loader: {string.Join(", ", unresolved)}");
-                return ExitCodes.DeviceRejected;
-            }
-            context.Diag($"warning: {unresolved.Count} identifier(s) are not exposed by this loader and will still be attempted: {string.Join(", ", unresolved)}");
-        }
+        PreOpBackupResult backup = await PreOpBackupCli.RunForWriteAsync(
+            args, context, "flash-xml", writeList.Select(partition => partition.Identifier ?? string.Empty), session, cancellationToken);
+        int backupRefusal = PreOpBackupCli.RefusalExit(args, backup, context);
+        if (backupRefusal != ExitCodes.Ok) return backupRefusal;
 
         var outcomes = new List<OtaFlashOutcome>();
-        for (int i = 0; i < selected.Count; i++)
+        for (int i = 0; i < writeList.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            FastbootPartition partition = selected[i];
+            FastbootPartition partition = writeList[i];
             string flashName = resolvedNames.TryGetValue(partition.Identifier ?? string.Empty, out string? deviceName)
                 ? deviceName
                 : (partition.Identifier ?? string.Empty).ToLowerInvariant();
-            context.Diag($"[{i + 1}/{selected.Count}] flash {flashName} <- {TextFormat.Bytes(new FileInfo(partition.DumpPath!).Length)}");
+            context.Diag($"[{i + 1}/{writeList.Count}] flash {flashName} <- {TextFormat.Bytes(new FileInfo(partition.DumpPath!).Length)}");
             ProcessResult result = await session.Client.FlashPartition(flashName, partition.DumpPath!);
             bool ok = result.IsSuccess && (result.Output ?? string.Empty).Contains("OKAY", StringComparison.OrdinalIgnoreCase);
             outcomes.Add(new OtaFlashOutcome(flashName, ok, ok ? null : (result.Output ?? string.Empty).Trim()));
@@ -500,6 +551,7 @@ internal sealed class FlashXmlCommand : ICliCommand
                 applied = true,
                 gate = "applied",
                 fastboot = session.ExecutablePath,
+                backup = PreOpBackupCli.JsonPayload(backup),
                 flashed = okCount,
                 total = outcomes.Count,
                 failed = outcomes.Where(outcome => !outcome.Ok).Select(outcome => new { partition = outcome.Partition, error = outcome.Error }).ToList(),
@@ -706,4 +758,74 @@ internal sealed class DowngradeEnableCommand : GatedWriteCommand
 
         return Task.FromResult(new WritePlan(details, lines));
     }
+}
+
+/// <summary>
+/// CLI glue for the pre-op backup: shared by flash-ota / flash-xml. Dumps degrade to
+/// stderr warnings; only an explicit --require-backup turns an incomplete backup into
+/// a refusal (exit 4) before the first write.
+/// </summary>
+internal static class PreOpBackupCli
+{
+    public static async Task<PreOpBackupResult> RunForWriteAsync(
+        ParsedArgs args,
+        CliContext context,
+        string trigger,
+        IEnumerable<string> writePartitions,
+        FastbootSession session,
+        CancellationToken cancellationToken)
+    {
+        if (args.HasFlag("no-backup"))
+        {
+            context.Diag("pre-op backup skipped (--no-backup)");
+            return PreOpBackupResult.Skipped;
+        }
+
+        var flasher = new FastbootFlasherService(session.Client);
+        var backup = new PreOpBackup(flasher, variable => DeviceVars.TryReadAsync(session.Client, variable));
+        PreOpBackupResult result = await backup.RunAsync(new PreOpBackupOptions
+        {
+            Trigger = trigger,
+            WritePartitions = writePartitions.ToList(),
+            BackupDir = args.Value("backup-dir"),
+            RequireBackup = args.HasFlag("require-backup"),
+            FastbootPath = session.ExecutablePath,
+        }, cancellationToken);
+
+        if (result.Error != null)
+            context.Diag($"warning: pre-op backup failed: {result.Error}");
+        else if (!result.Complete)
+            context.Diag($"warning: pre-op backup incomplete ({result.OkCount}/{result.TotalCount}); backup directory: {result.Directory}");
+        else
+            context.Diag($"pre-op backup complete ({result.OkCount}/{result.TotalCount}); backup directory: {result.Directory}");
+
+        return result;
+    }
+
+    /// <summary>Exit code for a --require-backup refusal, or Ok when the write may proceed.</summary>
+    public static int RefusalExit(ParsedArgs args, PreOpBackupResult result, CliContext context)
+    {
+        if (!args.HasFlag("require-backup") || !result.Attempted || result.Complete) return ExitCodes.Ok;
+        context.Diag("refused: --require-backup set and the pre-op backup is incomplete; nothing was written");
+        return ExitCodes.Gated;
+    }
+
+    /// <summary>Machine-readable summary embedded in the applied-write JSON document.</summary>
+    public static object JsonPayload(PreOpBackupResult result) => new
+    {
+        dir = result.Directory,
+        complete = result.Complete,
+        skipped = !result.Attempted,
+        manifest = result.ManifestPath,
+        error = result.Error,
+        partitions = result.Partitions.Select(p => new
+        {
+            name = p.Name,
+            file = p.File,
+            size = p.Size,
+            sha256 = p.Sha256,
+            status = p.Status,
+            reason = p.Reason,
+        }).ToList(),
+    };
 }

@@ -1,7 +1,16 @@
 # CLI 与 MCP 入口（本地 fork 实验）
+> **Where to get the CLI / MCP server:** part of every fork release — install the `.deb` (`kirin-tool-cli`) or grab the single-file `kirin-tool-cli-<ver>-linux-x86_64` asset from the [releases page](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest). Install overview: [README §Install](../README.md#install); package layout and CI: [fork-release.md](fork-release.md). Entry points: `KirinTool.Cli` (headless) or `Kirin-Tool --mcp` (GUI binary speaking MCP on stdio).
 
-> 上游自 2026-09-11 起为 Read-Only Reference License。本目录下的 CLI/MCP 仅作本地 fork 改造，
-> 不发布、不分发；改用前请阅读 `FORK-NOTICE.md` 与 `LICENSE`。
+Quick example — plan first, write only after explicit confirmation:
+
+```bash
+kirin-tool-cli flash-ota base.app --json   # prints the plan, gate=plan-only, exit 4 — nothing written
+kirin-tool-cli flash-ota base.app --yes    # real write of all non-redline partitions
+```
+
+
+> 上游自 2026-09-11 起为新版本 Read-Only Reference License；本 fork 继承的 v2.4.2 基线仍按 BSL 1.1 发布
+> （含 CLI/MCP 二进制）。许可与合规口径见 `FORK-NOTICE.md` 与 `LICENSE`。
 
 ## 生成物
 
@@ -20,6 +29,7 @@
 | `getvar <name>` | 单个 fastboot 变量 | `FastbootClient.QueryVariableAsync` + `FastbootReadResponses.Variable` |
 | `extract <UPDATE.APP> [outdir]` | 列出并导出全部分区 | `Services.PartitionExtractor.Read/ExtractAsync`（`Utils.UpdateApp`） |
 | `dump <partition> -o <dir>` | 先 `oem dump-emmc`，失败回退 `oem dump-storage` 导出分区 | `Services.FastbootFlasherService.DumpPartitionAsync`（临时 VCOM loader 两者都回 `invalid command`，属预期） |
+| `backup [partition...]` | 只读备份：把指定分区（默认身份分区集 + `ptable`）dump 进时间戳目录并写 `manifest.json` | `Services.PreOpBackup` + `FastbootFlasherService.DumpPartitionAsync` |
 
 写操作分两类（`CliWriteKind`，`Cli/Commands/ICliCommand.cs`）：
 
@@ -45,6 +55,23 @@
 
 0 成功 / 1 用法 / 2 无设备 / 3 设备拒绝（含 `--strict-names` 拒绝、部分刷写失败）/ 4 被闸门拒（未确认或 PlanOnly 确认）/ 5 文件或校验失败（含刷写 0/0 全失败）。
 
+### 写入前自动备份（pre-op backup）
+
+flash-ota / flash-xml（以及 GUI 的全部真实写入路径）在**第一次真实写入之前**自动备份
+「写入计划中的红线分区 + `ptable`」，目录为时间戳目录：
+
+- `--backup-dir <dir>` 优先；否则 `$KIRIN_BACKUP_DIR`；否则 `~/.local/share/kirin-tool/backups/<yyyyMMdd-HHmmss>/`。
+- 同秒冲突时追加序号（`-2`、`-3`…），**绝不覆盖已有备份目录**。
+- 每分区先 `oem dump-emmc`，失败回退 `oem dump-storage`；成功计算 SHA256。
+- 目录里写 `manifest.json`（先 `.tmp` 再原子 rename）：工具版本、UTC 时间、fastboot 路径、
+  设备型号/SN（读不到为 null）、触发命令、写入计划、每分区 `{name,file,size,sha256,status,reason}`，
+  status ∈ `ok` / `unsupported`（loader 不支持 dump）/ `failed`。
+- **降级语义**：备份不完整**不阻塞写入**；CLI 在 stderr 打
+  `warning: pre-op backup incomplete (n/m)`，`--json` 的 applied 文档带
+  `backup: {dir, complete, skipped, manifest, partitions:[...]}`。GUI 在进度对话框里加一行说明。
+- `--no-backup` 跳过备份；`--require-backup`（严格模式，默认关）在备份不完整时拒绝写入（exit 4）。
+- 同一进程内同一分区只 dump 一次。
+
 flash-ota 默认 staging 目录 `<首个文件目录>/.kirintool-cli-tmp` 在结束时（含异常/取消）自动删除；显式 `--work-dir` 则保留。
 
 ## 约定
@@ -58,7 +85,7 @@ flash-ota 默认 staging 目录 `<首个文件目录>/.kirintool-cli-tmp` 在结
 `KirinTool.Cli mcp` 或 `Kirin-Tool --mcp`：stdio、**换行分隔的 JSON-RPC 2.0**（每行一条报文），
 日志只写 stderr。支持 `initialize`、`notifications/initialized`、`ping`、`tools/list`、`tools/call`。
 
-工具名：`info`、`doctor`、`getvar`、`extract`、`dump`、`flash_ota`、`flash_xml`、`vcom_unlock`、`oeminfo`、`downgrade_enable`。
+工具名：`info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`flash_ota`、`flash_xml`、`vcom_unlock`、`oeminfo`、`downgrade_enable`。
 
 - 写工具的 `inputSchema.required` 必含 `confirm: boolean`；`initialize` 的 instructions 与每个工具的 confirm
   描述按命令的 `WriteKind` 动态生成（RealWrite："true performs the real write; there is no dry-run in the MCP
