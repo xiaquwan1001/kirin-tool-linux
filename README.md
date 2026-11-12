@@ -7,23 +7,25 @@
 **Huawei firmware tools, a native Linux desktop.**
 
 Extract UPDATE.APP partitions · Flash compatible Kirin devices · Read device information
- [![Latest release](https://img.shields.io/github/v/release/Redminote11tech/kirin-tool-linux?style=flat-square&color=5865f2)](https://github.com/Redminote11tech/kirin-tool-linux/releases/latest) [![Build](https://img.shields.io/github/actions/workflow/status/Redminote11tech/kirin-tool-linux/build.yml?style=flat-square&label=build)](https://github.com/Redminote11tech/kirin-tool-linux/actions/workflows/build.yml) [![Platform](https://img.shields.io/badge/Linux-x86__64-1793d1?style=flat-square&logo=linux&logoColor=white)](#download-and-install) [![License](https://img.shields.io/badge/source_available-BSL_1.1-8b5cf6?style=flat-square)](LICENSE)
+ [![Latest release](https://img.shields.io/github/v/release/xiaquwan1001/kirin-tool-linux?style=flat-square&color=5865f2)](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest) [![Release build](https://img.shields.io/github/actions/workflow/status/xiaquwan1001/kirin-tool-linux/release-linux.yml?style=flat-square&label=release)](https://github.com/xiaquwan1001/kirin-tool-linux/actions/workflows/release-linux.yml) [![Platform](https://img.shields.io/badge/Linux-x86__64-1793d1?style=flat-square&logo=linux&logoColor=white)](#download-and-install) [![License](https://img.shields.io/badge/source_available-BSL_1.1-8b5cf6?style=flat-square)](LICENSE)
 
-[**Download**](https://github.com/Redminote11tech/kirin-tool-linux/releases/latest) · [Features](#features) · [Device support](#device-support) · [Documentation](#documentation) · [Report an issue](https://github.com/Redminote11tech/kirin-tool-linux/issues)
+[**Download**](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest) · [Features](#features) · [Device support](#device-support) · [Documentation](#documentation) · [Report an issue](https://github.com/xiaquwan1001/kirin-tool-linux/issues)
 
 </div>
 
 An unofficial, independently maintained Linux port of [Kirin-Tool](https://github.com/kethily-daniel/Kirin-Tool) for Huawei / HiSilicon Kirin devices.
 
-> **This checkout is the `xiaquwan1001` fork.** On top of upstream 2.4.8 it carries a headless CLI + MCP
-> stdio entry point and a real Full-OTA write path (`flash-ota`), the GUI scroll/focus fixes, GUI QoL
-> (remembers the last CPU model / paths / folders across runs, plus Light / Dark / Follow-system theming),
-> and honest unlock reporting (a temporary loader's "already fastboot unlocked" is reported as *no write*,
-> and every GUI write path is gated on the device-keyed redline partitions). It targets **.NET 10** and builds
-> three Linux delivery formats itself — `.deb`, `.AppImage`, `.tar.gz` — and a single-file CLI binary;
-> see [docs/fork-release.md](docs/fork-release.md). The upstream PRs for these changes live in
-> `feat/cli-and-mcp-entry`, `feat/ota-flash` and `fix/gui-scroll-and-dialog-order`.
- It brings UPDATE.APP firmware extraction, fastboot flashing, device information and supported loader workflows to Linux, with an Avalonia desktop interface, native icons and Inter fonts. Prebuilt **AppImage** and **Arch Linux / CachyOS packages** are available.
+> **This checkout is the `xiaquwan1001` fork of the `Redminote11tech` Linux port; current release v2.4.12.**
+> On top of the inherited 2.4.8 tree it adds a headless CLI + MCP stdio entry point and a real Full-OTA write
+> path (`flash-ota`, verified end to end on a Huawei P40 Pro / ELS-AN00: 46/46 partitions written through a
+> temporary loader, device booting 22 s after reboot), the GUI scroll/focus fixes, GUI QoL (remembers the last
+> CPU model / paths / folders across runs, plus Light / Dark / Follow-system theming), and honest unlock
+> reporting (a temporary loader's "already fastboot unlocked" is reported as *no write*, and every write path —
+> GUI and CLI alike — is gated on the device-keyed redline partitions, with an offline end-to-end regression
+> test in CI). It targets **.NET 10** and builds four Linux delivery formats itself — `.deb`, `.AppImage`,
+> `.tar.gz` and a single-file CLI binary — see [docs/fork-release.md](docs/fork-release.md). The upstream PRs
+> for the earlier changes live in `feat/cli-and-mcp-entry`, `feat/ota-flash` and `fix/gui-scroll-and-dialog-order`.
+ It brings UPDATE.APP firmware extraction, fastboot flashing, device information and supported loader workflows to Linux, with an Avalonia desktop interface, native icons and Inter fonts. Prebuilt **.deb**, **AppImage**, **tar.gz** and a single-file **CLI / MCP server** are available.
 
 **Source available under the [Business Source License 1.1](LICENSE), with no Additional Use Grant.** This is not an OSI-approved open-source license. Read the license before copying, modifying or using the software; production use is restricted until the applicable Change Date.
 
@@ -32,7 +34,7 @@ An unofficial, independently maintained Linux port of [Kirin-Tool](https://githu
 
 ## Features
 
-Version **2.4.8** preserves USB Update and Software Testpoint failure details in the popup and daily log, including partition, stage, block offset and available device responses. It retains the original Fluent icons, warning panels and version/port credit. See the [UI comparison and limitations](docs/windows-ui-parity.md).
+The inherited upstream **2.4.8** base preserves USB Update and Software Testpoint failure details in the popup and daily log, including partition, stage, block offset and available device responses. It retains the original Fluent icons, warning panels and version/port credit. See the [UI comparison and limitations](docs/windows-ui-parity.md).
 
 | Tool | What you can do |
 | :--- | :--- |
@@ -48,26 +50,25 @@ Version **2.4.5** adds modern native fastboot host functionality, including stag
 
 ## Download and install
 
-Download the prebuilt files from [GitHub Releases](https://github.com/Redminote11tech/kirin-tool-linux/releases/latest). You do not need to build the application or install a separate .NET runtime.
+Download the prebuilt files from [GitHub Releases](https://github.com/xiaquwan1001/kirin-tool-linux/releases/latest). You do not need to build the application or install a separate .NET runtime.
 
-| Format | Download v2.4.8 | Compatibility |
+| Format | Download v2.4.12 | Compatibility |
 | :--- | :--- | :--- |
-| **Arch package** | [`.pkg.tar.zst`](https://github.com/Redminote11tech/kirin-tool-linux/releases/download/v2.4.8/kirin-tool-linux-2.4.8-1-x86_64.pkg.tar.zst) | Arch Linux and CachyOS, x86-64; native fastboot requires glibc 2.38+. |
-| **AppImage** | [`.AppImage`](https://github.com/Redminote11tech/kirin-tool-linux/releases/download/v2.4.8/kirin-tool-linux-2.4.8-x86_64.AppImage) | Linux x86-64, glibc 2.31+; baseline CPU build with host desktop libraries still required. |
-| **Native fastboot bundle** | [`.tar.xz`](https://github.com/Redminote11tech/kirin-tool-linux/releases/download/v2.4.8/kirin-fastboot-35.0.2-huawei-linux-x86_64.tar.xz) | CLI client, filesystem helpers, corresponding sources and notices. |
+| **Debian package** | [`.deb`](https://github.com/xiaquwan1001/kirin-tool-linux/releases/download/v2.4.12/kirin-tool-linux_2.4.12_amd64.deb) | GUI + CLI; Debian/Ubuntu x86-64, glibc 2.31+. `Depends` is simulated against the target archive in CI; `packaging/check-depends.sh` verifies locally. |
+| **AppImage** | [`.AppImage`](https://github.com/xiaquwan1001/kirin-tool-linux/releases/download/v2.4.12/kirin-tool-linux-2.4.12-x86_64.AppImage) | Linux x86-64, glibc 2.31+; baseline CPU build with host desktop libraries still required. Works on Arch/CachyOS too. |
+| **Portable tarball** | [`.tar.gz`](https://github.com/xiaquwan1001/kirin-tool-linux/releases/download/v2.4.12/kirin-tool-linux-2.4.12-x86_64.tar.gz) | Same app tree as the .deb for `~/opt` style installs, no root. |
+| **Headless CLI / MCP server** | [`kirin-tool-cli`](https://github.com/xiaquwan1001/kirin-tool-linux/releases/download/v2.4.12/kirin-tool-cli-2.4.12-linux-x86_64) | Single-file binary; `kirin-tool-cli mcp` speaks MCP over stdio. |
 
-SHA256 checksums and build provenance accompany the release. Use the AppImage if you need the older glibc baseline. Neither packaged format introduces a mandatory x86-64-v3 requirement; older physical CPU GUI compatibility is not fully verified.
+SHA256 checksums (`SHA256SUMS-2.4.12.txt`) and build provenance accompany the release. Use the AppImage if you need the older glibc baseline. Neither packaged format introduces a mandatory x86-64-v3 requirement; older physical CPU GUI compatibility is not fully verified.
 
 ### CachyOS / Arch Linux
 
-From the directory containing the downloaded package:
+This fork publishes no pacman package; use the **AppImage** (recommended, no install) or the **.deb** tree via the portable tarball. The upstream Arch package can still be built manually with the `build.yml` workflow (`workflow_dispatch`), which is not part of the fork's release pipeline.
 
 ```bash
-sudo pacman -U ./kirin-tool-linux-2.4.8-1-x86_64.pkg.tar.zst
-kirin-tool
+chmod +x ./kirin-tool-linux-2.4.12-x86_64.AppImage
+./kirin-tool-linux-2.4.12-x86_64.AppImage
 ```
-
-You can also launch **Kirin Tool** from your application menu. The package replaces the earlier `kirin-tool-linux-unstable` package in the same transaction; accept its removal when pacman prompts. Close the application before upgrading, then reopen it.
 
 The package installs Huawei udev rules. If USB access is denied, follow the install notes and add your user to the fastboot and VCOM groups:
 
@@ -81,23 +82,23 @@ Log out and back in after changing groups, then reconnect the phone. A Huawei-ca
 ### AppImage
 
 ```bash
-chmod +x ./kirin-tool-linux-2.4.8-x86_64.AppImage
-./kirin-tool-linux-2.4.8-x86_64.AppImage
+chmod +x ./kirin-tool-linux-2.4.12-x86_64.AppImage
+./kirin-tool-linux-2.4.12-x86_64.AppImage
 ```
 
 If FUSE2 is unavailable, run without mounting the image:
 
 ```bash
-./kirin-tool-linux-2.4.8-x86_64.AppImage --appimage-extract-and-run
+./kirin-tool-linux-2.4.12-x86_64.AppImage --appimage-extract-and-run
 ```
 
 ### Debian / Ubuntu (fork build)
 
-The fork also publishes a `.deb` and a single-file CLI binary from the same pipeline
+The fork publishes a `.deb` and a single-file CLI binary from the same pipeline
 (`.github/workflows/release-linux.yml`):
 
 ```bash
-sudo apt install ./kirin-tool-linux_<version>_amd64.deb
+sudo apt install ./kirin-tool-linux_2.4.12_amd64.deb
 kirin-tool          # GUI
 kirin-tool-cli --help # headless CLI / `kirin-tool-cli mcp` for the MCP stdio server
 ```
@@ -159,7 +160,7 @@ Use separate output folders when extracting multiple archives with overlapping n
 Install the .NET 10 SDK (the app targets `net10.0`; .NET 8 reached end of support on 2026-11-10) and [native build prerequisites](fastboot-modern/README.md), then build all managed and native components together. The output directory must not already exist:
 
 ```bash
-git clone https://github.com/Redminote11tech/kirin-tool-linux.git
+git clone https://github.com/xiaquwan1001/kirin-tool-linux.git
 cd kirin-tool-linux
 ./packaging/publish.sh publish-out
 ./publish-out/Kirin-Tool
@@ -171,7 +172,7 @@ For a portable AppImage, follow the [older-glibc build environment instructions]
 
 Fastboot invocation logs for system installs and AppImages are available at `~/.local/state/Kirin-Tool/log/` when the application directory is not writable. A failed operation's bootloader reply is more useful than its progress color alone.
 
-[Open an issue](https://github.com/Redminote11tech/kirin-tool-linux/issues) with the app version, distribution, device model/chipset, firmware, connection mode, attempted operation and relevant error lines. Redact serial numbers, PSIDs, IMEIs and other private identifiers before sharing logs.
+[Open an issue](https://github.com/xiaquwan1001/kirin-tool-linux/issues) with the app version, distribution, device model/chipset, firmware, connection mode, attempted operation and relevant error lines. Redact serial numbers, PSIDs, IMEIs and other private identifiers before sharing logs.
 
 ## Credits and license
 
@@ -180,7 +181,8 @@ This Linux fork derives from upstream **v2.4.2**, distributed under BSL 1.1, and
 - **Kethily Daniel & NDXCode** — original Kirin-Tool authors.
 - **[TASZK Security Labs SL](https://taszk.io)** — head resend bootrom exploit.
 - **[kasnria001](https://github.com/kasnria001)** — decrypted xloaders and community help.
-- **Redminote11tech** — Linux port and maintenance.
+- **Redminote11tech** — Linux port and maintenance (upstream of this fork).
+- **[xiaquwan1001](https://github.com/xiaquwan1001)** — this fork: CLI/MCP, `flash-ota`, redline gates, packaging and CI.
 
 The [LICENSE](LICENSE) is authoritative: BSL 1.1 permits the listed non-production uses, has no Additional Use Grant, and changes each version to **GPL-3.0-or-later** after its applicable four-year Change Date. Bundled third-party components retain their own licenses and notices; corresponding native sources accompany releases.
 
