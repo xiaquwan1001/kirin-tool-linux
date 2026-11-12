@@ -170,6 +170,8 @@ Full feature details: [docs/features.md](docs/features.md).
 | [Fork release pipeline](docs/fork-release.md) | Assets, deb layout, dependency policy, releasing. |
 | [Fork provenance](docs/FORK-NOTICE.md) | License position and upstream relationship. |
 | [UPDATE.APP extraction](docs/partition-extractor.md) · [AppImage & udev](docs/portable-appimage.md) · [Native fastboot parity](docs/native-fastboot-parity-v2.4.5.md) | Inherited-baseline guides. |
+| [v2.4.13 release notes](docs/release-notes/v2.4.13.md) · [screenshots](docs/screenshots.md) | What changed in this release and how the screenshots were captured. |
+| [Chinese write-up (酷安)](https://www.coolapk.com/feed/75023844) | Community post introducing v2.4.13, with the same six screenshots (archived in [docs/coolapk/v2.4.13-post.md](docs/coolapk/v2.4.13-post.md)). |
 
 ### Build from source
 
