@@ -9,7 +9,7 @@ Fork-relevant guides first; inherited-baseline guides follow. Entry point: [READ
 | [fork-release.md](fork-release.md) | Fork release pipeline: deb / AppImage / tar.gz / CLI assets, deb layout, ICU/OpenSSL dependency policy, CI map. |
 | [features.md](features.md) | Feature overview across GUI, CLI and MCP. |
 | [FORK-NOTICE.md](FORK-NOTICE.md) | Fork provenance, BSL 1.1 license position, compliance checklist. |
-| [screenshots.md](screenshots.md) | Planned screenshot set (pending capture). |
+| [screenshots.md](screenshots.md) | Screenshot set: file names, content and capture guidance (images under docs/images/). |
 | [stable-release.md](stable-release.md) | Inherited upstream 2.4.8 baseline description (old file names there are historical, not current assets). |
 | [partition-extractor.md](partition-extractor.md) | UPDATE.APP extraction: selection, naming, cancellation, validation. |
 | [portable-appimage.md](portable-appimage.md) | AppImage build baseline, glibc 2.31, host dependencies, udev onboarding. |

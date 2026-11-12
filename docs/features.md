@@ -22,8 +22,9 @@ One implementation, three entry points: the **Avalonia GUI**, the **headless CLI
 - Write success requires a device `OKAY` reply, not just exit 0.
 - Explicit GUI confirmations for SN rewrite, FRP erase, and USB Update redline partitions discovered after unpacking.
 - Global unhandled-exception logging; plan-only commands never write.
+- Pre-op backup before every real write: redline partitions of the plan + `ptable` into a timestamped directory with a SHA256 `manifest.json` (best effort; `--require-backup` / `--no-backup` / `--backup-dir`), plus a read-only `backup` command.
 
 ## Packaging & CI
 
 - Self-published `.deb` (glibc 2.31, self-contained, udev rules + desktop entry), AppImage, tar.gz and single-file CLI — all from one commit, smoke-tested in CI. [fork-release.md](fork-release.md)
-- Dual CI (GitHub Actions + GitLab CI) running 16 hardware-free test suites.
+- Dual CI (GitHub Actions + GitLab CI) running 17 hardware-free test suites (`tests/suites.txt` is the single source of truth).

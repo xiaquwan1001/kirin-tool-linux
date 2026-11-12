@@ -17,6 +17,15 @@ An unofficial, independently maintained Linux port of [Kirin-Tool](https://githu
 > [!WARNING]
 > Flashing, unlocking and rebranding can erase data or damage a device. Back up your data, use firmware matching your device, and read the [safety model](#safety-model) before writing anything. You are responsible for device operations; a successful host build does not establish hardware compatibility.
 
+## 60-second overview
+
+| | |
+| :--- | :--- |
+| **What it can do** | Extract UPDATE.APP firmware, inspect devices over fastboot/adb, and write Full-OTA / flashing.xml plans through a temporary VCOM loader — from a GUI, a headless CLI or an MCP server (one shared implementation). |
+| **What it cannot do** | It cannot guarantee your device is supported (only Kirin 990 5G / P40 Pro is fully verified), it cannot bypass firmware or loader permissions, and plan-only commands (`vcom-unlock`, `oeminfo`, `downgrade-enable`) never write — they only print a plan. |
+| **Safety boundaries** | Redline identity/security partitions are refused unless the **human** overrides — `--allow-redline` exists only in the CLI, never over MCP, so an AI client cannot redline-override on its own. Every write reports a machine-readable `gate` (`plan-only`/`refused`/`confirmed`/`applied`) and counts as success only on a device `OKAY`. Pre-op backups are **best effort** — a loader without dump support warns and continues, it never blocks. |
+| **Who it is for** | People who drive Huawei devices from scripts or AI agents (CLI + MCP are built for automation) and want every destructive step gated, confirmed and backed up first. Not a one-click repair tool. |
+
 ## What this fork adds over upstream
 
 The inherited base is the **Redminote11tech** Linux port of upstream **2.4.8** (see [docs/stable-release.md](docs/stable-release.md) — treat its old install file names as the inherited baseline, not current assets). This fork (`xiaquwan1001`) adds:
@@ -34,7 +43,7 @@ The inherited base is the **Redminote11tech** Linux port of upstream **2.4.8** (
 
 ## Safety model
 
-**What actually writes to a device:** `flash-ota`, `flash-xml` (CLI/MCP) and the GUI flashing / USB Update / rescue workflows. These are real writes — there is no dry-run after confirmation.
+**What actually writes to a device:** `flash-ota`, `flash-xml` (CLI/MCP) and the GUI flashing / USB Update / rescue workflows. These are real writes — there is no dry-run after confirmation. `flash-xml` skips identifiers the loader does not expose (with a warning); pass `--strict-names` to refuse instead of skipping (exit 3).
 
 **What never writes:** `vcom-unlock`, `oeminfo`, `downgrade-enable` are plan-only: even with `--yes` they only acknowledge the plan (exit 4, nothing written).
 
@@ -80,6 +89,7 @@ kirin-tool-cli info                                     # device info, capabilit
 kirin-tool-cli extract UPDATE.APP out/                  # extract all partitions
 kirin-tool-cli flash-ota base.app --json                # prints the write plan, exits 4 — nothing written
 kirin-tool-cli flash-ota base.app --yes                 # REAL WRITE of all non-redline partitions
+kirin-tool-cli backup --json                            # read-only dump of identity partitions + manifest
 ```
 
 `--allow-redline` (CLI only) is required on top of `--yes` if the plan includes redline partitions. Exit codes and the full command table: [docs/cli-mcp.md](docs/cli-mcp.md).
@@ -97,11 +107,21 @@ MCP server configuration (newline-delimited JSON-RPC 2.0 over stdio):
 }
 ```
 
-MCP tools: `info`, `doctor`, `getvar`, `extract`, `dump`, `flash_ota`, `flash_xml`, `vcom_unlock`, `oeminfo`, `downgrade_enable`. Write tools require `confirm: true` and never accept `allow-redline`.
+MCP tools: `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`, `flash_ota`, `flash_xml`, `vcom_unlock`, `oeminfo`, `downgrade_enable`. Write tools require `confirm: true` and never accept `allow-redline`.
+
+## v2.4.13 highlights
+
+- **MCP contract matches reality**: `flash_ota` / `flash_xml` are documented as real writes, plan-only tools stay plan-only — and it cannot drift again (generated from `CliWriteKind`). Full notes: [docs/release-notes/v2.4.13.md](docs/release-notes/v2.4.13.md).
+- **MCP cannot redline-override**: `allow-redline` over MCP is rejected with JSON-RPC `-32602`; the override stays CLI-only.
+- **No more false successes**: GUI fastboot writes require exit 0 **and** a device `OKAY` (XML partitions, Full OTA, rescue); refusals emit a single machine-readable `gate` document.
+- **Automatic pre-op backup** before every real write: redline partitions of the plan plus `ptable` go into a timestamped directory with a SHA256 `manifest.json` — best effort, with `--require-backup` / `--no-backup` / `--backup-dir` controls and a read-only `backup` command.
+- **Low-battery banner** on the device page (below 50%) is a warning only — it never blocks a write.
+- **flash-xml honesty**: identifiers the loader does not expose are skipped with a warning; `--strict-names` refuses instead (exit 3).
+- **17 hardware-free test harnesses** (new: WriteGates, McpProtocol, OtaPlan, PreOpBackup) run in dual CI (GitHub Actions + GitLab CI).
 
 ## Screenshots
 
-See [docs/screenshots.md](docs/screenshots.md) for the planned screenshot set (placeholders pending capture).
+Planned/captured screenshot set, capture guidance and file names: [docs/screenshots.md](docs/screenshots.md). Images are provided under `docs/images/`; the README references them by relative path (embedding pending the F10 capture pass).
 
 ## Verified on hardware / Not verified
 
