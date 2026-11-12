@@ -69,6 +69,10 @@ tests:
   needs: ["build"]
   script: |
     set -euo pipefail
+    # FlashPolicy/WriteGates/McpProtocol/OtaPlan drive the real CLI binary and now fail
+    # hard when it is missing (no silent SKIP), so build it here. needs: ["build"] only
+    # downloads the staged artifact, not the CLI's own bin tree.
+    dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release -p:NuGetAudit=false
     while read -r t; do
       case "$t" in ''|'#'*) continue ;; esac
       echo "=== $t ==="
