@@ -1,0 +1,140 @@
+# USTC GitLab CI for the xiaquwan1001 fork of Kirin Tool for Linux.
+#
+# Runs on this project's own shell runner (registered by ustc-runner-add-project
+# xqh/kirin-tool-linux) on the user's machine, so the .NET 10 SDK, the native
+# toolchain (cc, pkg-config, libusb-1.0 headers) and dpkg-deb are already there:
+# no image pull and no toolchain install. .github/workflows/cli-mcp-ci.yml stays
+# the reference definition of "what must pass"; this is the faster, campus-network
+# copy of the same gates.
+#
+# Shell-executor caveat: all jobs of one project share $CI_PROJECT_DIR, so jobs
+# are chained through stages/needs and never run concurrently in one checkout.
+
+stages:
+  - build
+  - test
+  - package
+
+variables:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+  DOTNET_ROLL_FORWARD: "Major"
+  # The host already has a warm package cache; do not re-download per pipeline.
+  NUGET_PACKAGES: "$HOME/.nuget/packages"
+
+default:
+  interruptible: true
+
+build:
+  stage: build
+  timeout: 20m
+  script: |
+    set -euo pipefail
+    dotnet --version
+    test "$(dotnet --version | cut -d. -f1)" = "10" || { echo "need .NET 10 SDK"; exit 1; }
+    dotnet restore Kirin-Tool.csproj
+    dotnet restore KirinTool.Cli/KirinTool.Cli.csproj
+    dotnet build Kirin-Tool.csproj -c Release --no-restore -p:NuGetAudit=false
+    dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release --no-restore -p:NuGetAudit=false
+  artifacts:
+    name: "kirin-tool-cli-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - KirinTool.Cli/bin/Release/net10.0/
+    expire_in: 7 days
+
+# Same hardware-free suite list as cli-mcp-ci.yml. Hardware probes
+# (VcomOpenProbe, UsbUpdateProbe) and the pixel comparison (VisualParity) stay
+# out on purpose: they need a phone / a specific font stack.
+tests:
+  stage: test
+  timeout: 30m
+  needs: ["build"]
+  script: |
+    set -euo pipefail
+    for t in FlashPolicy StableParity FastbootReads VcomPromptUi GuiQol Extractor \
+             UsbDiagnostics UsbRedlineGate UsbTransport UsbUpdateUi OemInfoUi \
+             UdevNotice Kirin9000; do
+      echo "=== $t ==="
+      dotnet run --project "tests/$t" -c Release -p:NuGetAudit=false
+    done
+
+smoke:
+  stage: test
+  timeout: 15m
+  needs: ["build"]
+  script: |
+    set -euo pipefail
+    cli=KirinTool.Cli/bin/Release/net10.0/KirinTool.Cli
+    test -x "$cli"
+
+    "$cli" --help | tee /tmp/help.txt
+    grep -q 'usage: kirintool' /tmp/help.txt
+    grep -q 'mcp' /tmp/help.txt
+    "$cli" version
+
+    # BinaryLocator also probes PATH and /usr/bin, so a tiny stub exercises
+    # "doctor" end to end without platform-tools or USB access.
+    stub="$(mktemp -d)/stub-bin"
+    mkdir -p "$stub"
+    {
+      echo '#!/usr/bin/env bash'
+      echo 'if [ "${1:-}" = "--version" ]; then echo "fastboot version 35.0.2-ci-stub"; exit 0; fi'
+      echo 'if [ "${1:-}" = "devices" ]; then exit 0; fi'
+      echo 'echo "FAILED (remote: no device in CI stub)"; exit 1'
+    } > "$stub/fastboot"
+    chmod +x "$stub/fastboot"
+    KIRIN_FASTBOOT="$stub/fastboot" "$cli" doctor --json | tee /tmp/doctor.json
+    grep -q '"fastboot-found"' /tmp/doctor.json
+    grep -q '"loaders-bundled"' /tmp/doctor.json
+
+    # stdio MCP session: initialize + tools/list must answer and expose flash_ota
+    printf '%s\n' \
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+      '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+      | "$cli" mcp 2>/tmp/mcp.err | tee /tmp/mcp.out
+    grep -q '"result"' /tmp/mcp.out
+    grep -q '"tools"' /tmp/mcp.out
+    grep -q '"flash_ota"' /tmp/mcp.out
+
+# Port of the packaging-smoke job: catches path/metadata regressions in
+# packaging/build-deb.sh without a native build. The Depends simulation
+# (apt-get -s) stays GitHub-side, where the runner archive is the target archive.
+packaging:
+  stage: package
+  timeout: 10m
+  script: |
+    set -euo pipefail
+    P=publish-fake
+    rm -rf "$P" dist
+    mkdir -p "$P/fastboot" "$P/loaders/hisi990" "$P/licenses" "$P/docs"
+    printf '#!/bin/sh\necho fake-gui\n' > "$P/Kirin-Tool"
+    printf '#!/bin/sh\necho "fastboot version 35.0.2-kirin-tool-linux-huawei-parity"\n' > "$P/fastboot/fastboot"
+    head -c 64 /dev/zero > "$P/loaders/hisi990/fastboot.ktl"
+    echo marker > "$P/libkirin_usb_update.so"
+    echo license > "$P/licenses/LICENSE"
+    echo doc > "$P/docs/README.md"
+    printf '#!/bin/sh\necho fake-probe\n' > "$P/UsbUpdateProbe"
+    printf '#!/bin/sh\necho fake-probe\n' > "$P/VcomOpenProbe"
+    printf '#!/bin/sh\necho fake-cli\n' > cli-fake
+    chmod +x "$P/Kirin-Tool" "$P/fastboot/fastboot" "$P/UsbUpdateProbe" "$P/VcomOpenProbe" cli-fake
+
+    ./packaging/build-deb.sh "$P" 0.0.0-ci ./cli-fake dist
+
+    DEB="$(ls dist/*.deb)"
+    echo "built: $DEB"
+    dpkg-deb -I "$DEB" | tee /tmp/control.txt
+    grep -q 'Package: kirin-tool-linux' /tmp/control.txt
+    grep -q 'Architecture: amd64' /tmp/control.txt
+    dpkg-deb -c "$DEB" > /tmp/contents.txt
+    for f in usr/lib/kirin-tool-linux/Kirin-Tool usr/bin/kirin-tool \
+             usr/bin/kirin-tool-cli \
+             usr/lib/udev/rules.d/51-kirin-tool-fastboot.rules \
+             usr/share/applications/kirin-tool.desktop; do
+      grep -qF "$f" /tmp/contents.txt
+    done
+    echo 'deb packaging smoke OK'
+  artifacts:
+    paths:
+      - dist/*.deb
+    expire_in: 7 days
