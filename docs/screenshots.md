@@ -18,4 +18,4 @@ Requirements for all captures:
 | 5 | `screenshot-redline-confirm.png` | Redline confirmation dialog listing the refused partitions. | Trigger a plan containing redline partitions so the dialog lists exact names; capture the dialog, not the refusal log. |
 | 6 | `screenshot-cli-doctor.png` | Terminal with `kirin-tool-cli doctor` (and optionally `flash-ota --json` plan output). | 1600x1000 terminal window, dark background, mono font; JSON must show the `gate` field; redact serials. |
 
-Status: **not captured yet** — this file defines the set; images arrive via docs/images/ in the F10 pass.
+Status: **captured** (2026-11-12, v2.4.13 headless renders; see docs/audit/2026-11-12/fix-F10a.md for provenance).

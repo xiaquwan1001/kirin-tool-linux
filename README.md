@@ -121,7 +121,22 @@ MCP tools: `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`, `flash_ota`,
 
 ## Screenshots
 
-Planned/captured screenshot set, capture guidance and file names: [docs/screenshots.md](docs/screenshots.md). Images are provided under `docs/images/`; the README references them by relative path (embedding pending the F10 capture pass).
+All six are headless renders of the v2.4.13 UI (`v2.4.13`, commit `47fb3da`), captured from the real
+Avalonia controls — no upstream or older-release images. Capture details and per-file provenance:
+[docs/screenshots.md](docs/screenshots.md). No device was connected for these captures, so device fields
+show the UI's native "Not Read" state.
+
+| Main window (light) | Main window (dark) |
+| :-- | :-- |
+| ![Main window, light theme](docs/images/screenshot-main.png) | ![Main window, dark theme](docs/images/screenshot-dark.png) |
+
+| UPDATE.APP extractor | Flash progress (pre-op backup line at the bottom) |
+| :-- | :-- |
+| ![Extractor with a loaded UPDATE.APP](docs/images/screenshot-extractor.png) | ![Flash progress dialog](docs/images/screenshot-flash-progress.png) |
+
+| Redline confirmation | CLI / MCP output |
+| :-- | :-- |
+| ![Redline confirmation dialog](docs/images/screenshot-redline-confirm.png) | ![kirin-tool-cli doctor and flash-ota plan](docs/images/screenshot-cli-doctor.png) |
 
 ## Verified on hardware / Not verified
 
