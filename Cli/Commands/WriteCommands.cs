@@ -2,6 +2,7 @@ using System.Text;
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
 using Kirin_Tool.Services.Approval;
+using Kirin_Tool.Services.Verdict;
 using Kirin_Tool.Utils;
 
 namespace Kirin_Tool.Cli.Commands;
@@ -107,6 +108,7 @@ internal sealed class FlashOtaCommand : ICliCommand
 
     public async Task<int> ExecuteAsync(ParsedArgs args, CliContext context, CancellationToken cancellationToken)
     {
+        PreOpBackupCli.ValidateFlags(args);
         List<string> inputs = args.Positionals.ToList();
         string? filesValue = args.Value("files");
         if (!string.IsNullOrWhiteSpace(filesValue))
@@ -226,7 +228,7 @@ internal sealed class FlashOtaCommand : ICliCommand
         // warnings (see PreOpBackupCli) and only --require-backup turns them into a refusal.
         PreOpBackupResult backup = await PreOpBackupCli.RunForWriteAsync(
             args, context, "flash-ota", plan.Entries.Select(entry => entry.Partition), session, cancellationToken);
-        int backupRefusal = PreOpBackupCli.RefusalExit(args, backup, context);
+        int backupRefusal = PreOpBackupCli.RefusalExit(args, backup, context, "flash-ota");
         if (backupRefusal != ExitCodes.Ok) return backupRefusal;
 
         string? workDirArg = args.Value("work-dir");
@@ -351,6 +353,7 @@ internal sealed class FlashXmlCommand : ICliCommand
 
     public async Task<int> ExecuteAsync(ParsedArgs args, CliContext context, CancellationToken cancellationToken)
     {
+        PreOpBackupCli.ValidateFlags(args);
         if (args.Positionals.Count < 1) throw new CliUsageException("flash-xml requires a flashing XML path");
         string path = Path.GetFullPath(args.Positionals[0], context.WorkingDirectory);
 
@@ -544,7 +547,7 @@ internal sealed class FlashXmlCommand : ICliCommand
 
         PreOpBackupResult backup = await PreOpBackupCli.RunForWriteAsync(
             args, context, "flash-xml", writeList.Select(partition => partition.Identifier ?? string.Empty), session, cancellationToken);
-        int backupRefusal = PreOpBackupCli.RefusalExit(args, backup, context);
+        int backupRefusal = PreOpBackupCli.RefusalExit(args, backup, context, "flash-xml");
         if (backupRefusal != ExitCodes.Ok) return backupRefusal;
 
         var outcomes = new List<OtaFlashOutcome>();
@@ -728,6 +731,17 @@ internal sealed class DowngradeEnableCommand : GatedWriteCommand
 /// </summary>
 internal static class PreOpBackupCli
 {
+    /// <summary>
+    /// Fails fast on contradictory backup flags: <c>--no-backup</c> disables the backup,
+    /// <c>--require-backup</c> refuses to write without one. Accepting both used to mean the
+    /// stricter flag silently lost (audit S10/S12 family).
+    /// </summary>
+    public static void ValidateFlags(ParsedArgs args)
+    {
+        if (args.HasFlag("no-backup") && args.HasFlag("require-backup"))
+            throw new CliUsageException("--no-backup cannot be combined with --require-backup: one disables the backup, the other refuses to write without it");
+    }
+
     public static async Task<PreOpBackupResult> RunForWriteAsync(
         ParsedArgs args,
         CliContext context,
@@ -738,7 +752,11 @@ internal static class PreOpBackupCli
     {
         if (args.HasFlag("no-backup"))
         {
-            context.Diag("pre-op backup skipped (--no-backup)");
+            ValidateFlags(args);
+            // Audit line, not just a passing note: a skipped backup is a decision the log and the
+            // machine-readable JSON must both carry (audit S10/S11).
+            context.Diag($"pre-op backup SKIPPED (--no-backup): nothing was dumped before '{trigger}'; " +
+                         "a partial write cannot be rolled back from this run");
             return PreOpBackupResult.Skipped;
         }
 
@@ -764,11 +782,31 @@ internal static class PreOpBackupCli
     }
 
     /// <summary>Exit code for a --require-backup refusal, or Ok when the write may proceed.</summary>
-    public static int RefusalExit(ParsedArgs args, PreOpBackupResult result, CliContext context)
+    public static int RefusalExit(ParsedArgs args, PreOpBackupResult result, CliContext context, string command = "write")
     {
-        if (!args.HasFlag("require-backup") || !result.Attempted || result.Complete) return ExitCodes.Ok;
-        context.Diag("refused: --require-backup set and the pre-op backup is incomplete; nothing was written");
-        return ExitCodes.Gated;
+        // The decision itself lives in Services/Verdict/BackupGate.cs so the same rule can be
+        // exercised without a device: "not attempted" (directory/manifest creation failed) is a
+        // refusal just like "incomplete" (audit S10/S11).
+        BackupGateVerdict verdict = BackupGate.Evaluate(args.HasFlag("require-backup"), result);
+        if (!verdict.Refuse) return ExitCodes.Ok;
+
+        context.Diag($"refused: --require-backup set and {verdict.Reason}; nothing was written (exit {verdict.ExitCode})");
+        if (context.Json)
+        {
+            context.WriteJson(new
+            {
+                command,
+                dryRun = false,
+                applied = false,
+                verified = false,
+                gate = "refused",
+                reason = "require_backup_failed",
+                refusal = verdict.Reason,
+                backup = JsonPayload(result),
+                exitCode = verdict.ExitCode,
+            });
+        }
+        return verdict.ExitCode;
     }
 
     /// <summary>Machine-readable summary embedded in the applied-write JSON document.</summary>

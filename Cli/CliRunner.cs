@@ -75,7 +75,10 @@ public static class CliRunner
                 return ExitCodes.Usage;
             }
 
-            ParsedArgs parsed = ArgParser.Parse(args.Skip(1).ToArray(), ValueOptions(command));
+            ParsedArgs parsed = ArgParser.Parse(args.Skip(1).ToArray(), ValueOptions(command), FlagOptions(command));
+            if (parsed.UnknownOptions.Count > 0)
+                error.WriteLine($"warning: accepting unregistered option{(parsed.UnknownOptions.Count > 1 ? "s" : string.Empty)} " +
+                                $"{string.Join(", ", parsed.UnknownOptions.Select(option => "--" + option))} as flags because --lenient-args was given");
             if (parsed.HasFlag("help"))
             {
                 output.WriteLine(command.Usage);
@@ -114,6 +117,13 @@ public static class CliRunner
             .Select(parameter => parameter.Name)
             .ToArray();
 
+    /// <summary>Declared boolean flags: anything else is an unknown option (audit S12).</summary>
+    private static string[] FlagOptions(ICliCommand command) =>
+        command.Params
+            .Where(parameter => !parameter.Positional && parameter.Type == "boolean")
+            .Select(parameter => parameter.Name)
+            .ToArray();
+
     private static void WriteUsage(TextWriter writer)
     {
         var builder = new StringBuilder();
@@ -129,6 +139,7 @@ public static class CliRunner
         builder.AppendLine("  mcp              Run the MCP stdio JSON-RPC server (tools/list, tools/call)");
         builder.AppendLine();
         builder.AppendLine("global options: --json (structured output), --yes (acknowledge a write plan), -h/--help");
+        builder.AppendLine("unknown options are a usage error (exit 1); --lenient-args accepts them as flags instead");
         builder.AppendLine("diagnostics always go to stderr.");
         builder.AppendLine("exit codes: 0 ok, 1 usage, 2 no device, 3 device rejected, 4 gate refused, 5 file/verify failed");
         writer.Write(builder.ToString());

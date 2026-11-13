@@ -23,3 +23,4 @@ SurfaceParity
 OpLogging
 VcomUnlockCli
 ApprovalGate
+VerdictHonesty

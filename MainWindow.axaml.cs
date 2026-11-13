@@ -23,6 +23,7 @@ using Kirin_Tool.Services;
 using Kirin_Tool.Services.Approval;
 using Kirin_Tool.Services.USBUpdate;
 using Kirin_Tool.Services.WriteOperations;
+using Kirin_Tool.Services.Verdict;
 using Kirin_Tool.UI;
 using Kirin_Tool.Utils;
 
@@ -1550,7 +1551,20 @@ namespace Kirin_Tool
             // frame repeated). The path stays visible in the dialog after it closes.
             using var sessionLog = VcomSessionLogger.Create(cpu);
             dialog.ShowLogPath(sessionLog.FilePath ?? "(disabled)");
-            var unlockOptions = new UnlockOptions { Logger = sessionLog };
+            // ACK ledger: every frame the flasher writes is counted here, so the dialog can state
+            // whether the device answered instead of inferring "success" from "no exception".
+            var ledger = new VcomAckLedger();
+            var flasherOptions = new VcomFlasherOptions
+            {
+                Logger = sessionLog,
+                FrameObserver = frame => ledger.OnFrame(frame),
+            };
+            var unlockOptions = new UnlockOptions
+            {
+                Logger = sessionLog,
+                Flasher = flasherOptions,
+                StageBeginObserver = stage => ledger.EnterStage(stage),
+            };
 
             var dialogShowTask = _dialogService.ShowDialog(dialog);
             var unlockResult = await _firmwareUnlocker.UnlockFastboot(cpu, progressItems, overallProgress, interactionHandler, useFastFlashLoader, unlockOptions);
@@ -1558,7 +1572,20 @@ namespace Kirin_Tool
             if (!unlockResult.IsSuccess && sessionLog.FilePath != null)
                 dialog.UpdateOverallStatus($"{unlockResult.Message} (log: {sessionLog.FilePath})");
 
-            dialog.ShowCloseButton(unlockResult.IsSuccess, unlockResult.IsSuccess ? "Unlock Complete" : "Unlock Failed");
+            // Two independent facts: the frames went out (applied) and the device answered (verified).
+            var verdict = unlockResult.IsSuccess
+                ? VcomVerdict.From(ledger.Total, flasherOptions.AckMode)
+                : VcomVerdict.Failed(ledger.Total, UnlockVerdictText.FailureReason(unlockResult.FailureKind));
+            if (unlockResult.IsSuccess)
+            {
+                dialog.ShowVerdict(verdict.Verified,
+                    verdict.Verified ? "Upload Verified" : "Uploaded — Unverified",
+                    UnlockVerdictText.Explain(verdict) + " " + UnlockVerdictText.Evidence(verdict.Counts));
+            }
+            else
+            {
+                dialog.ShowCloseButton(false, "Unlock Failed");
+            }
             await dialogShowTask;
         }
 
@@ -2214,9 +2241,23 @@ namespace Kirin_Tool
             }
 
             var writeResult = await _deviceWriteOps.WriteSerialNumberAsync(admission.RequireTicket(), newSn);
+
+            // A zero exit code only means fastboot did not reject the command locally (audit
+            // F04/S18). Read the variable back through the same client the write went through:
+            // only an identical read-back may be reported as a success.
+            string? readBack = null;
+            string? readBackError = null;
+            try { readBack = await _fastbootClient.ReadNveVariable("SN"); }
+            catch (Exception ex) { readBackError = ex.Message; }
+
+            var snVerdict = NveWriteCheck.Compare(newSn, readBack, writeResult.IsSuccess, readBackError);
             await ShowMessageBox(
-                writeResult.IsSuccess ? "Success" : "Error",
-                writeResult.IsSuccess ? "Successfully rewrote the device's serial number!" : "Failed to rewrite the device's serial number!"
+                snVerdict.Verified ? "Success" : (writeResult.IsSuccess ? "Write Not Confirmed" : "Error"),
+                snVerdict.Verified
+                    ? $"Serial number written and read back from the device: {snVerdict.ReadBackDisplay}"
+                    : $"The serial number was NOT confirmed.\n\nRequested: {newSn}\nRead back:  {snVerdict.ReadBackDisplay}\n\n" +
+                      $"{snVerdict.Explain}\n\n" +
+                      (string.IsNullOrWhiteSpace(writeResult.Output) ? string.Empty : $"fastboot output: {writeResult.Output.Trim()}")
             );
         }
 
