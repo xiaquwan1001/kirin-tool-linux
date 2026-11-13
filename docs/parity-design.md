@@ -216,3 +216,14 @@ cd ~/src/wt/ktl-mcp
 dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release
 dotnet run --project tests/SurfaceParity -c Release          # 268 checks
 ```
+
+### 6.5 门禁自检（变异测试，2026-11 实测）
+
+门禁上线后做了两次「故意破坏」验证它真的会红（改完立即还原，仓库无残留 diff）：
+
+| 变异 | 期望 | 实测 |
+| :--- | :--- | :--- |
+| 在 `MainWindow.Settings.cs` 加一个未登记的 `HandleParityProbe()` | 门 E 失败并指名方法 | `FAIL E GUI handler 'HandleParityProbe' is registered or whitelisted with a reason <- ...` |
+| 把 `downgrade-enable` 的 WriteKind 从 `PlanOnly` 改成 `ReadOnly` | 门 A4 + 门 C 失败 | `FAIL A4 ... registry says ReadOnly, ICliCommand.WriteKind says PlanOnly` + `FAIL C ... read-only MCP tool offers no 'confirm'` |
+
+两次都是「指名到具体条目 + 给出下一步动作」，不是一句 assert。
