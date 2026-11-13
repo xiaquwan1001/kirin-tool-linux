@@ -76,6 +76,15 @@
                            FontSize="12"
                            IsVisible="False"
                            Text=""/>
+
+      <!-- Operation session directory (v2.4.15 log merge): session.jsonl + transcript + summary. -->
+      <SelectableTextBlock Name="SessionPathTextBlock"
+                           Margin="0,4,0,0"
+                           Foreground="DimGray"
+                           TextWrapping="Wrap"
+                           FontSize="12"
+                           IsVisible="False"
+                           Text=""/>
     </StackPanel>
   </Border>
 </Window>

@@ -47,6 +47,21 @@ namespace Kirin_Tool.UI
         }
 
         /// <summary>
+        /// Shows the operation *session directory* (v2.4.15 log merge), next to the log path:
+        /// one directory holds session.jsonl (the machine timeline), the human transcript and
+        /// summary.json, so after a failed attempt everything about it is in one place.
+        /// </summary>
+        public void ShowSessionDirectory(string sessionDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(sessionDirectory)) return;
+            Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                SessionPathTextBlock.Text = "session: " + sessionDirectory;
+                SessionPathTextBlock.IsVisible = true;
+            });
+        }
+
+        /// <summary>
         /// Honest close state. Green only when the device confirmed the operation; amber
         /// "Uploaded — Unverified" when the bytes went out but no device-side evidence came back
         /// (audit F01/F02: the dialog used to say "Unlock Complete" for a bare upload).

@@ -21,6 +21,7 @@ OtaPlan
 PreOpBackup
 SurfaceParity
 OpLogging
+LogMerge
 VcomUnlockCli
 ApprovalGate
 VerdictHonesty
