@@ -3,6 +3,7 @@
 using System.Diagnostics;
 using Kirin_Tool.Models;
 using Kirin_Tool.Services.Approval;
+using Kirin_Tool.Services.Diagnostics;
 using Kirin_Tool.Services.USBUpdate;
 using Kirin_Tool.Utils;
 
@@ -74,30 +75,58 @@ public sealed class DeviceWriteOps
     /// Rescue-partition write (ERECOVERY* = redline segment) that is part of the reboot-to-USB-Update
     /// flow. Shared by the GUI's progress-dialog loop and the CLI's sequential loop.
     /// </summary>
-    public Task<ProcessResult> FlashRescuePartitionAsync(WriteTicket ticket, string partition, string imagePath, CancellationToken cancellationToken = default)
+    public async Task<ProcessResult> FlashRescuePartitionAsync(
+        WriteTicket ticket, string partition, string imagePath, CancellationToken cancellationToken = default, OperationScope? scope = null)
     {
         Require(ticket, "reboot-usb-update");
-        return Client.FlashPartition(partition, imagePath);
+        // CLI reboot-usb-update passes its plan-level flash.rescue scope; the GUI loop calls
+        // this one partition at a time and therefore gets one flash.rescue op per target.
+        using var own = scope == null
+            ? OpLog.Begin(OpNames.FlashRescue, OpLog.FlashTool, new[] { partition, imagePath }, "rescue partition write")
+            : null;
+        OperationScope op = (scope ?? own)!;
+        op.Step("flash " + partition + " <- " + OpLog.FileStep(imagePath) + " [redline rescue segment]");
+        try
+        {
+            ProcessResult result = await Client.FlashPartition(partition, imagePath);
+            op.Step(OpLog.ResultStep(partition, result, result.IsSuccess));
+            if (own != null)
+                op.Result(result.IsSuccess, result.ExitCode, null, result.Output, null,
+                    OpLog.ExitVerdict(result), "verdict rule: fastboot exit code");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            op.Step(OpLog.FailedPrefix + partition + ": " + OpLog.ExceptionVerdict(ex) + ": " + ex.Message);
+            if (own != null)
+                op.Result(false, null, null, null, ex.Message, OpLog.ExceptionVerdict(ex));
+            throw;
+        }
     }
 
     /// <summary>
     /// The mode switch itself: read rescue_ugs_port, then trigger rescue_enter_recovery. Returns the
     /// raw loader answer — callers classify it (OKAY / FAILED / Unknown) themselves, never assume success.
     /// </summary>
-    public async Task<string> EnterUsbUpdateModeAsync(WriteTicket ticket, CancellationToken cancellationToken = default)
+    public async Task<string> EnterUsbUpdateModeAsync(
+        WriteTicket ticket, CancellationToken cancellationToken = default, OperationScope? scope = null)
     {
         Require(ticket, "reboot-usb-update");
         try
         {
             string port = await Client.GetVarAsync("rescue_ugs_port").ConfigureAwait(false);
             ProcessRunner.WriteDiagnostic("DeviceWriteOps", "rescue_ugs_port: " + port);
+            scope?.Step(OpLog.OkPrefix + "rescue_ugs_port: " + port);
         }
         catch (Exception ex)
         {
             // The port read is advisory evidence only; the mode entry below is the real action.
             ProcessRunner.WriteDiagnostic("DeviceWriteOps", "rescue_ugs_port read failed: " + ex.Message);
+            scope?.Step(OpLog.DegradedPrefix + "rescue_ugs_port read failed (" + ex.Message + "); mode entry still attempted");
         }
-        return await Client.GetVarAsync("rescue_enter_recovery").ConfigureAwait(false);
+        string answer = await Client.GetVarAsync("rescue_enter_recovery").ConfigureAwait(false);
+        scope?.Step("rescue_enter_recovery answer: " + (string.IsNullOrWhiteSpace(answer) ? "(empty)" : answer.Trim()));
+        return answer;
     }
 
     /// <summary>

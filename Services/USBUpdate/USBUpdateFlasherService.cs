@@ -25,6 +25,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Kirin_Tool.Services.Diagnostics;
 using Kirin_Tool.Utils;
 
 namespace Kirin_Tool.Services.USBUpdate
@@ -90,10 +91,16 @@ namespace Kirin_Tool.Services.USBUpdate
         /// </param>
         public async Task FlashPartitions(IEnumerable<(string FilePath, string Label, List<string> SelectedPartitions)> filesData, CancellationToken cancellationToken = default, bool allowRedline = false)
         {
-            if (Directory.Exists(_dloadDirectory))
-            {
-                try { Directory.Delete(_dloadDirectory, true); } catch { }
-            }
+            // One op for the whole USB-update transfer (docs/op-scope-map.md row 7): every unpack,
+            // the redline decision and every per-partition transfer is a step of this file.
+            using var op = OpLog.Begin(OpNames.UsbUpdateFlash, OpLog.FlashTool,
+                filesData.Select(data => data.FilePath).ToArray(), "USB update transfer");
+            op.Step("dload directory: " + _dloadDirectory);
+            op.Step("redline acknowledgement: " + (allowRedline ? "allow-redline" : "not acknowledged (refuse redline plans)"));
+
+            // Was an empty catch: the directory is deleted exactly as before (a failure still lets
+            // the caller continue and recreate it), but the listing and the failure are recorded.
+            OpLog.CleanDirectory(_dloadDirectory, OpNames.UsbUpdateCleanup);
             Directory.CreateDirectory(_dloadDirectory);
 
             var sw = Stopwatch.StartNew();
@@ -107,6 +114,10 @@ namespace Kirin_Tool.Services.USBUpdate
                 cancellationToken.ThrowIfCancellationRequested();
                 if (string.IsNullOrWhiteSpace(data.FilePath) || !File.Exists(data.FilePath))
                 {
+                    // Previously a silent skip: an empty label or a vanished package would only
+                    // show up later as "No partitions found to flash."
+                    op.Step(OpLog.SkippedPrefix + (data.Label ?? "(no label)") + ": " + (data.FilePath ?? "(no path)")
+                        + " is missing, package skipped");
                     fileIndex++;
                     continue;
                 }
@@ -116,21 +127,57 @@ namespace Kirin_Tool.Services.USBUpdate
 
                 var extractor = new USBUpdateApp(_log, subDir);
                 OnExtractionStarted?.Invoke(data.Label);
-                
-                var extracted = extractor.ExtractAllPartitions(data.FilePath, 
-                    extractUnlockCode: !unlockCodeExtracted,
-                    onProgress: (p) => OnExtractionProgress?.Invoke(p),
-                    includePartitions: data.SelectedPartitions);
+                op.Step("unpack " + (data.Label ?? subDir) + " <- " + OpLog.FileStep(data.FilePath));
 
-                if (!unlockCodeExtracted)
+                // One usbupdate.unpack op per package: produced image count and total bytes.
+                List<string> extracted;
+                using (var unpack = OpLog.Begin(OpNames.UsbUpdateUnpack, new[] { data.FilePath }, data.Label))
                 {
-                    string unlockPath = Path.Combine(subDir, "unlockcode");
-                    if (File.Exists(unlockPath))
+                    unpack.Step("output directory: " + subDir);
+                    unpack.Step("partition filter: " + (data.SelectedPartitions == null || data.SelectedPartitions.Count == 0
+                        ? "(all entries)"
+                        : string.Join(", ", data.SelectedPartitions)));
+
+                    extracted = extractor.ExtractAllPartitions(data.FilePath,
+                        extractUnlockCode: !unlockCodeExtracted,
+                        onProgress: (p) => OnExtractionProgress?.Invoke(p),
+                        includePartitions: data.SelectedPartitions);
+
+                    long unpackedBytes = 0;
+                    foreach (string line in extracted)
                     {
-                        File.Copy(unlockPath, Path.Combine(_dloadDirectory, "unlockcode"), true);
-                        unlockCodeExtracted = true;
+                        string name = line.Split(' ')[0];
+                        string imagePath = Path.Combine(subDir, name + ".img");
+                        unpackedBytes += Math.Max(0, OpLog.SizeOrUnknown(imagePath));
+                        unpack.Step(OpLog.OkPrefix + "unpacked " + name + ": " + OpLog.FileStep(imagePath));
                     }
+
+                    if (!unlockCodeExtracted)
+                    {
+                        string unlockPath = Path.Combine(subDir, "unlockcode");
+                        if (File.Exists(unlockPath))
+                        {
+                            File.Copy(unlockPath, Path.Combine(_dloadDirectory, "unlockcode"), true);
+                            unlockCodeExtracted = true;
+                            unpack.Step(OpLog.OkPrefix + "unlockcode extracted -> " + Path.Combine(_dloadDirectory, "unlockcode"));
+                        }
+                        else
+                        {
+                            unpack.Step(OpLog.DegradedPrefix + "no unlockcode entry in this package (the VCOM leg needs one)");
+                        }
+                    }
+
+                    if (extracted.Count == 0)
+                        unpack.Result(false, null, null, null, null, "files-written:0",
+                            "the package produced no image; nothing can be transferred from it");
+                    else
+                        unpack.Result(true, null, null, null, null, "files-written:" + extracted.Count,
+                            extracted.Count + " image(s), " + OpLog.Bytes(unpackedBytes) + " in " + subDir);
                 }
+
+                op.Step(extracted.Count == 0
+                    ? OpLog.DegradedPrefix + (data.Label ?? subDir) + ": no image unpacked"
+                    : OpLog.OkPrefix + (data.Label ?? subDir) + ": " + extracted.Count + " image(s) unpacked");
 
                 foreach (var line in extracted)
                 {
@@ -188,6 +235,7 @@ namespace Kirin_Tool.Services.USBUpdate
                     string mergedDir = Path.Combine(_dloadDirectory, "super_merged");
                     Directory.CreateDirectory(mergedDir);
                     string mergedSuperPath = Path.Combine(mergedDir, "super.img");
+                    op.Step("super merge: " + superImgPaths.Count + " fragment(s) -> " + mergedSuperPath);
 
                     string currentInput = superImgPaths[0];
                     for (int i = 1; i < superImgPaths.Count; i++)
@@ -203,7 +251,12 @@ namespace Kirin_Tool.Services.USBUpdate
 
                         if (i > 1 && currentInput.StartsWith(mergedDir) && File.Exists(currentInput))
                         {
-                            try { File.Delete(currentInput); } catch { }
+                            try { File.Delete(currentInput); }
+                            catch (Exception ex)
+                            {
+                                op.Step(OpLog.DegradedPrefix + "intermediate super image left on disk: " + currentInput
+                                    + " (" + ex.Message + ")");
+                            }
                         }
 
                         currentInput = nextOutput;
@@ -236,25 +289,48 @@ namespace Kirin_Tool.Services.USBUpdate
                     allPartitions.Insert(firstSuperIndex, ("super", "Merged Super"));
                     mappingLines.Insert(firstSuperIndex, $"super|{mergedDir}");
 
+                    op.Step(OpLog.OkPrefix + "super merged: " + OpLog.FileStep(mergedSuperPath));
                     OnExtractionProgress?.Invoke(100);
                 }
             }
 
             if (allPartitions.Count == 0)
             {
+                op.Result(false, null, null, null, null, "files-written:0",
+                    "no partition was discovered in the selected packages; nothing was sent to the device");
                 throw new Exception("No partitions found to flash.");
             }
 
+            op.Step("discovered " + allPartitions.Count + " partition(s): "
+                + string.Join(", ", allPartitions.Select(p => p.partitionName)));
             OnPartitionsDiscovered?.Invoke(allPartitions);
 
             // Redline gate. Placed after discovery (that is when the package names are
             // known) and before list.txt / any USB transfer, so a refused plan has not
             // written a single byte to the device.
-            EnforceRedlineWrite(allPartitions.Select(p => p.partitionName).ToList(), allowRedline, _log);
+            IReadOnlyList<string> redlineHits = FlashPolicy.RedlineHits(allPartitions.Select(p => p.partitionName).ToList());
+            if (redlineHits.Count > 0)
+                op.Step("redline: plan writes " + redlineHits.Count + " device-keyed partition(s): "
+                    + string.Join(", ", redlineHits));
+            try
+            {
+                EnforceRedlineWrite(allPartitions.Select(p => p.partitionName).ToList(), allowRedline, _log);
+            }
+            catch (InvalidOperationException ex)
+            {
+                op.Result(false, null, null, null, ex.Message, "redline-gate",
+                    "refused after discovery, before list.txt / any USB transfer: no bytes were written");
+                throw;
+            }
+            op.Step(redlineHits.Count == 0
+                ? "redline gate: plan holds no device-keyed partition"
+                : "redline gate: proceeding because allowRedline=true");
 
             var listLines = allPartitions.Select(p => $"{p.partitionName} 1").ToList();
             File.WriteAllLines(Path.Combine(_dloadDirectory, "list.txt"), listLines);
             File.WriteAllLines(Path.Combine(_dloadDirectory, "partition_mapping.txt"), mappingLines);
+            op.Step(OpLog.OkPrefix + "list.txt + partition_mapping.txt written ("
+                + allPartitions.Count + " entries) in " + _dloadDirectory);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -267,7 +343,14 @@ namespace Kirin_Tool.Services.USBUpdate
             usbService.OnProgressUpdate += (progress) => OnProgressUpdate?.Invoke(progress);
             usbService.OnPartitionStarted += (index, name) => OnPartitionProgress?.Invoke(index, name, 0);
             usbService.OnPartitionProgressUpdate += (index, name, prog) => OnPartitionProgress?.Invoke(index, name, prog);
-            usbService.OnPartitionCompleted += (index, name, success, msg) => OnPartitionCompleted?.Invoke(index, name, success, msg);
+            usbService.OnPartitionCompleted += (index, name, success, msg) =>
+            {
+                // Per-partition event of the transfer: the outcome and, on failure, the reason.
+                op.Step(success
+                    ? OpLog.OkPrefix + "transferred " + name + " (#" + index + ")"
+                    : OpLog.FailedPrefix + "transferred " + name + " (#" + index + "): " + (msg ?? "(no reason returned)"));
+                OnPartitionCompleted?.Invoke(index, name, success, msg);
+            };
 
             bool flashSuccess = false;
             try
@@ -276,17 +359,25 @@ namespace Kirin_Tool.Services.USBUpdate
             }
             catch (OperationCanceledException)
             {
+                op.Result(false, null, null, null, null, "cancelled", "the transfer was cancelled; the device state is unknown");
                 throw;
             }
             catch (Exception ex)
             {
+                op.Result(false, null, null, null, ex.Message, OpLog.ExceptionVerdict(ex),
+                    "USB transfer threw; message and exception type are preserved for the caller");
                 throw new Exception($"USB Flashing failed: {ex.Message}", ex);
             }
 
             if (!flashSuccess)
             {
+                op.Result(false, null, null, null, null, "usb-transfer:failed",
+                    "at least one partition reported failure (see the per-partition steps)");
                 throw new Exception("One or more partitions failed to flash.");
             }
+
+            op.Result(true, null, null, null, null, "usb-transfer:ok",
+                allPartitions.Count + " partition(s) transferred over the USB-update channel");
         }
     }
 }

@@ -85,7 +85,7 @@
 | 2 | `Utils/ProcessRunner`：每个 `RunAsync` 同时写 JSONL；保留原 `WriteDiagnostic` 与 fastboot 文本日志 | 加可选参数 `op`/`progress`，旧签名不变 |
 | 3 | `Services/FastbootClient`：逐命令显式 `op`；解锁走 `ProcessRunner.RunStreamingAsync`；解锁码变参数（默认 16×`U`，长度≠16 即失败 + `verdictSource=arg-validation`） | 对外元组签名不变，新增可选参数 |
 | 4 | VCOM 会话（另一 lane 的 `VcomSessionLogger` 落地后）按 §3 接 `scope.Step/Prompt` | 只加调用，不改协议 |
-| 5 | 其余设备写路径（`FastbootFlasherService`、`USBUpdate`、`PreOpBackup`）补 `op` | 逐个 PR，按「谁写设备谁先接」 |
+| 5 | 其余设备写路径（`FastbootFlasherService`、`USBUpdate`、`PreOpBackup`、`OemInfo*`）补 `op` | ✅ 已落地（lane G2，`feat/opscope`）；逐行清单与 `verdictSource` 取值见 [`op-scope-map.md`](op-scope-map.md) |
 | 6 | 日志消费侧：`doctor` 打印最近会话摘要；GUI「打开日志目录」 | 纯读 |
 
 ## 5. 兼容性
@@ -225,3 +225,28 @@ public async Task<(bool IsSuccess, string Output)> UnlockBootloaderAsync(
 ```
 
 （本节 DONE-2/3/4/5/6）
+
+### 6.7 DONE-5（续）：其余写路径接入（lane G2，分支 `feat/opscope`）
+
+§4 的第 5 步落地。逐行映射、每行允许的 `verdictSource`、以及「哪一行没有硬件无关断言、为什么」都在
+[`op-scope-map.md`](op-scope-map.md)；这里只记实现要点：
+
+- 新增 `Services/Diagnostics/OpLog.cs`：`OpNames`（op 名常量，调用点不写字面量）+ `OpLog`（step 前缀
+  `ok:`/`failed:`/`degraded:`/`skipped:`、verdict 字符串、字节数、dload 目录清单与 `CleanDirectory`）。
+- 接入的 op：`flash.xml`、`flash.ota`、`flash.rescue`、`flash.image`（单镜像兜底）、`backup.preop`、
+  `backup.dump`（单分区 dump 兜底）、`usbupdate.flash`、`usbupdate.unpack`、`usbupdate.dload-cleanup`、
+  `oeminfo.read`、`oeminfo.convert`、`oeminfo.write`。
+- **补上的静默点**（只加记录，不改控制流）：`PreOpBackup` 的 manifest 写入 `catch { return null; }`、
+  getvar 身份读取、sha256 计算、部分文件删除失败；`USBUpdateFlasherService`/`SoftwareTestpointService`
+  的 `try { Directory.Delete } catch { }`；`OtaFlashRunner` 暂存目录清理；`DeviceWriteOps` 的
+  `rescue_ugs_port` 读失败；USBUpdate 包缺失时的静默 `continue`。
+- 「不支持/跳过」不再是 console warning：`backup.preop` 的 `unsupported`/`skipped-timeout` 写
+  `degraded:`/`skipped:` step，并在 `result.notes` 里点名；`flash.*` 的未解析名/白名单排除写 `skipped:`；
+  redline 拒绝写 `result.ok=false, verdictSource=redline-gate`（异常照旧抛出）。
+- 冻结边界（`tests/StableParity/boundary.json`）只刷新 1 个文件：
+  `Services/USBUpdate/SoftwareTestpointService.cs`（两处 dload 删除改成 `OpLog.CleanDirectory`，控制流不变），
+  理由写在该条 reference 里；`MainWindow.axaml.cs`、`OemInfoEditor.cs`、`USBUpdateApp.cs` 等未动。
+- 测试：`tests/OpLogging` 79 → **127**（新增 backup.preop / flash.image / backup.dump / oeminfo.* /
+  dload-cleanup 五组：start+result、`verdictSource` 非空且点名依据、`degraded:`/`skipped:` 事件、
+  失败路径 `ok=false` 带原因）；`tests/PreOpBackup` 新增 (f) 组断言备份运行的 op 文件。
+  全量 `tests/suites.txt` 22 套全绿，`SurfaceParity` 369 项保持绿。

@@ -4,6 +4,7 @@ using System.Text;
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
 using Kirin_Tool.Services.Approval;
+using Kirin_Tool.Services.Diagnostics;
 using Kirin_Tool.Services.USBUpdate;
 using Kirin_Tool.Utils;
 using Kirin_Tool.Services.WriteOperations;
@@ -404,6 +405,12 @@ internal sealed class RebootUsbUpdateCommand : GatedDeviceWriteCommand
         var plan = RescuePartitionPlan.ForChip("");
         var flashed = new List<string>();
         using var updateApp = new UpdateApp(resolved);
+        // Plan-level op for the rescue segment (docs/op-scope-map.md row 4): one file for the
+        // run; the per-partition write below lands as a step of it.
+        using var op = OpLog.Begin(OpNames.FlashRescue, OpLog.FlashTool,
+            new[] { resolved, "allow-redline" }, "rescue partitions + USB Update mode entry");
+        op.Step("rescue plan: " + string.Join(", ", plan.Select(entry => entry.Target))
+            + " from " + OpLog.FileStep(resolved));
         string tempDirectory = Path.Combine(Path.GetTempPath(), "kirintool-rescue-" + Guid.NewGuid().ToString("n"));
         Directory.CreateDirectory(tempDirectory);
 
@@ -416,15 +423,21 @@ internal sealed class RebootUsbUpdateCommand : GatedDeviceWriteCommand
                 if (info == null)
                 {
                     context.Diag("warning: " + entry.Image + " is not in this UPDATE.APP; skipping " + entry.Target);
+                    // Declared skip (was only a console warning): the plan step says what is missing.
+                    op.Step(OpLog.SkippedPrefix + entry.Target + ": " + entry.Image
+                        + " is not in this UPDATE.APP");
                     continue;
                 }
 
                 string imagePath = Path.Combine(tempDirectory, entry.Target + ".img");
                 await updateApp.ExtractPartition(info, imagePath).ConfigureAwait(false);
-                ProcessResult write = await ops.FlashRescuePartitionAsync(ticket, entry.Target, imagePath, cancellationToken);
+                op.Step("image: " + entry.Target + " <- " + OpLog.FileStep(imagePath));
+                ProcessResult write = await ops.FlashRescuePartitionAsync(ticket, entry.Target, imagePath, cancellationToken, op);
                 if (!write.IsSuccess)
                 {
                     context.Diag("error: flashing " + entry.Target + " failed: " + write.Output);
+                    op.Result(false, write.ExitCode, null, write.Output, null, OpLog.ExitVerdict(write),
+                        "rescue write failed at " + entry.Target + "; USB Update mode entry was not attempted");
                     return ExitCodes.DeviceRejected;
                 }
                 flashed.Add(entry.Target);
@@ -433,17 +446,23 @@ internal sealed class RebootUsbUpdateCommand : GatedDeviceWriteCommand
             if (flashed.Count == 0)
             {
                 context.Diag("error: no rescue partition could be flashed; USB Update mode entry was not attempted");
+                op.Result(false, null, null, null, null, "partition-outcomes:none",
+                    "none of the rescue images was present in the package; the mode entry was not attempted");
                 return ExitCodes.FileOrVerify;
             }
 
-            string modeOutput = await ops.EnterUsbUpdateModeAsync(ticket, cancellationToken);
+            string modeOutput = await ops.EnterUsbUpdateModeAsync(ticket, cancellationToken, op);
+            bool modeConfirmed = DeviceOutcome.LooksRejected(modeOutput) == false &&
+                (modeOutput ?? "").ToUpperInvariant().Contains("OKAY");
             WriteResult(context, Name, CapabilityId, new
             {
                 flashed,
                 modeEntry = modeOutput,
-                modeEntryConfirmed = DeviceOutcome.LooksRejected(modeOutput) == false &&
-                    (modeOutput ?? "").ToUpperInvariant().Contains("OKAY"),
+                modeEntryConfirmed = modeConfirmed,
             }, "rescue partitions flashed: " + string.Join(", ", flashed) + "; loader answer: " + modeOutput);
+            op.Result(modeConfirmed, null, null, modeOutput, null,
+                modeConfirmed ? "output-contains:OKAY" : "output-missing:OKAY",
+                flashed.Count + " rescue partition(s) written; mode entry confirmed=" + modeConfirmed);
             return ExitCodes.Ok;
         }
         finally

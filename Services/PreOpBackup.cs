@@ -11,6 +11,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Kirin_Tool.Services.Diagnostics;
 using Kirin_Tool.Utils;
 
 namespace Kirin_Tool.Services;
@@ -163,6 +164,19 @@ public sealed class PreOpBackup
     /// <summary>Runs the backup. Never throws for dump failures; only a directory-creation failure sets <see cref="PreOpBackupResult.Error"/>.</summary>
     public async Task<PreOpBackupResult> RunAsync(PreOpBackupOptions options, CancellationToken cancellationToken = default)
     {
+        // One op per backup run (docs/op-scope-map.md row 5): the directory, the identity read,
+        // every partition dump and the manifest write are steps of this file.
+        using var op = OpLog.Begin(OpNames.BackupPreOp, new[]
+        {
+            options.Trigger ?? "unknown",
+            options.BackupDir ?? "(default)",
+            options.RequireBackup ? "require-backup" : "best-effort",
+        }, "pre-op backup of the redline set + ptable");
+        op.Step("write plan: " + (options.WritePartitions?.Count ?? 0) + " partition(s), budget "
+            + options.Budget.TotalSeconds.ToString("0") + "s, per-partition timeout "
+            + options.PerPartitionTimeout.TotalSeconds.ToString("0") + "s");
+        op.Step("backup set: " + string.Join(", ", PartitionList(options)));
+
         string backupDir;
         try
         {
@@ -170,11 +184,16 @@ public sealed class PreOpBackup
         }
         catch (Exception ex)
         {
+            op.Result(false, null, null, null, ex.Message, OpLog.ExceptionVerdict(ex),
+                "cannot create backup directory; nothing was dumped");
             return new PreOpBackupResult(false, false, null, null, Array.Empty<PreOpBackupPartitionResult>(),
                 $"cannot create backup directory: {ex.Message}");
         }
+        op.Step("backup directory: " + backupDir);
 
-        if (!_deviceIdentityRead) await ReadDeviceIdentityAsync();
+        if (!_deviceIdentityRead) await ReadDeviceIdentityAsync(op);
+        op.Step("device identity: product=" + (DeviceProduct ?? "(unread)")
+            + ", serial=" + (DeviceSerial ?? "(unread)"));
 
         var partitions = new List<PreOpBackupPartitionResult>();
         // Same partition, single dump per process: cache the result by name (case-insensitive).
@@ -188,25 +207,31 @@ public sealed class PreOpBackup
             cancellationToken.ThrowIfCancellationRequested();
             if (cache.TryGetValue(name, out var cached))
             {
+                op.Step(OpLog.SkippedPrefix + name + ": already dumped in this process (status " + cached.Status + ")");
                 partitions.Add(cached);
                 continue;
             }
 
             if (abortReason != null)
             {
+                // A declared degradation, not a silent one: the partition is recorded as
+                // unsupported and the reason is in the same step line.
+                op.Step(OpLog.DegradedPrefix + name + ": unsupported, " + abortReason);
                 partitions.Add(new PreOpBackupPartitionResult(name, null, null, null, "unsupported", abortReason));
                 continue;
             }
             if (budget.Elapsed > options.Budget)
             {
                 abortReason = $"backup budget of {options.Budget.TotalSeconds:0}s exhausted before this partition";
+                op.Step(OpLog.SkippedPrefix + name + ": " + abortReason);
                 partitions.Add(new PreOpBackupPartitionResult(name, null, null, null, "skipped-timeout", abortReason));
                 continue;
             }
 
-            var result = await DumpOneAsync(name, backupDir, options.PerPartitionTimeout, cancellationToken);
+            var result = await DumpOneAsync(name, backupDir, options.PerPartitionTimeout, cancellationToken, op);
             cache[name] = result;
             partitions.Add(result);
+            LogPartition(op, result);
 
             // A temporary VCOM loader answers both dump verbs with "invalid command" (or
             // returns OKAY without writing a file). After two consecutive failures there is
@@ -217,9 +242,46 @@ public sealed class PreOpBackup
                 abortReason = "loader did not produce a dump (invalid command or empty file); remaining partitions skipped";
         }
 
-        string? manifestPath = WriteManifest(options, backupDir, partitions);
+        string? manifestPath = WriteManifest(options, backupDir, partitions, op);
+        if (manifestPath != null)
+            op.Step(OpLog.OkPrefix + "manifest: " + OpLog.FileStep(manifestPath));
+        else
+            op.Step(OpLog.FailedPrefix + "manifest not written: " + (_manifestError ?? "unknown reason"));
+
         bool complete = partitions.Count > 0 && partitions.All(p => p.Status == "ok");
+        int okCount = partitions.Count(p => p.Status == "ok");
+        string verdict = complete
+            ? "partition-status:all-ok"
+            : "partition-status:" + okCount + "/" + partitions.Count + "-ok";
+        string reasons = string.Join("; ", partitions
+            .Where(p => p.Status != "ok")
+            .Select(p => p.Name + "=" + p.Status + (string.IsNullOrEmpty(p.Reason) ? "" : " (" + p.Reason + ")")));
+        op.Result(complete, null, null, null, null, verdict,
+            (complete ? "every partition dumped" : "incomplete backup: " + reasons)
+            + (manifestPath == null ? "; manifest missing" : ""));
         return new PreOpBackupResult(true, complete, backupDir, manifestPath, partitions, null);
+    }
+
+    /// <summary>One step line per partition: status is the evidence, never just a boolean.</summary>
+    private static void LogPartition(OperationScope op, PreOpBackupPartitionResult result)
+    {
+        switch (result.Status)
+        {
+            case "ok":
+                op.Step(OpLog.OkPrefix + result.Name + ": " + (result.Size ?? 0) + " B, sha256="
+                    + (result.Sha256 ?? "(unavailable)") + ", file=" + (result.File ?? "(none)"));
+                break;
+            case "unsupported":
+                op.Step(OpLog.DegradedPrefix + result.Name + ": unsupported by this loader ("
+                    + (result.Reason ?? "no reason given") + ")");
+                break;
+            case "skipped-timeout":
+                op.Step(OpLog.SkippedPrefix + result.Name + ": " + (result.Reason ?? "budget exhausted"));
+                break;
+            default:
+                op.Step(OpLog.FailedPrefix + result.Name + ": " + (result.Reason ?? "dump failed"));
+                break;
+        }
     }
 
     private static IReadOnlyList<string> PartitionList(PreOpBackupOptions options)
@@ -237,13 +299,13 @@ public sealed class PreOpBackup
         return BackupSet(options.WritePartitions);
     }
 
-    private async Task<PreOpBackupPartitionResult> DumpOneAsync(string partition, string backupDir, TimeSpan perPartitionTimeout, CancellationToken cancellationToken)
+    private async Task<PreOpBackupPartitionResult> DumpOneAsync(string partition, string backupDir, TimeSpan perPartitionTimeout, CancellationToken cancellationToken, OperationScope? op = null)
     {
         string target = Path.Combine(backupDir, SanitizeFileName(partition) + ".img");
         try
         {
             Task<(bool Success, string Message)> dumpTask = _flasher != null
-                ? _flasher.DumpPartitionAsync(partition, target)
+                ? _flasher.DumpPartitionAsync(partition, target, op)
                 : _dumpAsync!(partition, target);
             // The dump cannot be cancelled from here (the fastboot child is owned by the
             // flasher), so abandon it on timeout and record the reason: the write path must
@@ -251,7 +313,9 @@ public sealed class PreOpBackup
             Task finished = await Task.WhenAny(dumpTask, Task.Delay(perPartitionTimeout, cancellationToken));
             if (finished != dumpTask)
             {
-                TryDeletePartial(target);
+                op?.Step(OpLog.FailedPrefix + partition + ": dump timed out after "
+                    + perPartitionTimeout.TotalSeconds.ToString("0") + "s (abandoned, write path continues)");
+                TryDeletePartial(target, op);
                 return new PreOpBackupPartitionResult(partition, null, null, null, "failed",
                     $"dump timed out after {perPartitionTimeout.TotalSeconds:0}s");
             }
@@ -264,48 +328,60 @@ public sealed class PreOpBackup
                 string status = message != null && message.Contains("invalid command", StringComparison.OrdinalIgnoreCase)
                     ? "unsupported"
                     : "failed";
-                TryDeletePartial(target);
+                TryDeletePartial(target, op);
                 return new PreOpBackupPartitionResult(partition, null, null, null, status, message ?? "dump failed");
             }
 
             long size = File.Exists(target) ? new FileInfo(target).Length : 0;
             if (size == 0)
             {
-                TryDeletePartial(target);
+                op?.Step(OpLog.FailedPrefix + partition + ": dump produced an empty file (loader answered without writing)");
+                TryDeletePartial(target, op);
                 return new PreOpBackupPartitionResult(partition, null, 0, null, "failed", "dump produced an empty file");
             }
 
-            string? sha256 = await ComputeSha256Async(target, cancellationToken);
+            string? sha256 = await ComputeSha256Async(target, cancellationToken, op);
             return new PreOpBackupPartitionResult(partition, target, size, sha256, "ok", null);
         }
         catch (OperationCanceledException)
         {
-            TryDeletePartial(target);
+            op?.Step(OpLog.SkippedPrefix + partition + ": cancelled while dumping");
+            TryDeletePartial(target, op);
             throw;
         }
         catch (Exception ex)
         {
-            TryDeletePartial(target);
+            op?.Step(OpLog.FailedPrefix + partition + ": " + OpLog.ExceptionVerdict(ex) + ": " + ex.Message);
+            TryDeletePartial(target, op);
             return new PreOpBackupPartitionResult(partition, null, null, null, "failed", ex.Message);
         }
     }
 
-    private async Task<string?> ReadDeviceVarAsync(string variable)
+    private async Task<string?> ReadDeviceVarAsync(string variable, OperationScope? op = null)
     {
-        if (_getVarAsync == null) return null;
+        if (_getVarAsync == null)
+        {
+            op?.Step(OpLog.DegradedPrefix + variable + ": no getvar reader wired into this backup instance");
+            return null;
+        }
         try
         {
             string? value = await _getVarAsync(variable);
+            if (string.IsNullOrWhiteSpace(value))
+                op?.Step(OpLog.DegradedPrefix + variable + ": loader returned an empty value");
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
-        catch
+        catch (Exception ex)
         {
+            // Identity is advisory for the manifest; the failure is now recorded, the run continues.
+            op?.Step(OpLog.DegradedPrefix + variable + ": read failed (" + ex.Message + "); identity recorded as null");
             return null;
         }
     }
 
-    private string? WriteManifest(PreOpBackupOptions options, string backupDir, IReadOnlyList<PreOpBackupPartitionResult> partitions)
+    private string? WriteManifest(PreOpBackupOptions options, string backupDir, IReadOnlyList<PreOpBackupPartitionResult> partitions, OperationScope? op = null)
     {
+        _manifestError = null;
         try
         {
             var document = new
@@ -340,9 +416,11 @@ public sealed class PreOpBackup
             File.Move(tmpPath, finalPath, overwrite: false);
             return finalPath;
         }
-        catch
+        catch (Exception ex)
         {
-            // A missing manifest must not erase the fact that dumps may have succeeded.
+            // A missing manifest must not erase the fact that dumps may have succeeded. The
+            // error used to be swallowed entirely; it is now recorded on the step that reports it.
+            _manifestError = ex.GetType().Name + ": " + ex.Message;
             return null;
         }
     }
@@ -352,16 +430,26 @@ public sealed class PreOpBackup
     private string? DeviceSerial;
     private bool _deviceIdentityRead;
 
-    internal async Task ReadDeviceIdentityAsync()
+    // Why the manifest could not be written (surfaced as a step line instead of an empty catch).
+    private string? _manifestError;
+
+    internal async Task ReadDeviceIdentityAsync(OperationScope? op = null)
     {
         _deviceIdentityRead = true;
-        DeviceProduct = await ReadDeviceVarAsync("product");
-        DeviceSerial = await ReadDeviceVarAsync("serialno");
+        DeviceProduct = await ReadDeviceVarAsync("product", op);
+        DeviceSerial = await ReadDeviceVarAsync("serialno", op);
     }
 
-    private static void TryDeletePartial(string path)
+    private static void TryDeletePartial(string path, OperationScope? op = null)
     {
-        try { if (File.Exists(path)) File.Delete(path); } catch { }
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            op?.Step(OpLog.DegradedPrefix + "partial dump left on disk: " + path + " (" + ex.Message + ")");
+        }
     }
 
     private static string SanitizeFileName(string name)
@@ -370,7 +458,7 @@ public sealed class PreOpBackup
         return new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
     }
 
-    private static async Task<string?> ComputeSha256Async(string path, CancellationToken cancellationToken)
+    private static async Task<string?> ComputeSha256Async(string path, CancellationToken cancellationToken, OperationScope? op = null)
     {
         try
         {
@@ -379,8 +467,10 @@ public sealed class PreOpBackup
             byte[] hash = await sha.ComputeHashAsync(stream, cancellationToken);
             return Convert.ToHexString(hash).ToLowerInvariant();
         }
-        catch
+        catch (Exception ex)
         {
+            // The dump itself is still on disk, so this is a degradation, not a failure.
+            op?.Step(OpLog.DegradedPrefix + "sha256 unavailable for " + path + " (" + ex.Message + ")");
             return null;
         }
     }

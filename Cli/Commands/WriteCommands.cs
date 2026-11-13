@@ -2,6 +2,7 @@ using System.Text;
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
 using Kirin_Tool.Services.Approval;
+using Kirin_Tool.Services.Diagnostics;
 using Kirin_Tool.Services.Verdict;
 using Kirin_Tool.Utils;
 
@@ -551,6 +552,14 @@ internal sealed class FlashXmlCommand : ICliCommand
         if (backupRefusal != ExitCodes.Ok) return backupRefusal;
 
         var outcomes = new List<OtaFlashOutcome>();
+        // Plan-level op for the XML write (docs/op-scope-map.md row 2): one file for the run,
+        // one step per image. The per-command scope (fastboot.flash) stays a separate file.
+        using var op = OpLog.Begin(OpNames.FlashXml, OpLog.FlashTool, new[] { path }, "flashing XML write plan");
+        op.Step("plan: " + writeList.Count + " image(s) to write, " + redlines.Count + " redline identifier(s)");
+        foreach (string skippedName in skipped)
+            op.Step(OpLog.SkippedPrefix + skippedName + ": excluded by --exclude / not in --partitions");
+        foreach (string skippedName in skippedUnresolved)
+            op.Step(OpLog.SkippedPrefix + skippedName + ": the loader does not expose this identifier");
         for (int i = 0; i < writeList.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -563,9 +572,15 @@ internal sealed class FlashXmlCommand : ICliCommand
             bool ok = result.IsSuccess && (result.Output ?? string.Empty).Contains("OKAY", StringComparison.OrdinalIgnoreCase);
             outcomes.Add(new OtaFlashOutcome(flashName, ok, ok ? null : (result.Output ?? string.Empty).Trim()));
             context.Diag(ok ? $"    OKAY {flashName}" : $"    FAILED {flashName}: {result.Output}");
+            op.Step((ok ? OpLog.OkPrefix : OpLog.FailedPrefix) + "flash " + flashName + " <- " + OpLog.FileStep(partition.DumpPath)
+                + " (identifier " + (partition.Identifier ?? "?") + ")"
+                + (ok ? "" : ", loader said: " + OpLog.OneLine(result.Output)));
         }
 
         int okCount = outcomes.Count(outcome => outcome.Ok);
+        op.Result(outcomes.Count > 0 && okCount == outcomes.Count, null, null, null, null,
+            OpLog.OutcomeVerdict(okCount, outcomes.Count),
+            "verdict rule: exit code 0 AND the loader printed OKAY, per image");
         // JSON exitCode matches the real return code: nothing flashed is a file/verify
         // failure (5), a full success is 0, a partial write is a device rejection (3).
         int exitCode = okCount == 0 ? ExitCodes.FileOrVerify : (okCount == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected);
