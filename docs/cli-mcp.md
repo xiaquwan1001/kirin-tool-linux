@@ -39,8 +39,9 @@ kirin-tool-cli flash-ota base.app --yes    # real write of all non-redline parti
 
 | 命令 | 类型 | `--yes` / `confirm:true` 后的行为 |
 |---|---|---|
-| `flash-ota`、`flash-xml` | **RealWrite** | **真实刷写设备**（MCP 路径没有 dry-run）；红线分区仍需 `--allow-redline`（仅 CLI） |
-| `vcom-unlock`、`oeminfo`、`downgrade-enable` | **PlanOnly** | 只确认计划，**永远不写设备**，一律 exit 4 |
+| `flash-ota`、`flash-xml` | **RealWrite** | **真实刷写分区**（MCP 路径没有 dry-run）；红线分区仍需 `--allow-redline`（仅 CLI） |
+| `vcom-unlock` | **RealWrite** | **真实上传 loader 到内存**（不碰任何分区），与 GUI「Unlock Fastboot」同一实现；详见下节 |
+| `oeminfo`、`downgrade-enable` | **PlanOnly** | 只确认计划，**永远不写设备**，一律 exit 4 |
 
 无 `--yes` 时打印计划清单，exit 4。`--strict-names` 时若 loader 未暴露计划中的分区/标识符则拒绝执行（exit 3），默认只 warning。
 
@@ -54,6 +55,7 @@ kirin-tool-cli flash-ota base.app --yes    # real write of all non-redline parti
 | `refused` | 被拒绝，`isError=true`；`reason` 字段说明原因（红线分区未给 `--allow-redline` → exit 4；flash-xml 缺图 → exit 5，缺图先于红线判定） |
 | `confirmed` | PlanOnly 命令已确认，但未写任何内容 |
 | `applied` | 真实写入已执行（全部成功 exit 0；全失败 exit 5；部分失败 exit 3） |
+| `failed` | 真实执行但失败（`vcom-unlock`：`failureKind` 说明是设备侧还是本地文件；`isError=true`） |
 
 ### 退出码
 
@@ -83,7 +85,51 @@ flash-ota 默认 staging 目录 `<首个文件目录>/.kirintool-cli-tmp` 在结
 GUI、CLI、MCP 的对应关系登记在 `Services/Capabilities/CapabilityRegistry.cs`，由
 `tests/SurfaceParity` 在 CI 里强制对齐（命令缺失、写工具没有 `confirm` 门控、GUI 长出未登记的
 `Handle*`/`*_Click` 都会让它变红）。设计与迁移计划见 [parity-design.md](parity-design.md)。
+## `vcom-unlock`：VCOM/BootROM 装载（GUI 对齐）
 
+与 GUI 的「Unlock Fastboot」共用 `Services/FirmwareUnlocker.UnlockFastboot` +
+`Services/VcomFlasher`（同一帧格式、同一 `CpuAddresses` 地址表、同一装载顺序）。逐项对齐表见
+[cli-vcom-unlock-parity.md](cli-vcom-unlock-parity.md)。
+
+```bash
+kirin-tool-cli vcom-unlock --cpu hisi990 --json          # 计划，gate=plan-only，exit 4
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes           # 真上传（设备需已在 12d1:3609 VCOM 模式）
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes --dry-run # 有 --yes 也只出计划
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes --stage-only null   # 第一段：START + null
+# 手动拔插（电脑侧）后：
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes --stage-only rest   # 第二段：不重发 START
+```
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--cpu <chip>` | 必填 | 枚举来自 `FirmwareUnlocker.CpuAddresses` |
+| `--yes` / MCP `confirm:true` | false | 门控；缺省只打印计划 |
+| `--dry-run` | false | 即使 `--yes` 也只打印计划 |
+| `--ack-mode strict|lenient|off` | `lenient` | `lenient` = GUI 现状（读 1 字节、不校验值、超时也继续）；`strict` = 读不到或非 `0xAA` 即失败；`off` = 不等待 ACK |
+| `--ack-timeout <秒>` | 10 | 每个 ACK 的等待上限（GUI 同为 10 s） |
+| `--replug skip|prompt|wait:<秒>` | `skip` | 非交互默认 `skip`，stderr 明示"设备需要人工拔插"；`wait:<秒>` 会在提示后等待指定秒数再由服务轮询重连（不重发 START）；`prompt` 读 stdin（重定向时按 wait 15 s） |
+| `--loader-dir <dir>` | `<程序目录>/loaders` | 指向"包含每芯片子目录"的根目录，可任意指定 |
+| `--stage-only all|null|xloader|rest` | `all` | 分步执行配合人工拔插；`rest` 排除 null 且**不重发 START** |
+| `--port <tty>` | 自动枚举 12d1:3609 | 显式端口跳过枚举，并按 bulk-only 处理（不发 modem 线信号） |
+| `--use-fastflash-loader` | false | 对应 GUI 的 `fastbootf.ktl` 开关 |
+| `--no-frame-log` | false | 关掉 stderr 的逐帧 trace（JSON 汇总仍完整） |
+
+输出：进度/ACK 逐帧到 **stderr**；结束（含失败）时**最后一行 stdout 是一份 JSON**：
+`stages[]`（每阶段 `{stage,file,address,pwn,bytes,frames,acks,status,durationMs,note}`）、
+`ack{expected,ok,bad,timeouts}`、`framesSent`、`elapsedMs`、`stageSelection`、`replug`、`ackMode`、
+`conclusion`、`failureKind`、`gate`、`exitCode`。
+
+退出码：0 完成 / 1 用法 / **2 无 VCOM 设备或端口打不开或拔插后未重连** / **3 设备侧拒绝
+（strict ACK 超时或非 0xAA）** / 4 未确认、`--dry-run`、`--replug skip` 下必须拔插而被拒 /
+**5 loader 目录缺失、选中阶段无 loader、.ktl 解密失败**。
+
+### 会话日志（GUI + CLI 同一份）
+
+每次 VCOM 会话写 `$KIRIN_LOG_DIR`（默认 `~/.local/state/kirin-tool/`，目录 700）下
+`vcom-<UTC yyyyMMddTHHmmssZ>-<cpu>.log`：pid、端口、framing、逐帧 type/addr/len/seq/bytes、
+ACK 原始字节或超时、每阶段起止与耗时、每条拔插提示与用户选择、最终结论、异常 stack。
+GUI 在进度对话框显示该路径并保留到结束；CLI 把路径打在 stderr 第一行，**`--dry-run` 也会写出
+`event=plan` 头**。字段表见 [cli-vcom-unlock-parity.md §7](cli-vcom-unlock-parity.md)。
 ## 约定
 
 - `--json` 输出结构化 JSON 到 stdout；进度/诊断一律 stderr，stdout 可安全管道
@@ -96,6 +142,8 @@ GUI、CLI、MCP 的对应关系登记在 `Services/Capabilities/CapabilityRegist
 日志只写 stderr。支持 `initialize`、`notifications/initialized`、`ping`、`tools/list`、`tools/call`。
 
 工具名：`info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`flash_ota`、`flash_xml`、`vcom_unlock`、`oeminfo`、`downgrade_enable`。
+`vcom_unlock` 的 `confirm:true` 会**真的上传 loader**（`RealWrite`）；`--replug prompt` 在 MCP 里
+按"stdin 非交互"降级为等待 15 s，因此自动化应显式传 `replug: "wait:<秒>"`。
 
 - 写工具的 `inputSchema.required` 必含 `confirm: boolean`；`initialize` 的 instructions 与每个工具的 confirm
   描述按命令的 `WriteKind` 动态生成（RealWrite："true performs the real write; there is no dry-run in the MCP

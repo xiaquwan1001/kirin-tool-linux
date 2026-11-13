@@ -9,7 +9,7 @@ namespace Kirin_Tool.Cli.Commands;
 /// Plan-only write commands: they compute and print exactly what would be written,
 /// then never touch the device. They require <c>--yes</c> (CLI) or <c>confirm: true</c>
 /// (MCP) even to acknowledge the plan, and always exit 4. Real-write commands
-/// (flash-ota / flash-xml) live below and do write once confirmed.
+/// (flash-ota / flash-xml here, vcom-unlock in VcomUnlockCommand.cs) do write once confirmed.
 /// </summary>
 internal abstract class GatedWriteCommand : ICliCommand
 {
@@ -561,68 +561,6 @@ internal sealed class FlashXmlCommand : ICliCommand
             context.Output.WriteLine($"flashed {okCount}/{outcomes.Count} images");
 
         return exitCode;
-    }
-}
-
-internal sealed class VcomUnlockCommand : GatedWriteCommand
-{
-    public override string Name => "vcom-unlock";
-    public override string McpName => "vcom_unlock";
-    public override string Summary => "Plan a VCOM/BootROM loader unlock for a chip (gate-only: never uploads in this build).";
-    public override string Usage => "vcom-unlock --cpu <chip> [--yes] [--json]";
-    public override IReadOnlyList<CliParam> Params => new[]
-    {
-        new CliParam("cpu", "string", "chipset loader family, e.g. hisi980, hisi990", Required: true, Enum: BundledLoaders.SupportedChips().ToList()),
-    };
-
-    protected override Task<WritePlan> BuildPlanAsync(ParsedArgs args, CliContext context, CancellationToken cancellationToken)
-    {
-        string? cpu = args.Value("cpu");
-        if (string.IsNullOrWhiteSpace(cpu))
-            throw new CliUsageException("vcom-unlock requires --cpu <chip> (supported: " + string.Join(", ", BundledLoaders.SupportedChips()) + ")");
-
-        cpu = cpu.Trim().ToLowerInvariant();
-        if (!FirmwareUnlocker.CpuAddresses.ContainsKey(cpu))
-            throw new CliUsageException($"unsupported chip '{cpu}' (supported: {string.Join(", ", BundledLoaders.SupportedChips())})");
-
-        var stages = BundledLoaders.Plan(cpu);
-        string loaderDirectory = Path.Combine(BundledLoaders.Directory, cpu);
-
-        var stageList = stages.Select(stage => new
-        {
-            stage = stage.Stage,
-            file = stage.File,
-            path = Path.Combine(loaderDirectory, stage.File),
-            address = "0x" + stage.Address.ToString("X8"),
-            pwn = stage.PwnFlag,
-            exists = stage.Exists,
-        }).ToList();
-
-        var details = new
-        {
-            cpu,
-            loaderDirectory,
-            implementation = "Services/FirmwareUnlocker.UnlockFastboot + Services/VcomFlasher (not invoked in this build)",
-            requiresVcomMode = "HUAWEI USB COM 1.0 (12d1:3609)",
-            stageCount = stageList.Count,
-            missingStages = stageList.Count(stage => !stage.exists),
-            stages = stageList,
-        };
-
-        var lines = new List<string>
-        {
-            $"vcom unlock plan for {cpu}",
-            $"loader directory: {loaderDirectory}",
-            "would upload, in order (device must already be in VCOM mode):",
-            TextFormat.Table(stageList.Select(stage => new[]
-            {
-                stage.stage, stage.address, stage.file, stage.exists ? "present" : "MISSING",
-            }).ToList(), "STAGE", "ADDRESS", "LOADER", "FILE"),
-        };
-        if (stageList.Any(stage => !stage.exists))
-            lines.Add("warning: missing loader files would be skipped by the current service.");
-
-        return Task.FromResult(new WritePlan(details, lines));
     }
 }
 

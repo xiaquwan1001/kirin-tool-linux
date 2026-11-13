@@ -1526,8 +1526,18 @@ namespace Kirin_Tool
 
             bool useFastFlashLoader = cpu == "hisi980" && UseFastFlashLoaderSwitch.IsChecked == true;
 
+            // One audit file per VCOM session: every progress line, frame, ACK and prompt goes
+            // there, so a failed attempt can be reconciled afterwards (who held the tty, which
+            // frame repeated). The path stays visible in the dialog after it closes.
+            using var sessionLog = VcomSessionLogger.Create(cpu);
+            dialog.ShowLogPath(sessionLog.FilePath ?? "(disabled)");
+            var unlockOptions = new UnlockOptions { Logger = sessionLog };
+
             var dialogShowTask = _dialogService.ShowDialog(dialog);
-            var unlockResult = await _firmwareUnlocker.UnlockFastboot(cpu, progressItems, overallProgress, interactionHandler, useFastFlashLoader);
+            var unlockResult = await _firmwareUnlocker.UnlockFastboot(cpu, progressItems, overallProgress, interactionHandler, useFastFlashLoader, unlockOptions);
+
+            if (!unlockResult.IsSuccess && sessionLog.FilePath != null)
+                dialog.UpdateOverallStatus($"{unlockResult.Message} (log: {sessionLog.FilePath})");
 
             dialog.ShowCloseButton(unlockResult.IsSuccess, unlockResult.IsSuccess ? "Unlock Complete" : "Unlock Failed");
             await dialogShowTask;

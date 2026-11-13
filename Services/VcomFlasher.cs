@@ -30,6 +30,42 @@ using System.Threading.Tasks;
 
 namespace Kirin_Tool.Services
 {
+    /// <summary>
+    /// How <see cref="VcomFlasher"/> treats the one-byte answer the BootROM returns for a
+    /// command frame. GUI (and the CLI default) is <c>Lenient</c>, which is what the shipped
+    /// GUI has always done: read a byte, do not validate its value, never fail on silence.
+    /// </summary>
+    public enum VcomAckMode
+    {
+        /// <summary>Read the ACK and fail unless it is <c>0xAA</c>.</summary>
+        Strict,
+        /// <summary>Read the ACK, record it, never fail (GUI behaviour).</summary>
+        Lenient,
+        /// <summary>Do not wait for an ACK at all (blind send, like <c>expectAck: false</c>).</summary>
+        Off,
+    }
+
+    /// <summary>One frame as it went out on the wire (plus the ACK it produced, if any).</summary>
+    public sealed record VcomFrameInfo(string Kind, int Bytes, int? Address, int? Sequence, byte? Ack, string AckStatus);
+
+    /// <summary>
+    /// Injection points for the CLI/MCP path and for offline pty tests. Every property keeps
+    /// the GUI behaviour when left at its default (auto-detect 12d1:3609, lenient ACK, 10 s).
+    /// </summary>
+    public sealed class VcomFlasherOptions
+    {
+        /// <summary>Explicit tty/COM path; skips the 12d1:3609 enumeration.</summary>
+        public string? PortName { get; init; }
+        /// <summary>Force the bulk-only framing (no modem-line signalling). Default: explicit port → true, auto-detect → option driver check.</summary>
+        public bool? BulkOnly { get; init; }
+        public VcomAckMode AckMode { get; init; } = VcomAckMode.Lenient;
+        public TimeSpan AckTimeout { get; init; } = TimeSpan.FromSeconds(10);
+        /// <summary>Per-frame trace sink (CLI writes these to stderr).</summary>
+        public Action<VcomFrameInfo>? FrameObserver { get; init; }
+        /// <summary>Session audit log shared with the GUI (see <see cref="VcomSessionLogger"/>).</summary>
+        public VcomSessionLogger? Logger { get; init; }
+    }
+
     public class VcomFlasher : IDisposable
     {
         private const int IDT_VID = 0x12D1;
@@ -37,21 +73,49 @@ namespace Kirin_Tool.Services
         private const int MAX_DATA_LEN = 0x400;
 
         private SerialPort _serialPort;
+        private readonly VcomFlasherOptions _options;
+        private long _bytesSinceHead;
+
+        public VcomFlasher(VcomFlasherOptions? options = null)
+        {
+            _options = options ?? new VcomFlasherOptions();
+        }
+
+        /// <summary>True once a port handle is open (used by the CLI to report link state).</summary>
+        public bool IsOpen => _serialPort?.IsOpen == true;
+
+        public string? OpenPortName { get; private set; }
+
+        public int FramesSent { get; private set; }
+        public int AckExpected { get; private set; }
+        public int AckOk { get; private set; }
+        public int AckNonAck { get; private set; }
+        public int AckTimeouts { get; private set; }
 
         public void Connect()
         {
-            string portName = FindIdtDevicePort();
-            if (portName == null)
+            string portName = _options.PortName ?? FindIdtDevicePort();
+            if (string.IsNullOrEmpty(portName))
             {
                 throw new IOException("No device in VCOM mode (HUAWEI USB COM 1.0) was found.");
+            }
+
+            // An explicit --port may be a pty or a tty the user picked by hand; a missing
+            // path is a "no device" condition, not a crash (SerialPort.Open would throw an
+            // IOError with a less useful message).
+            if (_options.PortName != null && OperatingSystem.IsLinux() && !File.Exists(portName))
+            {
+                throw new IOException($"VCOM port not found: {portName}");
             }
 
             // Linux option maps DTR to CDC SET_CONTROL_LINE_STATE. The captured
             // 12d1:3609 BootROM stalls that request (EPIPE), before any packet is
             // sent. This USB bulk endpoint needs no UART modem-line signalling.
-            // Keep Windows and other drivers on their original settings.
-            bool bulkOnly = OperatingSystem.IsLinux() &&
-                LinuxSerialPortFinder.IsPortUsingDriver(portName, "option");
+            // Keep Windows and other drivers on their original settings. An explicit
+            // port is treated the same way (pty/fake devices have no modem lines).
+            bool bulkOnly = _options.BulkOnly ??
+                (OperatingSystem.IsLinux() &&
+                 (_options.PortName != null || LinuxSerialPortFinder.IsPortUsingDriver(portName, "option")));
             // Close any previously opened instance first so a repeated
             // Connect() (e.g. after replug) is idempotent instead of throwing
             // "access denied" on a still-held port handle.
@@ -77,6 +141,14 @@ namespace Kirin_Tool.Services
                 throw;
             }
             _serialPort = serialPort;
+            OpenPortName = portName;
+            _options.Logger?.Event("port.open",
+                ("port", portName),
+                ("explicit", _options.PortName != null),
+                ("bulkOnly", bulkOnly),
+                ("handshake", bulkOnly ? "none" : "rtscts"),
+                ("ackMode", _options.AckMode.ToString().ToLowerInvariant()),
+                ("ackTimeoutMs", (int)_options.AckTimeout.TotalMilliseconds));
         }
 
         public async Task ReconnectAfterCableAsync()
@@ -84,10 +156,25 @@ namespace Kirin_Tool.Services
             // The replug destroys Linux's tty handle. Reopen the same VID/PID
             // after it enumerates; do not send another start frame or loader.
             Dispose();
+            _options.Logger?.Event("port.reconnect", ("port", _options.PortName), ("waitMs", 15000));
             var deadline = System.Diagnostics.Stopwatch.StartNew();
             while (deadline.Elapsed < TimeSpan.FromSeconds(15))
             {
-                if (FindIdtDevicePort() != null)
+                if (_options.PortName != null)
+                {
+                    // An explicit port cannot be matched by VID/PID, so reopen the same path;
+                    // a pty or a fixed tty path is the caller's own responsibility.
+                    try
+                    {
+                        Connect();
+                        return;
+                    }
+                    catch (IOException)
+                    {
+                        // keep polling until the window closes
+                    }
+                }
+                else if (FindIdtDevicePort() != null)
                 {
                     Connect();
                     return;
@@ -100,13 +187,13 @@ namespace Kirin_Tool.Services
         public async Task SendStartFrame()
         {
             var startCmd = new byte[] { 0xFE, 0x00, 0xFF, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x02, 0x01, 0x1D, 0x0F };
-            await WriteAndVerify(startCmd, false);
+            await WriteAndVerify(startCmd, false, "START");
             await Task.Delay(50);
         }
 
         public async Task UploadData(byte[] data, int address, (bool shouldHeadResend, string Cpu) exploitInfo, IProgress<(long sent, long total)> progress)
         {
-            await WriteAndVerify(BuildHeadCmd(address, data.Length));
+            await WriteAndVerify(BuildHeadCmd(address, data.Length), true, "HEAD", address);
 
             int seq = 0;
             long offset = 0;
@@ -116,7 +203,7 @@ namespace Kirin_Tool.Services
                 var chunk = new byte[chunkSize];
                 Array.Copy(data, offset, chunk, 0, chunkSize);
                 seq++;
-                await WriteAndVerify(BuildDataCmd(seq, chunk));
+                await WriteAndVerify(BuildDataCmd(seq, chunk), true, "DATA", address, seq);
                 offset += chunkSize;
                 progress?.Report((offset, data.Length));
             }
@@ -139,14 +226,14 @@ namespace Kirin_Tool.Services
             }
             else
             {
-                await WriteAndVerify(BuildTailCmd(seq + 1), false);
+                await WriteAndVerify(BuildTailCmd(seq + 1), false, "TAIL", address, seq + 1);
             }
             await Task.Delay(500);
         }
 
         private async Task ExploitBootrom(int xloaderStartAddr, string cpu)
         {
-            await WriteAndVerify(BuildHeadCmd(0x22000, 4), true);
+            await WriteAndVerify(BuildHeadCmd(0x22000, 4), true, "HEAD", 0x22000);
             await Task.Delay(100);
 
             int returnAddr = cpu switch {
@@ -161,7 +248,7 @@ namespace Kirin_Tool.Services
                 _ => throw new NotSupportedException($"Exploit requested for an unsupported CPU: {cpu}."),
             };
 
-            await WriteAndVerify(BuildHeadCmd(returnAddr, 4), false);
+            await WriteAndVerify(BuildHeadCmd(returnAddr, 4), false, "HEAD", returnAddr);
 
             if (_serialPort.BytesToRead > 0)
             {
@@ -176,29 +263,87 @@ namespace Kirin_Tool.Services
 
             byte[] payloadBytes = BitConverter.GetBytes(xloaderStartAddr);
             if (!BitConverter.IsLittleEndian) Array.Reverse(payloadBytes);
-            await WriteAndVerify(BuildDataCmd(1, payloadBytes), true);
+            await WriteAndVerify(BuildDataCmd(1, payloadBytes), true, "DATA", 0x22000, 1);
             await Task.Delay(10);
 
-            await WriteAndVerify(BuildTailCmd(2), false);
+            await WriteAndVerify(BuildTailCmd(2), false, "TAIL", 0x22000, 2);
             await Task.Delay(100);
         }
 
-        private async Task WriteAndVerify(byte[] command, bool expectAck = true)
+        /// <summary>
+        /// Writes one frame and, when the frame expects it, reads the BootROM's single ACK byte.
+        /// The policy (strict / lenient / off) lives in <see cref="VcomFlasherOptions.AckMode"/>:
+        /// strict fails on silence or on a value other than 0xAA, lenient records and continues
+        /// (the GUI behaviour), off never reads.
+        /// </summary>
+        private async Task WriteAndVerify(byte[] command, bool expectAck = true, string kind = "FRAME", int? address = null, int? sequence = null)
         {
             await _serialPort.BaseStream.WriteAsync(command, 0, command.Length);
             await _serialPort.BaseStream.FlushAsync();
+            FramesSent++;
+            if (kind == "HEAD") _bytesSinceHead = 0;
+            if (kind == "DATA") _bytesSinceHead += Math.Max(0, command.Length - 5); // 3 header + 2 CRC bytes
+            _options.Logger?.Event("frame.write",
+                ("type", kind),
+                ("addr", address is { } addr ? "0x" + addr.ToString("X8") : null),
+                ("len", command[0] == 0xFE ? DeclaredLength(command) : Math.Max(0, command.Length - 5)),
+                ("seq", sequence),
+                ("bytes", command.Length),
+                ("cumulativeBytes", kind == "DATA" ? _bytesSinceHead : null),
+                ("expectAck", expectAck && _options.AckMode != VcomAckMode.Off));
 
-            if (expectAck)
+            if (!expectAck || _options.AckMode == VcomAckMode.Off)
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                var ackBuffer = new byte[1];
-                int bytesRead = await _serialPort.BaseStream.ReadAsync(ackBuffer, 0, 1, cts.Token);
-                //if (bytesRead == 0 || ackBuffer[0] != 0xAA || ackBuffer[0] != 0x55)
-                //{
-                //    throw new IOException($"Failed to receive ACK from device. Received: {(bytesRead > 0 ? ackBuffer[0].ToString("X2") : "timeout")}");
-                //}
+                Observe(kind, command.Length, address, sequence, null, _options.AckMode == VcomAckMode.Off ? "skipped" : "not-expected");
+                return;
             }
+
+            AckExpected++;
+            using var cts = new CancellationTokenSource(_options.AckTimeout);
+            var ackBuffer = new byte[1];
+            int bytesRead;
+            try
+            {
+                bytesRead = await _serialPort.BaseStream.ReadAsync(ackBuffer, 0, 1, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                bytesRead = 0;
+            }
+            catch (IOException) when (_options.AckMode != VcomAckMode.Strict)
+            {
+                // A closed/hot-unplugged tty during a blind README-grade flow is not fatal in
+                // the lenient mode; strict mode still rethrows below via the null value check.
+                bytesRead = 0;
+            }
+
+            if (bytesRead == 0)
+            {
+                AckTimeouts++;
+                _options.Logger?.Event("frame.ack", ("type", kind), ("result", "timeout"),
+                    ("waitedMs", (int)_options.AckTimeout.TotalMilliseconds), ("fatal", _options.AckMode == VcomAckMode.Strict));
+                Observe(kind, command.Length, address, sequence, null, "timeout");
+                if (_options.AckMode == VcomAckMode.Strict)
+                    throw new IOException($"No ACK from device for {kind} frame (waited {_options.AckTimeout.TotalSeconds:0.###}s).");
+                return;
+            }
+
+            byte ack = ackBuffer[0];
+            bool isAck = ack == 0xAA;
+            if (isAck) AckOk++; else AckNonAck++;
+            _options.Logger?.Event("frame.ack", ("type", kind), ("result", isAck ? "ok" : "bad"),
+                ("raw", ack), ("fatal", !isAck && _options.AckMode == VcomAckMode.Strict));
+            Observe(kind, command.Length, address, sequence, ack, isAck ? "ok" : "bad");
+            if (!isAck && _options.AckMode == VcomAckMode.Strict)
+                throw new IOException($"Unexpected ACK 0x{ack:X2} for {kind} frame (expected 0xAA).");
         }
+
+        private void Observe(string kind, int bytes, int? address, int? sequence, byte? ack, string status) =>
+            _options.FrameObserver?.Invoke(new VcomFrameInfo(kind, bytes, address, sequence, ack, status));
+
+        /// <summary>Payload length declared in a 0xFE command frame (big endian, bytes 4..7).</summary>
+        private static int DeclaredLength(byte[] command) =>
+            command.Length >= 8 ? (command[4] << 24) | (command[5] << 16) | (command[6] << 8) | command[7] : 0;
 
         private byte[] BuildHeadCmd(int address, int length)
         {
@@ -261,6 +406,12 @@ namespace Kirin_Tool.Services
 
         public void Dispose()
         {
+            if (_serialPort != null)
+            {
+                string? port = OpenPortName;
+                _options.Logger?.Event("port.close", ("port", port), ("framesSent", FramesSent),
+                    ("ackOk", AckOk), ("ackNonAck", AckNonAck), ("ackTimeouts", AckTimeouts));
+            }
             _serialPort?.Close();
             _serialPort?.Dispose();
             _serialPort = null;
