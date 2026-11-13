@@ -9,11 +9,11 @@ on:
 jobs:
   app-linux-x64:
     name: self-contained app + bundled fastboot
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -33,23 +33,23 @@ jobs:
         run: test -x publish-out/Kirin-Tool && test -f publish-out/fastboot/payload
 
       - name: Upload app bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kirin-tool-linux-app-${{ github.sha }}
           path: publish-out/
 
   appimage:
     name: Portable AppImage (glibc 2.31)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: ubuntu:20.04
     steps:
       - name: Install build dependencies
         run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential gcc-10 g++-10 pkg-config cmake ninja-build libprotobuf-dev protobuf-compiler libbrotli-dev liblz4-dev libpcre2-dev libzstd-dev libgtest-dev libusb-1.0-0-dev zlib1g-dev python3 curl binutils ca-certificates git libicu66 libssl1.1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -62,14 +62,14 @@ jobs:
           ./packaging/build-appimage.sh publish-out "$V"
 
       - name: Upload AppImage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kirin-tool-linux-appimage-${{ github.sha }}
           path: kirin-tool-linux-*.AppImage
 
   pacman-package:
     name: pacman package (Arch)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: archlinux:base-devel
     steps:
@@ -77,7 +77,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm git dotnet-sdk libusb pkgconf fontconfig freetype2 libx11 libice libsm openssl zlib icu cmake ninja python curl protobuf brotli lz4 pcre2 zstd gtest
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build package
         run: |
@@ -93,7 +93,7 @@ jobs:
           su builder -c "cd $build && makepkg -f --noconfirm"
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kirin-tool-linux-pacman-${{ github.sha }}
           path: /home/builder/pkg-*/kirin-tool-linux-*.pkg.tar.zst

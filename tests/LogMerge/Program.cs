@@ -220,12 +220,14 @@ try
         });
 
         IReadOnlyList<LogSessionDescriptor> listed = LogSessionStore.List(logDir);
-        LogSessionDescriptor legacyJsonlDescriptor = listed.FirstOrDefault(d => d.Kind == "legacy-jsonl")!;
-        LogSessionDescriptor legacyTextDescriptor = listed.FirstOrDefault(d => d.Kind == "legacy-vcom-text")!;
-        Check(legacyJsonlDescriptor != null, "logs list still finds the pre-2.4.15 <category>/*.jsonl files");
-        Check(legacyJsonlDescriptor.Legacy, "the legacy JSONL is flagged legacy");
-        Check(legacyJsonlDescriptor.Op == "fastboot.flash" && legacyJsonlDescriptor.Ok == true, "the legacy JSONL keeps its op and verdict");
-        Check(legacyTextDescriptor != null && legacyTextDescriptor.Legacy, "logs list still finds the pre-2.4.15 vcom-*.log transcript");
+        LogSessionDescriptor? legacyJsonlFound = listed.FirstOrDefault(d => d.Kind == "legacy-jsonl");
+        LogSessionDescriptor? legacyTextFound = listed.FirstOrDefault(d => d.Kind == "legacy-vcom-text");
+        Check(legacyJsonlFound != null, "logs list still finds the pre-2.4.15 <category>/*.jsonl files");
+        Check(legacyJsonlFound != null && legacyJsonlFound.Legacy, "the legacy JSONL is flagged legacy");
+        Check(legacyJsonlFound != null && legacyJsonlFound.Op == "fastboot.flash" && legacyJsonlFound.Ok == true, "the legacy JSONL keeps its op and verdict");
+        Check(legacyTextFound != null && legacyTextFound.Legacy, "logs list still finds the pre-2.4.15 vcom-*.log transcript");
+        LogSessionDescriptor legacyJsonlDescriptor = legacyJsonlFound!;
+        LogSessionDescriptor legacyTextDescriptor = legacyTextFound!;
 
         string legacyShown = LogSessionStore.Show(legacyJsonlDescriptor, includeTrace: false);
         using (JsonDocument document = JsonDocument.Parse(legacyShown))

@@ -36,7 +36,7 @@ concurrency:
 jobs:
   build-cli:
     name: build CLI + MCP entry (net10.0)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       DOTNET_NOLOGO: 'true'
@@ -45,10 +45,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up .NET 10 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -161,7 +161,7 @@ jobs:
           ls artifact/KirinTool.Cli | head -40
 
       - name: Upload CLI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kirin-tool-cli-${{ github.sha }}
           path: artifact/KirinTool.Cli
@@ -170,9 +170,10 @@ jobs:
 
   # The deb writer is distribution-sensitive: Depends names (libicu<soname>,
   # libssl3 vs libssl3t64) differ per release, and a wrong name makes the package
-  # uninstallable on the user's machine while still building fine. Hence a matrix:
-  # ubuntu-latest (currently 24.04) plus an explicitly pinned 24.04 runner, each
-  # of which also *resolves* the Depends against that release's archive.
+  # uninstallable on the user's machine while still building fine. Hence a matrix of
+  # *pinned* releases, each of which also resolves the Depends against that release's
+  # archive. Pinned, not ubuntu-latest: latest silently migrates (Oct 2026 → 26.04),
+  # which would change what this gate proves without any commit saying so.
   packaging-smoke:
     name: deb packaging smoke (synthetic publish tree, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -181,12 +182,12 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest
+          # libicu74 era. Keep this as the upgrade floor.
           - ubuntu-24.04
           # GA since 2026-09: the release the user's host runs. libicu78 lives here.
           - ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Builds the real .deb writer against a fake publish tree: catches path/metadata
       # regressions in packaging/build-deb.sh without spending 20 min on a native build.

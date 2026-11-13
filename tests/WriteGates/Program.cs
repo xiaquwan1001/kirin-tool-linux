@@ -193,7 +193,7 @@ if args[:1] == ["getvar"] and len(args) > 1:
         answer("(bootloader) nve:SN:" + (state.read_text() if state.exists() else "NONE") + "\nOKAY")
 answer("OKAY")
 """);
-File.SetUnixFileMode(stub, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(stub, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 stubEnvironment["KIRIN_FASTBOOT"] = stub;
 
 // ---- 5a. reboot: the device refuses the command ----
