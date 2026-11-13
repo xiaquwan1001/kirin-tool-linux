@@ -105,7 +105,7 @@ kirin-tool-cli vcom-unlock --cpu hisi990 --yes --stage-only rest   # 第二段�
 | `--cpu <chip>` | 必填 | 枚举来自 `FirmwareUnlocker.CpuAddresses` |
 | `--yes` / MCP `confirm:true` | false | 门控；缺省只打印计划 |
 | `--dry-run` | false | 即使 `--yes` 也只打印计划 |
-| `--ack-mode strict|lenient|off` | `lenient` | `lenient` = GUI 现状（读 1 字节、不校验值、超时也继续）；`strict` = 读不到或非 `0xAA` 即失败；`off` = 不等待 ACK |
+| `--ack-mode strict|lenient|off` | `strict`（GUI 为 `lenient`） | `strict` = 读不到或非 `0xAA` 即失败（exit 3，CLI/MCP 默认）；`lenient` = GUI 现状（读 1 字节、不校验值、超时也继续，但结论 `verified=false`）；`off` = 不等待 ACK。分入口默认值见 [ack-default.md](ack-default.md) |
 | `--ack-timeout <秒>` | 10 | 每个 ACK 的等待上限（GUI 同为 10 s） |
 | `--replug skip|prompt|wait:<秒>` | `skip` | 非交互默认 `skip`，stderr 明示"设备需要人工拔插"；`wait:<秒>` 会在提示后等待指定秒数再由服务轮询重连（不重发 START）；`prompt` 读 stdin（重定向时按 wait 15 s） |
 | `--loader-dir <dir>` | `<程序目录>/loaders` | 指向"包含每芯片子目录"的根目录，可任意指定 |

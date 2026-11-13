@@ -207,9 +207,10 @@ kirin-tool-cli vcom-unlock --cpu hisi990 --yes --stage-only rest   # continue af
 ```
 
 `vcom-unlock` is the CLI face of the GUI's "Unlock Fastboot": same `FirmwareUnlocker`/`VcomFlasher`,
-same frame order and address table. Useful flags: `--ack-mode strict|lenient|off` (lenient is the GUI
-default), `--replug skip|prompt|wait:<s>`, `--loader-dir <dir>`, `--port <tty>`. Exit codes: 0 ok,
-2 no VCOM device, 3 device rejected (strict ACK), 5 loader file/decrypt failure.
+same frame order and address table. Useful flags: `--ack-mode strict|lenient|off` (`strict` is the
+CLI/MCP default, `lenient` is the GUI's — see [docs/ack-default.md](docs/ack-default.md)),
+`--replug skip|prompt|wait:<s>`, `--loader-dir <dir>`, `--port <tty>`. Exit codes: 0 ok,
+2 no VCOM device, 3 device rejected (missing/non-`0xAA` ACK: the default policy), 5 loader file/decrypt failure.
 
 MCP server (newline-delimited JSON-RPC 2.0 over stdio):
 

@@ -201,7 +201,19 @@ kirin-tool-cli capabilities                             # 逐芯片能力矩阵 
 kirin-tool-cli udev                                     # 宿主机 udev 规则覆盖（缺则打印修复命令）
 kirin-tool-cli vcom-unlock --cpu hisi990 --json         # 只打印 loader 装载计划，exit 4
 kirin-tool-cli vcom-unlock --cpu hisi990 --yes          # 真上传（设备需已在 VCOM 模式）
-kirin-tool-cli vcom-unlock --cpu hisi990 --yes --stage-only rest   # 人工拔插之后续跑```
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes --stage-only rest   # 人工拔插之后续跑
+```
+
+`vcom-unlock` 的常用参数（默认值按**入口**不同，见 [docs/ack-default.md](docs/ack-default.md)）：
+
+| 参数 | 默认 | 说明 |
+| :--- | :--- | :--- |
+| `--ack-mode strict|lenient|off` | **CLI/MCP：`strict`**（GUI：`lenient`） | `strict` = 读不到或非 `0xAA` 即中断上传，exit 3；`lenient` = GUI 历史行为（读 1 字节、不校验值、读不到也继续，但结论永远 `verified=false`）；`off` = 不等待 ACK |
+| `--require-ack` | 关 | 配合 `lenient`：上传不中断，事后把"没拿到 ACK"判成失败（exit 3、`failureKind=ack-missing`） |
+| `--ack-timeout <秒>` | 10 | 每个 ACK 的等待上限（GUI 同为 10 s） |
+| `--replug skip|prompt|wait:<秒>` | `skip` | 非交互默认不等待；`wait:<秒>` 提示后等待并轮询重连（不重发 START） |
+| `--stage-only all|null|xloader|rest` | `all` | 分步执行配合人工拔插；`rest` 不重发 START |
+| `--port <tty>` | 自动枚举 12d1:3609 | 显式端口跳过枚举，按 bulk-only 处理 |
 
 MCP server（换行分隔 JSON-RPC 2.0 over stdio）：
 
@@ -253,15 +265,17 @@ v2.4.13 界面的 headless 渲染（commit `47fb3da`，来自真实 Avalonia 控
 | 场景 | 结论 | 怎么变成"验证过" |
 | :--- | :--- | :--- |
 | VCOM loader 上传（GUI 进度窗 / `vcom-unlock`）有帧没拿到 `0xAA` ACK | GUI 琥珀色 **"Uploaded — Unverified"** + `frames sent / ACKed / missing`；CLI `gate=applied-unverified`, `reason=ack_missing:<n>` | 换线/换口重跑；或加 `--require-ack` 让它直接失败（exit 3） |
-| `--ack-mode off`（从不读 ACK） | `verified=false`, `reason=ack_not_requested` | 用默认 lenient 或 strict |
+| `--ack-mode off`（从不读 ACK） | `verified=false`, `reason=ack_not_requested` | 用默认（strict）或显式 lenient |
+| **默认（strict）下设备完全不回 ACK** | 上传中断：exit 3、`failureKind=device-rejected`、`verified=false`，证据在 `ack.timeouts/missing` | 显式 `--ack-mode lenient` 让上传走完（结论仍 `verified=false`）；修好线/口再跑 |
 | loader 缺失或无法 DTL 解密 | 直接在**发第一帧之前**失败：`failureKind=missing-loader`, `framesSent=0`，exit 5 | 补齐 `loaders/<chip>/*.ktl` |
 | 写 NVE 序列号（GUI NVMe▸Write SN） | 只有写后 `getvar nve:SN` 读回一致才报成功；否则弹 **"Write Not Confirmed"** 并附读回值与原因 | 读回值正确即成功；不一致重试 |
 | `--require-backup` 但备份目录建不出来 / dump 不完整 | 拒绝写入：exit 4，`reason=require_backup_failed`，stderr 给出原因 | 修好备份目录/权限后重跑 |
 | 选项拼错（如 `--require-backu`） | exit 1 并指名未知选项（不再被当成无害 flag 静默吞掉） | 用 `--help`；确实需要旧行为时加 `--lenient-args` |
 
-默认（不带 `--require-ack`）的"未验证"退出码仍是 0：`applied` 描述的是"已写出"这一事实，
-闸门契约与 35c6f6b 保持一致；**要把它当失败处理就加 `--require-ack`**。完整判定模型见
-[docs/verdict-honesty.md](docs/verdict-honesty.md)。
+退出码按入口分：**CLI/MCP 默认 `strict`**，设备不回 `0xAA` 直接 exit 3（自动化不再被"静默成功"误导）；
+显式 `--ack-mode lenient`（= GUI 的行为）时，"未验证"的退出码仍是 0——`applied` 描述的是"已写出"这一事实，
+闸门契约与 35c6f6b 保持一致，**要把它当失败处理就加 `--require-ack`**。完整判定模型见
+[docs/verdict-honesty.md](docs/verdict-honesty.md)，默认值决策见 [docs/ack-default.md](docs/ack-default.md)。
 
 ## 真机已验证 / 未验证
 

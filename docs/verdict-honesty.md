@@ -68,7 +68,7 @@ exploit 的第二次 HEAD），否则握手帧会把比例稀释成假的健康�
 
 | 能力 | 设备侧证据 | 无证据时的结论 |
 |---|---|---|
-| VCOM loader 上传（`vcom-unlock` / GUI VCOM unlock） | 每帧 `0xAA` ACK（`--ack-mode strict|lenient`） | `verified=false`，`reason=ack_missing:<n>`；`off` ⇒ `ack_not_requested` |
+| VCOM loader 上传（`vcom-unlock` / GUI VCOM unlock） | 每帧 `0xAA` ACK（`--ack-mode strict|lenient`） | `verified=false`，`reason=ack_missing:<n>`（strict 下是传输中断：`failureKind=device-rejected` + exit 3）；`off` ⇒ `ack_not_requested` |
 | loader 预检 | 本机文件系统 + DTL 解密（决定"会不会发第一帧"） | `FailureKind=MissingLoader`，`framesSent=0`，exit 5 |
 | fastboot 写命令（SN / model / vendor） | 输出 OKAY/FAILED（`ClassifyCommandOutput`）+ 写后读回 | GUI "Write Not Confirmed" + 读回值 |
 | 写前备份 | 备份目录 + manifest + 每分区 sha256 | `--require-backup` ⇒ exit 4 + 原因 |
@@ -91,17 +91,19 @@ exploit 的第二次 HEAD），否则握手帧会把比例稀释成假的健康�
 | `--no-backup` + `--require-backup` ⇒ exit 1 | **行为变更**（互相矛盾，原来后者被静默吞掉） |
 | `--no-backup` 审计行 | 文案变明确：`pre-op backup SKIPPED (--no-backup): …` |
 
-### 4.2 为什么默认（lenient）仍然 exit 0
+### 4.2 为什么 lenient 仍 exit 0，而默认已经不是 lenient
 
 `tests/VcomUnlockCli` 在 35c6f6b 已固化"lenient + 设备静默 ⇒ exit 0"这一 CLI 闸门契约
-（`applied` 描述的是"字节已写出"，与"设备确认"分开）。本 lane 不改这条既有契约，
-而是把诚实结论放进 `verified/reason`：
+（`applied` 描述的是"字节已写出"，与"设备确认"分开）。结论诚实化 lane **没有**动这条契约，
+只把诚实结论放进 `verified/reason`：
 
-- 默认：`applied=true, verified=false, gate=applied-unverified, exit 0`（结论诚实、闸门契约不变）
-- `--require-ack`：同一场景 `gate=failed, failureKind=ack-missing, exit 3`
+- 显式 `--ack-mode lenient`：`applied=true, verified=false, gate=applied-unverified, exit 0`（结论诚实、闸门契约不变）
+- `--ack-mode lenient --require-ack`：同一场景 `gate=failed, failureKind=ack-missing, exit 3`
 
-要把"无设备证据 ⇒ 非 0"变成默认，只需把 `--require-ack` 反过来当默认并同步改那一条既有用例；
-本 lane 不做，因为"不改既有测试期望"优先。
+**v2.4.15 起默认值分入口**（[ack-default.md](ack-default.md)）：CLI/MCP 的 `--ack-mode` 默认改为
+`strict`，于是"设备一声不吭"在自动化侧直接 exit 3（`failureKind=device-rejected`，ACK 证据仍在
+`ack.timeouts/missing`）；GUI 保持 `lenient`。要旧的退出码就显式写 `--ack-mode lenient`——
+那仍然是"诚实的 0"，不是"静默的成功"。
 
 ### 4.3 GUI
 
@@ -150,14 +152,15 @@ ACK 会计完全在新的 `Services/Verdict/VcomAckLedger.cs` 里，靠既有的
 
 ## 8. 测试（19 套，全绿）
 
-新增 `tests/VerdictHonesty`（75 checks，已加入 `tests/suites.txt`，CI 两条流水线都会跑）：
+新增 `tests/VerdictHonesty`（75 checks；v2.4.15 加默认 strict 用例后 81 checks，已加入 `tests/suites.txt`，CI 两条流水线都会跑）：
 
 | 用例 | 断言 | 对应审计 |
 |---|---|---|
-| ①a 设备全程静默（默认 lenient） | `verified=false`、`applied=true`、`gate=applied-unverified`、`reason=ack_missing:N`、`missingRatio=1`、exit 0（既有闸门契约） | S01/S02/F01 |
-| ①b 设备全程静默 + `--require-ack` | exit 3、`gate=failed`、`failureKind=ack-missing` | 同上 |
+| ①a 设备全程静默（**默认 = strict**，v2.4.15） | exit 3、`verified=false`、`gate=failed`、`failureKind=device-rejected`、`ack.timeouts>0` | S01/S02/F01 |
+| ①a′ 设备全程静默 + 显式 `--ack-mode lenient`（GUI 策略） | `verified=false`、`applied=true`、`gate=applied-unverified`、`reason=ack_missing:N`、`missingRatio=1`、exit 0（既有闸门契约） | S01/S02/F01 |
+| ①b 设备全程静默 + `--require-ack`（配显式 lenient：strict 会先中断上传） | exit 3、`gate=failed`、`failureKind=ack-missing` | 同上 |
 | ①c `--ack-mode off` | `verified=false`、`reason=ack_not_requested` | S02 |
-| ② 只有一帧 missing（第 2 帧回 `0x55`） | `reason=ack_missing:1`、`ack.bad=1`、`0<missingRatio<1`、`--require-ack` ⇒ exit 3 | S01 |
+| ② 只有一帧 missing（第 2 帧回 `0x55`，显式 lenient + `--require-ack`） | `reason=ack_missing:1`、`ack.bad=1`、`0<missingRatio<1`、`--require-ack` ⇒ exit 3 | S01 |
 | ③ loader 缺失 / 无法 DTL | `failureKind=missing-loader`、`framesSent=0`、`reason=missing_loader`、该阶段 `status=missing`、**无 `status=skipped`**、exit 5 | F02/S15 |
 | ④ `--require-backup` + 不可写目录（`/proc/…`） | `Attempted=false` + 原因；`BackupGate` ⇒ 拒绝、exit 4、"never taken"；无该开关时仍只是警告；`--no-backup`+`--require-backup` ⇒ exit 1 | S10/S11 |
 | ⑤ `--getvr` / `--jso` / `--require-backu` | exit 1 + 指名未知选项；`--lenient-args` 下放行并警告；`--help` 优先 | S12 |

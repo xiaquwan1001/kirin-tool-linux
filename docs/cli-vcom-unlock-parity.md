@@ -59,7 +59,7 @@ GUI↔CLI 的唯一对齐依据：每一行都要能追到代码位置，改行�
 | `--cpu <hisi990|...>` | 必填，枚举来自 `FirmwareUnlocker.CpuAddresses` |
 | `--yes` / MCP `confirm:true` | 门控必需；缺省仍是 plan-only（exit 4） |
 | `--dry-run` | 即使 `--yes` 也只打印计划（exit 4），保持旧 CLI 输出字段 |
-| `--ack-mode {strict|lenient|off}` | 默认 `lenient`（=GUI 现状）；三档含义见 2.1 |
+| `--ack-mode {strict|lenient|off}` | CLI/MCP 默认 `strict`（v2.4.15 起），GUI 仍是 `lenient`；三档含义见 2.1，分入口默认值见 [ack-default.md](ack-default.md) |
 | `--ack-timeout <秒>` | 默认 10（=GUI 的 10 s），测试用小值 |
 | `--replug {prompt|wait:<秒>|skip}` | 非交互默认 `skip`，并在 stderr 明示"设备需要人工拔插" |
 | `--loader-dir <路径>` | 默认 `AppContext.BaseDirectory/loaders`，可指向任意目录 |
@@ -102,8 +102,8 @@ GUI↔CLI 的唯一对齐依据：每一行都要能追到代码位置，改行�
 | A2 | `SendStartFrame()`：写 14 字节 START（`FE 00 FF 01 ...`），`expectAck:false`，之后 `Task.Delay(50)` | 同 | 测试断言首帧字节 == GUI 常量 |
 | A3 | 每阶段：head(14B) → n*data(0xDA, seq, ~seq, ≤0x400 payload) → tail(0xED, seq+1) 或 pwn 序列 | 同（`UploadData` 未改） | fake bootrom 记录帧序列 |
 | A4 | pwn：XLOADER 阶段 `head(0x22000,4)` → `head(returnAddr,4)` → 读残余 → `data(1,addr)` → `tail(2)` | 同 | 同上 |
-| A5 | ACK：读 1 字节、10 s、值不校验、读不到继续 | `--ack-mode lenient`（默认） | 测试：无回包时 lenient 成功 |
-| A6 | `--ack-mode strict`（CLI 新增能力，GUI 无） | 读不到/非 0xAA → 失败 exit 3 | 测试：无回包/回 0x55 时 strict 失败 |
+| A5 | ACK：读 1 字节、10 s、值不校验、读不到继续 | `--ack-mode lenient`（**GUI 默认**；CLI/MCP 需显式给） | 测试：无回包时 lenient 退出 0 但 `verified=false` |
+| A6 | `--ack-mode strict`（CLI 新增能力，GUI 无） | 读不到/非 0xAA → 失败 exit 3；**CLI/MCP 默认** | 测试：默认（不传 `--ack-mode`）+ 静默 ⇒ exit 3、`verified=false`；回 0x55 同样失败 |
 | A7 | `--ack-mode off`（CLI 新增能力） | 不读任何字节 | 测试：回包滞留不影响后续阶段 |
 | A8 | null 阶段后：Delay 1 s → Linux 上 `Dispose()` → 提示拔插（电脑侧）→ `ReconnectAfterCableAsync` 15 s 轮询 → **不重发 START** | `--replug skip`（非交互默认）：不做拔插，直接提示"设备需要人工拔插"，由第二次 `--stage-only rest` 承担；`wait:<s>` 才轮询重连 | 测试：`rest` 首帧不是 START |
 | A9 | 结尾（hisi980/810/820/985/990 且非 null 阶段）：提示两端拔线换普通线 | `all` 阶段末尾同样提示到 stderr（不阻塞） | 日志比对 |
@@ -122,7 +122,7 @@ CLI 用 `--port <pty slave>` 指过去。**不碰真机**：无 adb、无 fastbo
 | 组 | 断言 |
 | :-- | :--- |
 | 1 参数/门控 | 缺 `--yes` → exit 4 / gate=plan-only / applied=false；`--yes --dry-run` → 仍 exit 4；缺 `--cpu`、非法 chip、非法 `--ack-mode`/`--stage-only`/`--replug` → exit 1；端口不存在 → exit 2 + `failureKind=no-device`；空 loader 目录 → exit 5 + `failureKind=local-file` |
-| 2 ACK 三档 | strict + 0xAA → exit 0 且 `ack.ok>0`；strict + 静默 → exit 3 且 `ack.timeouts>0`；strict + 0x55 → exit 3 且 `ack.bad>0`；lenient + 静默 → **exit 0**（GUI 行为）且 timeouts 被记录；off + 静默 → exit 0、`ack.expected==0`、总耗时 < 5 s（不等待） |
+| 2 ACK 三档 | **默认（不传 `--ack-mode`）+ 静默 → exit 3、`verified=false`、`ackMode=strict`、`failureKind=device-rejected`**；strict + 0xAA → exit 0 且 `ack.ok>0`；strict + 静默 → exit 3 且 `ack.timeouts>0`；strict + 0x55 → exit 3 且 `ack.bad>0`；显式 `lenient` + 静默 → **exit 0**（GUI 行为）但 `verified=false`/`gate=applied-unverified`/`reason=ack_missing:<n>`，timeouts 被记录；off + 静默 → exit 0、`ack.expected==0`、总耗时 < 5 s（不等待） |
 | 3 分段 | `--stage-only null` 首帧必须是 START、只到 null；同一 pty 上再跑 `--stage-only rest`：**零 START 帧**、首帧是 XLOADER payload head(0x22000, len>4)、能到 UCE/FASTBOOT/BL2，JSON `stages` 只 4 条 |
 | 4 全量顺序 | `--stage-only all --replug wait:1`：首帧 START 且字节 == GUI 常量；0x60000000/0x1A400000/0x1E400000 都出现；pwn 序列 head(0x22000,4)→head(0x673c8,4)→data(seq=1,4B)→tail(seq=2)；DATA 帧 > 4000；阶段顺序 null,XLOADER,UCE,FASTBOOT,BL2 |
 | 5 拔插纪律 | hisi990 全量 + 默认 `--replug skip` → exit 4、gate=refused，理由里含 "replug" |
@@ -132,7 +132,7 @@ CLI 用 `--port <pty slave>` 指过去。**不碰真机**：无 adb、无 fastbo
 
 | 项 | 值 |
 | :-- | :--- |
-| `dotnet run --project tests/VcomUnlockCli` | **84 checks passed**，退出 0 |
+| `dotnet run --project tests/VcomUnlockCli` | **94 checks passed**，退出 0（v2.4.14 基线 84；v2.4.15 加默认 strict / 显式 lenient 两组断言） |
 | 全量 5 阶段跑通耗时 | 18.3 s（5750 帧，含 5 次 500 ms 阶段延时 + null 1 s + replug wait:1） |
 | DATA 帧数（hisi990 全量） | 5750 帧总计，其中 DATA > 4000 |
 | `tests/WriteGates` | 24 checks passed（vcom-unlock 改用 `--dry-run` 断言门控，不再依赖"命令恒 exit 4"） |
@@ -141,6 +141,7 @@ CLI 用 `--port <pty slave>` 指过去。**不碰真机**：无 adb、无 fastbo
 
 | 风险 | 影响 | 处置 |
 | :-- | :-- | :--- |
+| **CLI/MCP 默认值 lenient → strict（行为变更）** | 设备不回 ACK 的自动化调用过去 exit 0，现在 exit 3。门控/审批语义、帧序列与结论字段都没变 | 显式 `--ack-mode lenient` 恢复旧退出码（结论仍是 `verified=false`），或 `--ack-mode off`；理由与迁移见 [ack-default.md](ack-default.md) |
 | **lenient 语义有一处 GUI 可见变化** | 旧代码在设备完全无 ACK 时 `ReadAsync` 超时会抛 `OperationCanceledException` → GUI 直接失败。现在 lenient 捕获超时并继续（"读不到也继续"，即注释掉校验的本来意图）。 | 想要旧的严格行为用 `--ack-mode strict`；GUI 若要恢复严格，把 `UnlockOptions.Flasher.AckMode` 设为 `Strict` 即可。已在 A5 记录 |
 | `--port` 隐含 bulk-only | 显式端口一律不发 modem 线信号（DTR/RTS/流控），因为 pty/固定 tty 路径无法判定驱动 | 真实 option 驱动设备同理；Windows COM 口用户不要显式给 `--port` |
 | `--replug skip` + hisi9xx 全量被拒（exit 4） | 非交互运行无法完成 null→XLOADER 的物理拔插 | 报错文案给出两条出路：`--replug wait:<秒>` / `--replug prompt`，或 `--stage-only null` + `--stage-only rest` |
