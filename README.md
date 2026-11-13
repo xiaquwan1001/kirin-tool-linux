@@ -134,16 +134,21 @@ The one end-to-end result worth quoting: `flash-ota` through a temporary VCOM lo
 
 ## Safety model
 
-**Writes:** `flash-ota`, `flash-xml` (CLI/MCP) and the GUI flashing / USB Update / rescue workflows. Real
-writes — there is no dry-run after confirmation. `flash-xml` skips identifiers the loader does not
-expose; `--strict-names` refuses instead (exit 3).
+**Writes (8 capabilities, GUI + CLI + MCP behind one approval gate):** `flash-ota`, `flash-xml`,
+`reboot`, `write-sn`, `frp-remove`, `unlock-bootloader`, `usb-testpoint`, `reboot-usb-update`. Real
+writes — there is no dry-run after confirmation; the irreversible/redline ones (`write-sn`,
+`frp-remove`, `unlock-bootloader`, `usb-testpoint`, `reboot-usb-update`) additionally demand a typed
+confirmation phrase. `flash-xml` skips identifiers the loader does not expose; `--strict-names`
+refuses instead (exit 3).
 
 **Writes RAM only (no partition is touched):** `vcom-unlock` — uploads the loader chain over the VCOM
 BootROM (`12d1:3609`), exactly like the GUI's "Unlock Fastboot". Needs `--yes`; `--dry-run` keeps the
 old plan output. A cable replug is required between `null` and `XLOADER` on hi9xx: use `--replug wait:<s>`
 or split with `--stage-only null` then `--stage-only rest` (a `rest` run never re-sends START).
 
-**Never writes:** `oeminfo`, `downgrade-enable` — plan-only, exit 4, even with `--yes`.
+**Never writes over CLI/MCP:** `oeminfo`, `downgrade-enable` — plan-only, exit 4, even with `--yes`.
+(The GUI's OEMInfo "Convert" button still writes `oeminfoerase-disablewp` + `oeminfowrite-*` directly;
+that asymmetry is tracked as the top open item in [docs/debt-register.md](docs/debt-register.md).)
 
 **Session log (GUI and CLI share it):** every VCOM attempt writes
 `~/.local/state/kirin-tool/vcom-<UTC>-<cpu>.log` (override with `KIRIN_LOG_DIR`): pid, port, framing,
@@ -224,11 +229,13 @@ MCP server (newline-delimited JSON-RPC 2.0 over stdio):
 }
 ```
 
-Tools (15, generated 1:1 from the CLI command table via `McpName`, there is no second
-implementation): read-only `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`,
-`partitions`, `psid`, `capabilities`, `udev`; real writes `flash_ota`, `flash_xml`; plan-only
-`vcom_unlock`, `oeminfo`, `downgrade_enable`. Every write tool requires `confirm: true` and never
-accepts `allow-redline`. The GUI/CLI/MCP parity contract and its drift gate live in
+Tools (21, generated 1:1 from the CLI command table via `McpName`, there is no second
+implementation): read-only (10) `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`,
+`partitions`, `psid`, `capabilities`, `udev`; real writes (9) `flash_ota`, `flash_xml`,
+`vcom_unlock`, `reboot`, `write_sn`, `frp_remove`, `unlock_bootloader`, `usb_testpoint`,
+`reboot_usb_update`; plan-only (2) `oeminfo`, `downgrade_enable`. Every write tool requires
+`confirm: true`, none accepts `allow-redline`, and `confirm` alone is never enough — a human still
+approves out of band in the running GUI. The GUI/CLI/MCP parity contract and its drift gate live in
 [docs/parity-design.md](docs/parity-design.md); full command table and gates in
 [docs/cli-mcp.md](docs/cli-mcp.md).
 
