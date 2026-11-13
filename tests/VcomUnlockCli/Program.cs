@@ -93,7 +93,8 @@ try
         Check(doc.RootElement.GetProperty("gate").GetString() == "plan-only", "plan-only gate string");
         Check(!doc.RootElement.GetProperty("applied").GetBoolean(), "plan-only: applied=false");
         Check(doc.RootElement.GetProperty("plan").GetProperty("stages").GetArrayLength() == 5, "plan lists the 5 hisi990 stages");
-        Check(doc.RootElement.GetProperty("plan").GetProperty("ackMode").GetString() == "lenient", "plan defaults to the GUI ACK policy (lenient)");
+        // CLI/MCP default is strict since v2.4.15 (docs/ack-default.md); the GUI keeps lenient.
+        Check(doc.RootElement.GetProperty("plan").GetProperty("ackMode").GetString() == "strict", "plan defaults to the CLI/MCP ACK policy (strict)");
 
         (code, stdout, _) = Run("vcom-unlock", "--cpu", "hisi990", "--yes", "--dry-run", "--json");
         Check(code == 4, $"--dry-run with --yes still exits 4 (got {code})");
@@ -132,6 +133,20 @@ try
 
     // ---------- 2. ACK policy mapping (strict / lenient / off) ----------
     {
+        // DEFAULT policy (no --ack-mode at all): strict since v2.4.15 (docs/ack-default.md).
+        // An automated caller must not be able to read exit 0 out of a device that never answered.
+        (int defCode, string defOut, string defErr) = RunFake("silent", "hisi990",
+            "--ack-timeout", "1", "--stage-only", "null", "--yes");
+        Check(defCode == 3, $"the default ACK policy fails on a silent bootrom (got {defCode}); stderr: {defErr.Trim()}");
+        using (JsonDocument doc = ParseJson(defOut))
+        {
+            Check(doc.RootElement.GetProperty("ackMode").GetString() == "strict", "the default ackMode is strict (CLI/MCP)");
+            Check(!doc.RootElement.GetProperty("verified").GetBoolean(), "default (strict) + silence: verified=false");
+            Check(doc.RootElement.GetProperty("gate").GetString() == "failed", "default (strict) + silence: gate=failed");
+            Check(doc.RootElement.GetProperty("failureKind").GetString() == "device-rejected", "default (strict) + silence: failureKind=device-rejected");
+            Check(doc.RootElement.GetProperty("ack").GetProperty("timeouts").GetInt32() > 0, "default (strict) + silence: timeouts counted");
+        }
+
         // strict + a fake that answers 0xAA -> success
         (int code, string stdout, string stderr) = RunFake("ack-ok", "hisi990", "--ack-mode", "strict",
             "--ack-timeout", "2", "--stage-only", "null", "--yes");
@@ -160,12 +175,18 @@ try
         using (JsonDocument doc = ParseJson(stdout))
             Check(doc.RootElement.GetProperty("ack").GetProperty("bad").GetInt32() > 0, "strict non-ACK: bad ACKs counted");
 
-        // lenient + silence -> success (this is the GUI behaviour) but timeouts recorded
+        // Explicit --ack-mode lenient (the GUI policy) + silence -> exit 0 but an honest
+        // verdict: the upload happened, the device never confirmed it (v2.4.14 behaviour kept,
+        // only the default moved to strict).
         (code, stdout, stderr) = RunFake("silent", "hisi990", "--ack-mode", "lenient",
             "--ack-timeout", "1", "--stage-only", "null", "--yes");
-        Check(code == 0, $"lenient ACK continues through silence (got {code}); stderr: {stderr.Trim()}");
+        Check(code == 0, $"explicit lenient still exits 0 through silence (got {code}); stderr: {stderr.Trim()}");
         using (JsonDocument doc = ParseJson(stdout))
         {
+            Check(!doc.RootElement.GetProperty("verified").GetBoolean(), "lenient silence: verified=false (never a silent success)");
+            Check(doc.RootElement.GetProperty("gate").GetString() == "applied-unverified", "lenient silence: gate=applied-unverified");
+            Check(doc.RootElement.GetProperty("reason").GetString()!.StartsWith("ack_missing:"), "lenient silence: reason=ack_missing:<n>");
+            Check(doc.RootElement.GetProperty("ackMode").GetString() == "lenient", "explicit lenient is reported as such");
             Check(doc.RootElement.GetProperty("ack").GetProperty("timeouts").GetInt32() > 0, "lenient silence: timeouts recorded but not fatal");
             Check(doc.RootElement.GetProperty("stages").GetArrayLength() == 1, "lenient silence: the null stage still completed");
         }

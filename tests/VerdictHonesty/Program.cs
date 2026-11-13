@@ -125,13 +125,32 @@ try
 
     // ---------- 1. a fully silent bootrom ----------
     {
-        // 1a. default policy (lenient): honest verdict, but the documented gate contract stays
-        //     exit 0 -- "the frames were sent" is still true, and the old CLI contract is frozen.
+        // 1a. DEFAULT policy: strict since v2.4.15 (docs/ack-default.md). The automated entry
+        //     point (CLI/MCP) now refuses the run instead of reporting exit 0; "applied but
+        //     unverified" is no longer reachable without asking for --ack-mode lenient.
+        using var silentDefault = new FakeBootrom("silent");
+        (int defCode, string defOut, string defErr) = Run("vcom-unlock", "--cpu", "hisi990", "--yes", "--json",
+            "--ack-timeout", "1", "--stage-only", "null", "--no-frame-log",
+            "--port", silentDefault.SlavePath, "--loader-dir", loaderRoot);
+        Check(defCode == 3, $"the default ACK policy (strict) fails on silence (got {defCode}); stderr: {defErr.Trim()}");
+        using (JsonDocument doc = ParseJson(defOut))
+        {
+            Check(doc.RootElement.GetProperty("ackMode").GetString() == "strict", "the default ackMode is strict");
+            Check(!doc.RootElement.GetProperty("verified").GetBoolean(), "default (strict) + silence: verified=false");
+            Check(doc.RootElement.GetProperty("gate").GetString() == "failed", "default (strict) + silence: gate=failed");
+            Check(doc.RootElement.GetProperty("failureKind").GetString() == "device-rejected",
+                "default (strict) + silence: failureKind=device-rejected");
+            Check(doc.RootElement.GetProperty("ack").GetProperty("timeouts").GetInt32() > 0,
+                "default (strict) + silence: the ACK evidence is still reported");
+        }
+
+        // 1a'. explicit --ack-mode lenient (= the GUI policy): honest verdict, exit 0 kept --
+        //      "the frames were sent" is still true, and the v2.4.14 gate contract is frozen.
         using var silent = new FakeBootrom("silent");
         (int code, string stdout, string stderr) = Run("vcom-unlock", "--cpu", "hisi990", "--yes", "--json",
             "--ack-mode", "lenient", "--ack-timeout", "1", "--stage-only", "null", "--no-frame-log",
             "--port", silent.SlavePath, "--loader-dir", loaderRoot);
-        Check(code == 0, $"lenient + silence keeps the documented exit 0 (got {code}); stderr: {stderr.Trim()}");
+        Check(code == 0, $"explicit lenient + silence keeps the documented exit 0 (got {code}); stderr: {stderr.Trim()}");
         using (JsonDocument doc = ParseJson(stdout))
         {
             Check(!doc.RootElement.GetProperty("verified").GetBoolean(), "lenient + silence reports verified=false");
@@ -147,9 +166,13 @@ try
                 "per-stage missing counter is exposed");
         }
 
-        // 1b. --require-ack turns the same run into a failure.
+        // 1b. --require-ack turns the same run into a failure *after* the transfer.
+        //     It must be combined with an explicit --ack-mode lenient: the CLI/MCP default is
+        //     strict since v2.4.15, and strict aborts the upload at the first missing ACK, so
+        //     the "record everything, fail at the end" contract only exists under lenient.
         using var silent2 = new FakeBootrom("silent");
         (code, stdout, stderr) = Run("vcom-unlock", "--cpu", "hisi990", "--yes", "--json", "--require-ack",
+            "--ack-mode", "lenient",
             "--ack-timeout", "1", "--stage-only", "null", "--no-frame-log",
             "--port", silent2.SlavePath, "--loader-dir", loaderRoot);
         Check(code == 3, $"--require-ack + silence exits 3 (got {code}); stderr: {stderr.Trim()}");
@@ -176,7 +199,10 @@ try
     // ---------- 2. exactly one frame missing its ACK ----------
     {
         using var flaky = new FakeBootrom("one-bad");
+        // Explicit lenient, for the same reason as 1b: the default (strict) would abort the
+        // transfer on the first bad ACK instead of counting it and failing at the end.
         (int code, string stdout, string stderr) = Run("vcom-unlock", "--cpu", "hisi990", "--yes", "--json", "--require-ack",
+            "--ack-mode", "lenient",
             "--ack-timeout", "2", "--stage-only", "null", "--no-frame-log",
             "--port", flaky.SlavePath, "--loader-dir", loaderRoot);
         Check(code == 3, $"one bad ACK + --require-ack exits 3 (got {code}); stderr: {stderr.Trim()}");
