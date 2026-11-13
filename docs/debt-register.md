@@ -7,6 +7,23 @@
 审计报告本身是只读快照（`35c6f6b`），只记录「当时有什么问题」。本文件是它的**状态侧**，逐条给证据。
 没有证据的条目不写「已修」——不确定的一律标 `unknown` 并写清缺什么证据。
 
+
+## v2.4.15 变更（2026-11-13）
+
+- **D-01 → fixed-in-2.4.15**：`oeminfo` 拆成 `oeminfo-convert`（PlanOnly，只在本机构造镜像）与
+  `oeminfo-flash`（Write + 红线 + 不可逆 + 手输确认串）。GUI 的 `HandleOemInfoFlash` 先过
+  `RequestGuiApprovalAsync`，再走 `DeviceWriteOps.FlashOemInfoAsync(ticket, path)`；CLI/MCP 同名
+  能力同步。注册表不再谎报 PlanOnly，`SurfaceParity` 的 H1/H3/H7 会拦住任何回退。
+- **D-02 → fixed-in-2.4.15**：`WriteResult` 只接受调用点构造的 `WriteReport`（Applied / Partial /
+  Failed / Unconfirmed），没有默认 `true`。9 个写命令 + `flash-ota`/`flash-xml` 的 JSON 全部取设备
+  真实结论；`tests/WriteGates` 用桩断言失败时 `applied=false, gate=failed`。
+- **D-03 → fixed-in-2.4.15**：CLI/MCP 的 `write-sn` 写后读回 `nve:SN`，用 `NveWriteCheck.Compare`
+  出 verdict（`verified / reason / readBack`），只有读回一致才 exit 0。
+- **日志已合流（v2.4.15）**：一次操作 = `sessions/<ts>-<pid>-<op>/`（`session.jsonl` + `vcom-trace.txt`
+  + `summary.json`），新增只读 `logs list|show|path`；旧 `{vcom,fastboot,flash}/*.jsonl` 只读兼容。
+- **仍未修**：`D-04`（USB Update 成功判据虚）、`D-13`（`downgrade-enable` GUI 直写且绕闸门，形状同
+  D-01）——两者都已单独立 lane 处理。
+
 ## 0. 口径
 
 | 状态 | 含义 |
@@ -55,9 +72,9 @@
 
 | # | 编号 | 摘要 | 状态 | 证据 / 为什么还是债 |
 | :--- | :--- | :--- | :--- | :--- |
-| D-01 | BB-05 / S19 / F05 / P20 | **GUI「Convert OEMInfo」的直写分支仍然直写设备**（`oeminfoerase-disablewp` + `oeminfowrite-KTModel@/KTVendor@`），既不经过审批闸门，也没有 CLI/MCP 对应物；而注册表把 `oeminfo` 声明成 `PlanOnly` → 三面契约与现实矛盾 | open | GUI 直写 `MainWindow.axaml.cs:2526,2533,2554`，分支入口 `:2500`（`useDirectCommand`）；`BtnConvertOem_Click`（`:2485`）直到 `:2570` 之间没有任何 `RequestGuiApprovalAsync`/`ConfirmRedlineWriteAsync`（闸门只出现在 `:1517,1602,1846,1888,2030,2227,2409,2675,3039`，其中 `:2675` 属另一条「转换后 Flash Back」路径 `FlashOemInfoToDevice`）；注册表 `CapabilityRegistry.cs:105-108`；`oeminfoerase-disablewp` 返回值被丢弃（S19）。**误判后果**：读文档/注册表的人以为 oeminfo 只出计划，实际 GUI 一点就写；写 SN/FRP 都要手输确认串，这里连普通确认都没有 |
-| D-02 | F07 | 所有新写命令共用 `WriteResult`，**无条件**输出 `applied=true, gate="applied", exitCode=0`，即使 `result.success=false` | open | `Cli/Commands/DeviceWriteCommands.cs:118-133`。**误判后果**：只读 `applied`/`gate`/`exitCode` 字段的 AI 会把失败写当成功（这是审计 F07 的更严重版本，覆盖面从 flash 扩到全部写命令） |
-| D-03 | F04 残余（CLI/MCP 侧） | `write-sn` 的 CLI/MCP 路径**没有读回比对**，只有 fastboot 退出码 | open | `Cli/Commands/DeviceWriteCommands.cs:210` 原文 "no read-back check is available on this path"；GUI 侧已有（§1）。**误判后果**：同一个能力在 GUI 会报「未确认」，在 CLI/MCP 报成功 |
+| D-01 | BB-05 / S19 / F05 / P20 | **GUI「Convert OEMInfo」的直写分支仍然直写设备**（`oeminfoerase-disablewp` + `oeminfowrite-KTModel@/KTVendor@`），既不经过审批闸门，也没有 CLI/MCP 对应物；而注册表把 `oeminfo` 声明成 `PlanOnly` → 三面契约与现实矛盾 | fixed-in-2.4.15 | GUI 直写 `MainWindow.axaml.cs:2526,2533,2554`，分支入口 `:2500`（`useDirectCommand`）；`BtnConvertOem_Click`（`:2485`）直到 `:2570` 之间没有任何 `RequestGuiApprovalAsync`/`ConfirmRedlineWriteAsync`（闸门只出现在 `:1517,1602,1846,1888,2030,2227,2409,2675,3039`，其中 `:2675` 属另一条「转换后 Flash Back」路径 `FlashOemInfoToDevice`）；注册表 `CapabilityRegistry.cs:105-108`；`oeminfoerase-disablewp` 返回值被丢弃（S19）。**误判后果**：读文档/注册表的人以为 oeminfo 只出计划，实际 GUI 一点就写；写 SN/FRP 都要手输确认串，这里连普通确认都没有 |
+| D-02 | F07 | 所有新写命令共用 `WriteResult`，**无条件**输出 `applied=true, gate="applied", exitCode=0`，即使 `result.success=false` | fixed-in-2.4.15 | `Cli/Commands/DeviceWriteCommands.cs:118-133`。**误判后果**：只读 `applied`/`gate`/`exitCode` 字段的 AI 会把失败写当成功（这是审计 F07 的更严重版本，覆盖面从 flash 扩到全部写命令） |
+| D-03 | F04 残余（CLI/MCP 侧） | `write-sn` 的 CLI/MCP 路径**没有读回比对**，只有 fastboot 退出码 | fixed-in-2.4.15 | `Cli/Commands/DeviceWriteCommands.cs:210` 原文 "no read-back check is available on this path"；GUI 侧已有（§1）。**误判后果**：同一个能力在 GUI 会报「未确认」，在 CLI/MCP 报成功 |
 | D-04 | F10 / S03 / S04 / S06 / S07 / S09 / F13 | USB Update 通道的成功判据仍然虚：握手 3 次失败只写一行日志继续；缺 `.img`/`.img.header`/0 字节的分区 `continue` 且不计失败；读到 0 字节 `break` 后 `return null`（=成功）；`if (success) … else { }` 空分支 | open | `Services/USBUpdate/UsbDownloadService.cs:187-211`（握手 void + "continuing the existing protocol sequence"）、`:303-320`（三处 `continue`）、`:406`（`if (bytesRead == 0) break;`）、`:99-110`（空 else）。**误判后果**：`FlashPartitions` 返回 true 时设备可能一片没写，GUI 仍显示 completed |
 | D-05 | F03 / S17 | GUI 把被跳过的分区计成成功：`CompletePartition(..., true, "Skipped")` 且 `successCount++` → 「Successfully flashed all N partitions!」恒成立 | open | `MainWindow.axaml.cs:637-638`、`:698-701`。CLI 侧已有 `OtaPlan.Skipped` 单列（`Cli/Commands/OtaFlashRunner.cs:32,212`），GUI 没有 |
 | D-06 | H20 / H23 | pwn 后跳转的 `xloaderStart` 与漏洞 `returnAddr` 仍是 `switch` 里的裸字面量，与 `CpuAddresses` 表分离，无法外置/审查 | open | `Services/VcomFlasher.cs:213-222`、`:239-247`。审计定为「变砖级」字面量，改一个字节即换行为；外置表尚未做 |
