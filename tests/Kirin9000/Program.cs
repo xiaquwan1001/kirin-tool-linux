@@ -59,14 +59,29 @@ try {
   using var w=new BinaryWriter(File.Create(path)); w.Write(new byte[12]);
   foreach(string name in names) { w.Write(new byte[]{0x55,0xaa,0x5a,0xa5});w.Write(102);w.Write(0);w.Write(System.Text.Encoding.ASCII.GetBytes("HWTEST00"));w.Write(0);w.Write(4u);w.Write(new byte[32]);var bytes=new byte[32];System.Text.Encoding.ASCII.GetBytes(name).CopyTo(bytes,0);w.Write(bytes);w.Write(new byte[10]);w.Write(new byte[4]);while(w.BaseStream.Position%4!=0)w.Write((byte)0); }
  }
- void PumpUntil(Func<bool> ready) {var until=DateTime.UtcNow.AddSeconds(45);while(!ready()){Dispatcher.UIThread.RunJobs();if(DateTime.UtcNow>until)throw new Exception("Stub rescue timed out");Thread.Sleep(10);}Dispatcher.UIThread.RunJobs();} // 45s: the pre-op backup runs first and may spawn dump attempts
+ void PumpUntil(Func<bool> ready,int seconds=45) {var until=DateTime.UtcNow.AddSeconds(seconds);while(!ready()){Dispatcher.UIThread.RunJobs();if(DateTime.UtcNow>until)throw new Exception("Stub rescue timed out; owned windows: ["+string.Join(", ",owner.OwnedWindows.Select(w=>w.GetType().Name+":"+w.Title))+"]");Thread.Sleep(10);}Dispatcher.UIThread.RunJobs();} // 45s: the pre-op backup runs first and may spawn dump attempts
  foreach(bool complete in new[]{false,true}) {
   File.WriteAllText(calls,"");string app=Path.Combine(fixtureDir,"UPDATE.APP");
   Fixture(app,complete?new[]{"ERECOVERY","ERECOVERY_RAMDISK","ERECOVERY_VENDOR"}:new[]{"ERECOVERY_RAMDISK","ERECOVERY_VENDOR"});
   owner.UsbUpdateFile.FilePath=app;
   var task=(Task)typeof(MainWindow).GetMethod("HandleRebootToUsbUpdate",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(owner,[])!;
-  PumpUntil(()=>owner.OwnedWindows.Any());var progress=(Kirin_Tool.UI.ProcessDialogUapp)owner.OwnedWindows.Single();
-  PumpUntil(()=>progress.FindControl<Button>("CloseButton")!.IsVisible);
+  // The approval gate answers first now: the rescue write is redline + irreversible, so the dialog
+  // only unlocks the approve button once the per-capability confirm phrase is typed.
+  PumpUntil(()=>owner.OwnedWindows.Any());
+  void ApproveIfAsked(string phrase) {
+   var approval=owner.OwnedWindows.FirstOrDefault(w=>w.Title?.StartsWith("Approve write:",StringComparison.Ordinal)==true);
+   if(approval==null) return;
+   var box=approval.GetVisualDescendants().OfType<TextBox>().FirstOrDefault();
+   if(box!=null){box.Text=phrase;Dispatcher.UIThread.RunJobs();}
+   var approve=approval.GetVisualDescendants().OfType<Button>().First(b=>b.Content?.ToString()=="Approve once");
+   Check(approve.IsEnabled,"redline approve button unlocks only after the confirm phrase is typed");
+   approve.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Dispatcher.UIThread.RunJobs();
+  }
+  ApproveIfAsked("I UNDERSTAND reboot-usb-update");
+  PumpUntil(()=>owner.OwnedWindows.Any(w=>w.GetType().Name=="ProcessDialogUapp"));
+  var progress=(Kirin_Tool.UI.ProcessDialogUapp)owner.OwnedWindows.Single();
+  try { PumpUntil(()=>progress.FindControl<Button>("CloseButton")!.IsVisible,60); }
+  catch(Exception ex) { throw new Exception(ex.Message+" | status="+progress.CurrentOperationText+" | calls="+File.ReadAllText(calls).Replace("\n"," ")+" | taskDone="+task.IsCompleted); }
   var argv=File.ReadAllLines(calls).Select(line=>System.Text.Json.JsonSerializer.Deserialize<string[]>(line)!).ToArray();
   if(!complete) {Check(!argv.Any(a=>a.Contains("flash")),"missing combined ERECOVERY prevents all writes");Check(progress.CurrentOperationText.Contains("no images flashed"),"missing-image result clearly reported");}
   else {Check(argv.Where(a=>a.Contains("flash")).Select(a=>a[1]).SequenceEqual(new[]{"rescue_recovery","rescue_recovery_ramdisk","rescue_recovery_vendor"}),"real handler dispatches experimental rescue aliases");Check(progress.GetVisualDescendants().OfType<TextBlock>().Any(t=>t.Text?.Contains("partition length get error")==true),"bootloader failure shown in progress rows");Check(!argv.Any(a=>a.Contains("rescue_enter_recovery")),"failed writes prevent USB Update entry command");}

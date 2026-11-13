@@ -121,8 +121,9 @@ XML 计划是人写的，可能合法使用了只在部分 loader 上成立的�
 
 ## 安全模型
 
-**会写设备：** `flash-ota`、`flash-xml`（CLI/MCP）以及 GUI 的刷写 / USB Update / 救援流程。确认之后
-没有 dry-run。`flash-xml` 跳过 loader 未暴露的标识符，`--strict-names` 则拒绝（exit 3）。
+**会写设备：** 8 条写能力（`flash-ota`、`flash-xml`、`reboot`、`write-sn`、`frp-remove`、
+`unlock-bootloader`、`usb-testpoint`、`reboot-usb-update`），**GUI / CLI / MCP 三个入口都有，且都过同一个审批闸门**。
+确认之后没有 dry-run。`flash-xml` 跳过 loader 未暴露的标识符，`--strict-names` 则拒绝（exit 3）。
 
 **只写内存、不碰分区：** `vcom-unlock` —— 经 VCOM BootROM（`12d1:3609`）装载 loader 链，与 GUI 的
 「Unlock Fastboot」同一实现。需要 `--yes`；`--dry-run` 保持旧的只出计划。hi9xx 在 `null` 与 `XLOADER`
@@ -137,7 +138,20 @@ XML 计划是人写的，可能合法使用了只在部分 loader 上成立的�
 最终结论——事后可对账。GUI 在进度对话框显示路径，CLI 打到 stderr。字段表见
 [docs/cli-vcom-unlock-parity.md §7](docs/cli-vcom-unlock-parity.md)。
 
-**红线分区** 必须由人显式覆盖：CLI 用 `--allow-redline`，GUI 弹窗列出具体分区，MCP 完全不接受。
+**红线分区 / 不可逆写入** 必须由人显式覆盖，而且**不是点一下按钮就算**：
+- GUI：弹窗逐项列出真实 argv 与将被写的分区；红线或不可逆项用红字标出，并要求手输
+  `I UNDERSTAND <能力 id>` 才解锁「Approve once」；另有「Approve for this session」。
+- CLI：`--yes`，红线项再加 `--allow-redline`，**并且**要在交互式 stdin 上键入同一个确认串；
+  stdin 非交互（脚本/CI）直接拒绝并 exit 4，提示改用 GUI 批准。
+- MCP：`confirm:true` 只是「调用方知道这不是 dry-run」，**永远不足以放行**——请求会被推给正在运行的
+  GUI 弹窗，请人在那里批准；GUI 没在跑就返回 `{"error":{"code":"approval_required_human"}}` 并让你改用 CLI。
+  红线覆盖参数 `allow-redline` MCP 一律不接受（`-32602`）。
+
+**AI 发起的写操作怎么批准（重要）。** 让 agent 通过 MCP 发起写操作时，先在这台机器上把 GUI 打开：
+agent 的请求会以审批弹窗的形式出现在 GUI 里，弹窗写明发起方是 `mcp`、真实命令和副作用，由人点批准
+（红线项还要手输确认串）。GUI 不在跑时 agent 只会拿到 `approval_required_human`，不会静默写入。
+每一次批准/拒绝都写一行审计：`~/.local/state/kirin-tool/approvals.jsonl`（可用 `KIRIN_APPROVAL_AUDIT` 改路径）。
+完整设计见 [docs/approval-gate.md](docs/approval-gate.md)。
 
 **闸门信号。** 所有写命令的 `--json` 与所有 MCP 写工具都返回 `gate`：`plan-only`、`refused`（带
 `reason`）、`confirmed`（确认了计划但未写）、`applied`。请按 `gate` 分支，不要只看退出码。
@@ -202,16 +216,16 @@ MCP server（换行分隔 JSON-RPC 2.0 over stdio）：
 }
 ```
 
-工具清单（15 个，1:1 由 CLI 命令表的 `McpName` 生成，没有第二份实现）：
+工具清单（21 个，1:1 由 CLI 命令表的 `McpName` 生成，没有第二份实现）：
 
 | 类型 | 工具名 |
 | :--- | :--- |
 | 只读（10） | `info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`partitions`、`psid`、`capabilities`、`udev` |
-| 真实写入（2） | `flash_ota`、`flash_xml`（要求 `confirm: true`，没有 dry-run） |
+| 真实写入（8） | `flash_ota`、`flash_xml`、`reboot`、`write_sn`、`frp_remove`、`unlock_bootloader`、`usb_testpoint`、`reboot_usb_update`（要求 `confirm: true` **且**在运行中的 GUI 里由人再批一次；没有 dry-run） |
 | 仅规划（3） | `vcom_unlock`、`oeminfo`、`downgrade_enable`（`confirm: true` 也只确认计划，exit 4） |
 
-只读工具共 10 个（`info`…`udev`）、写工具共 5 个（2 真实写入 + 3 仅规划）；写工具一律要求
-`confirm: true`，且永不接受 `allow-redline`。GUI/CLI/MCP 三面的一致性与漂移门禁见
+只读工具共 10 个（`info`…`udev`）、写工具共 11 个（8 真实写入 + 3 仅规划）；写工具一律要求
+`confirm: true`，永不接受 `allow-redline`，且 `confirm` 之后仍要人工带外批准（见[安全模型](#安全模型)）。GUI/CLI/MCP 三面的一致性与漂移门禁见
 [docs/parity-design.md](docs/parity-design.md)，完整命令表与闸门语义见 [docs/cli-mcp.md](docs/cli-mcp.md)。
 
 ## 截图

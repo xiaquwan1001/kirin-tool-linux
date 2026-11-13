@@ -20,7 +20,9 @@
 
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
+using Kirin_Tool.Services.Approval;
 using Kirin_Tool.Services.USBUpdate;
+using Kirin_Tool.Services.WriteOperations;
 using Kirin_Tool.UI;
 using Kirin_Tool.Utils;
 
@@ -51,6 +53,11 @@ namespace Kirin_Tool
         private readonly FastbootFlasherService _fastbootFlasherService;
         private readonly USBUpdateFlasherService _usbUpdateFlasherService;
         private readonly SoftwareTestpointService _swTpService;
+        // Approval gate wiring (docs/approval-gate.md): every write handler below asks this gate
+        // before it calls the shared service method, so GUI behaviour matches CLI and MCP.
+        private readonly DeviceWriteOps _deviceWriteOps;
+        private readonly SessionApprovalCache _approvalCache = new();
+        private GuiApprovalServer? _approvalServer;
         private TaskCompletionSource<bool>? _globalInteractionTcs;
 
         public FullOtaFile BasePtableFile { get; set; } = new FullOtaFile { FileType = "BasePtable", DisplayName = "Base PTABLE" };
@@ -159,7 +166,11 @@ namespace Kirin_Tool
                 async (title, message) => await ShowGlobalInteractionPromptAsync($"{title}: {message}")
             );
 
-            Closed += (_, _) => _extractionCancellation?.Cancel();
+            // Resolve _fastbootClient per call: the field is swappable (tests inject a stub binary).
+            _deviceWriteOps = new DeviceWriteOps(() => _fastbootClient, _swTpService);
+            StartApprovalGate();
+
+            Closed += (_, _) => { _extractionCancellation?.Cancel(); _approvalServer?.Dispose(); };
             Opened += async (_, _) => await RefreshUdevNoticeAsync();
             Activated += async (_, _) => await RefreshUdevNoticeAsync();
             SetupNavigationItemHandlers();
@@ -1500,6 +1511,14 @@ namespace Kirin_Tool
                 return;
             }
 
+            // VCOM loader injection writes BootROM RAM through the same service the CLI/MCP
+            // face uses, so it must pass the shared approval gate first (docs/approval-gate.md).
+            ApprovalAdmission? admission = await RequestGuiApprovalAsync(ApprovalRequests.For(
+                "vcom-unlock",
+                argv: new[] { "vcom-unlock", "--cpu", cpu },
+                targets: FirmwareUnlocker.CpuAddresses[cpu].Select(static p => p.Name)));
+            if (admission == null) return;
+
             if (cpu == "hisi820" || cpu == "hisi985")
             {
                 var warningResult = await _dialogService.ShowConfirmDialog(
@@ -1551,6 +1570,14 @@ namespace Kirin_Tool
                 return;
             }
 
+            // XLOADER is rewritten by this path, so it goes through the approval gate first
+            // (redline/irreversible => typed confirm phrase in the dialog).
+            ApprovalAdmission? admission = await RequestGuiApprovalAsync(ApprovalRequests.For(
+                "usb-testpoint",
+                argv: new[] { enter ? "sw-testpoint-enter" : "sw-testpoint-exit", SwTpUpdateFile.FilePath },
+                targets: new[] { "XLOADER" }));
+            if (admission == null) return;
+
             // The service returns normally only on its success path and throws on every failure
             // path (patch verification, VCOM transfer result, fastboot flash), so "no exception"
             // is the service's verdict - not a dialog default. It still does not prove that the
@@ -1560,7 +1587,7 @@ namespace Kirin_Tool
             {
                 if (enter)
                 {
-                    await _swTpService.EnterSoftwareTestpoint(SwTpUpdateFile.FilePath);
+                    await _deviceWriteOps.SoftwareTestpointAsync(admission.RequireTicket(), true, SwTpUpdateFile.FilePath);
                     await ShowMessageBox("Transfer Completed - Mode Unknown",
                         "The software-testpoint XLOADER transfer returned without an error report from the service.\n\n" +
                         "Whether the device actually switched to VCOM mode is Unknown from here: while the device sits in VCOM " +
@@ -1576,7 +1603,7 @@ namespace Kirin_Tool
                         return;
                     }
 
-                    await _swTpService.ExitSoftwareTestpoint(SwTpUpdateFile.FilePath);
+                    await _deviceWriteOps.SoftwareTestpointAsync(admission.RequireTicket(), false, SwTpUpdateFile.FilePath);
 
                     // The service only checks the flash exit code, so read the device back before
                     // claiming the XLOADER restore worked.
@@ -1724,20 +1751,78 @@ namespace Kirin_Tool
         /// when the pending set touches a redline partition and the user does not explicitly
         /// confirm THIS operation; the confirmation is never remembered between operations.
         /// </summary>
-        private async Task<bool> ConfirmRedlineWriteAsync(IEnumerable<string> partitionNames, string operation)
+        /// <summary>
+        /// Installs the GUI approval gate and the IPC channel that lets an MCP client hand its
+        /// request to this window (docs/approval-gate.md §3.3). The IPC handler runs the very same
+        /// gate the buttons use, on the UI thread, so an MCP-originated write is approved by the
+        /// same dialog, and lands in the same audit trail).
+        /// </summary>
+        private void StartApprovalGate()
         {
-            var hits = RedlinePartitionHits(partitionNames);
-            if (hits.Count == 0) return true;
+            ApprovalGates.Install(new GuiApprovalGate(new AvaloniaApprovalPrompt(_dialogService), _approvalCache));
 
-            string message =
-                $"{operation} would write {hits.Count} device-keyed (redline) partition(s):\n\n" +
-                string.Join("\n", hits.Select(name => $"- {name}")) +
-                "\n\nThese partitions carry the device identity, baseband calibration and key/DRM material. " +
-                "A wrong image is unrecoverable without a verified backup and can brick the device or permanently break the modem.\n\n" +
-                "Nothing has been written yet. Continue only if you have a verified backup of these partitions.";
+            _approvalServer = new GuiApprovalServer(async (request, cancellationToken) =>
+                await Dispatcher.UIThread.InvokeAsync(async () =>
+                {
+                    // Origin stays "mcp" in the request so the dialog and the audit line show who
+                    // asked; the gate that answers it is this window's GUI gate.
+                    ApprovalDecision decision = await ApprovalGates.Current.RequestAsync(request, cancellationToken);
+                    return decision switch
+                    {
+                        ApprovalDecision.Approved approved => new GuiApprovalAnswer(
+                            approved.Scope == ApprovalScope.Session ? ApprovalPromptOutcome.ApprovedForSession : ApprovalPromptOutcome.Approved,
+                            TypedConfirm: request.RequiresTypedConfirm,
+                            Reason: null,
+                            Scope: approved.Scope),
+                        ApprovalDecision.TimedOut => new GuiApprovalAnswer(ApprovalPromptOutcome.TimedOut),
+                        ApprovalDecision.Denied denied => new GuiApprovalAnswer(ApprovalPromptOutcome.Denied, false, denied.Reason),
+                        ApprovalDecision.NotSupported notSupported => new GuiApprovalAnswer(ApprovalPromptOutcome.Denied, false, notSupported.Instruction),
+                        _ => new GuiApprovalAnswer(ApprovalPromptOutcome.Denied, false, "not approved"),
+                    };
+                }));
 
-            bool confirmed = await _dialogService.ShowConfirmDialog("Redline Partition Write", message, "Write Anyway", "Cancel");
-            return confirmed;
+            if (_approvalServer?.Start() != true)
+                ProcessRunner.WriteDiagnostic("ApprovalGate", "GUI approval IPC channel could not be started; MCP clients will be told to use the CLI.");
+        }
+
+        /// <summary>
+        /// The single GUI gate helper: ask, and on refusal tell the user why instead of silently
+        /// returning. Every write handler in this file goes through here.
+        /// </summary>
+        private async Task<ApprovalAdmission?> RequestGuiApprovalAsync(ApprovalRequest request)
+        {
+            ApprovalAdmission admission = await ApprovalGuard.AdmitAsync(request);
+            if (admission.IsApproved) return admission;
+
+            await ShowMessageBox("Approval Required", ApprovalText.Describe(admission.Decision));
+            return null;
+        }
+
+        /// <summary>
+        /// Redline-capable flash paths (Full OTA / flashing XML / USB Update / rescue / oeminfo)
+        /// share this funnel: one gate request that lists the partitions about to be written.
+        /// </summary>
+        private async Task<bool> ConfirmRedlineWriteAsync(IEnumerable<string> partitionNames, string operation, string capabilityId = "flash-ota")
+        {
+            var names = partitionNames.Where(name => !string.IsNullOrWhiteSpace(name)).Distinct().ToList();
+            var hits = RedlinePartitionHits(names);
+
+            var summary = new List<string>
+            {
+                operation,
+                hits.Count == 0
+                    ? "no redline partition in this plan"
+                    : $"{hits.Count} device-keyed (redline) partition(s): {string.Join(", ", hits)}",
+                "pre-op backup runs before the first write",
+            };
+
+            ApprovalAdmission? admission = await RequestGuiApprovalAsync(ApprovalRequests.For(
+                capabilityId,
+                argv: new[] { "fastboot", "flash", "<selected partitions>", operation },
+                targets: names,
+                summary: summary));
+
+            return admission != null;
         }
 
         private bool IsSecurePartition(string name, string identifier)
@@ -1771,16 +1856,13 @@ namespace Kirin_Tool
 
         private async Task HandleFrpRemove()
         {
-            // Irreversible erase: ask before the first erase command is sent.
-            bool confirmed = await _dialogService.ShowConfirmDialog(
-                "FRP Lock Removal",
-                "This will PERMANENTLY erase FRP-related data. The following commands run in order:\n\n" +
-                "  1. erase frp\n" +
-                "  2. erase config\n" +
-                "  3. oem frp-erase\n\n" +
-                "The erased data cannot be recovered. Continue only if you accept this.",
-                "Erase Permanently", "Cancel");
-            if (!confirmed)
+            // Irreversible erase: the approval gate asks before the first erase command is sent,
+            // and because frp/config are redline targets it requires the typed confirm phrase.
+            ApprovalAdmission? admission = await RequestGuiApprovalAsync(ApprovalRequests.For(
+                "frp-remove",
+                argv: new[] { "fastboot", "erase", "frp", "erase", "config", "oem", "frp-erase" },
+                targets: new[] { "frp", "config" }));
+            if (admission == null)
             {
                 await ShowMessageBox("Cancelled", "FRP Lock removal aborted; nothing was erased.");
                 return;
@@ -1791,7 +1873,7 @@ namespace Kirin_Tool
 
             frpDialog.UpdateOverallStatus("Starting FRP Lock removal...");
 
-            var frpResult = await _fastbootClient.EraseFrpWithSteps();
+            var frpResult = await _deviceWriteOps.FrpEraseAsync(admission.RequireTicket());
 
             // A step only counts when fastboot exited 0 AND printed OKAY; that check lives in
             // FastbootClient.EraseFrpWithSteps, the dialog never defaults to success.
@@ -1918,8 +2000,12 @@ namespace Kirin_Tool
             var rescuePlan = RescuePartitionPlan.ForChip(GetSelectedCpu());
             var rescuePartitions = rescuePlan.Select(entry => entry.Image).ToList();
 
-            bool allowRedlineRescue = await ConfirmRedlineWriteAsync(rescuePartitions, "The rescue image flash");
-            if (!allowRedlineRescue)
+            ApprovalAdmission? rescueAdmission = await RequestGuiApprovalAsync(ApprovalRequests.For(
+                "reboot-usb-update",
+                argv: new[] { "fastboot", "flash", "<rescue partitions>", UsbUpdateFile.FilePath, "getvar", "rescue_enter_recovery" },
+                targets: rescuePartitions.ToArray(),
+                touchesRedline: true));
+            if (rescueAdmission == null)
             {
                 return;
             }
@@ -2003,13 +2089,9 @@ namespace Kirin_Tool
                             continue;
                         }
 
-                        if (!allowRedlineRescue && IsRedlinePartition(pName))
-                        {
-                            progressDialog.CompletePartitionByIndex(i, false, "Blocked: redline partition");
-                            allSuccess = false;
-                            continue;
-                        }
-
+                        // The redline check that used to live here is now the approval gate above:
+                        // the rescue partitions are declared as redline targets in the request, so a
+                        // decline stops the whole operation before any image is extracted.
                         progressDialog.UpdateCurrentPartitionByIndex(i, "Extracting...", 30);
                         string imgPath = Path.Combine(tempDir, $"{pName}.img");
                         await updateApp.ExtractPartition(pInfo, imgPath);
@@ -2017,7 +2099,7 @@ namespace Kirin_Tool
                         progressDialog.UpdateCurrentPartitionByIndex(i, "Flashing...", 70);
                         string flashCmd = rescuePlan[i].Target;
 
-                        var flashResult = await _fastbootClient.FlashPartition(flashCmd, imgPath);
+                        var flashResult = await _deviceWriteOps.FlashRescuePartitionAsync(rescueAdmission.RequireTicket(), flashCmd, imgPath);
                         // Exit code 0 alone is not proof: a write only counts when the
                         // fastboot client printed OKAY for it.
                         bool flashConfirmed = flashResult.IsSuccess &&
@@ -2037,8 +2119,7 @@ namespace Kirin_Tool
                 if (allSuccess)
                 {
                     progressDialog.UpdateCurrentOperation("Rebooting to USB Update mode...");
-                    await _fastbootClient.GetVarAsync("rescue_ugs_port");
-                    var finalResult = await _fastbootClient.GetVarAsync("rescue_enter_recovery");
+                    var finalResult = await _deviceWriteOps.EnterUsbUpdateModeAsync(rescueAdmission.RequireTicket());
 
                     // Rescue partitions were written, but entering USB Update mode is a separate
                     // event. "This is sec phone!!" / "start to hisuite" are banners the loader
@@ -2115,20 +2196,24 @@ namespace Kirin_Tool
             try { currentSn = await _fastbootClient.ReadNveVariable("SN"); }
             catch { currentSn = "(read failed)"; }
 
-            string confirmMessage =
-                "This PERMANENTLY rewrites the NVE serial number. This change is NOT recoverable " +
-                "without a verified backup of the original value.\n\n" +
-                $"Current SN: {currentSn}\n" +
-                $"New SN:     {newSn}\n\n" +
-                "Write the new serial number now?";
-            bool confirmed = await _dialogService.ShowConfirmDialog("Write Serial Number", confirmMessage, "Write Permanently", "Cancel");
-            if (!confirmed)
+            // Approval gate (redline + irreversible => the dialog demands the confirm phrase typed).
+            ApprovalAdmission? admission = await RequestGuiApprovalAsync(ApprovalRequests.For(
+                "write-sn",
+                argv: new[] { "fastboot", "getvar", "nve:SN@" + newSn },
+                targets: new[] { "nve:SN" },
+                summary: new[]
+                {
+                    "PERMANENTLY rewrites the NVE serial number (identity field); not recoverable without a verified backup",
+                    "current SN: " + currentSn,
+                    "new SN: " + newSn,
+                }));
+            if (admission == null)
             {
                 await ShowMessageBox("Cancelled", "Serial number write aborted; nothing was changed.");
                 return;
             }
 
-            var writeResult = await _fastbootClient.WriteNveVariable("SN", newSn);
+            var writeResult = await _deviceWriteOps.WriteSerialNumberAsync(admission.RequireTicket(), newSn);
             await ShowMessageBox(
                 writeResult.IsSuccess ? "Success" : "Error",
                 writeResult.IsSuccess ? "Successfully rewrote the device's serial number!" : "Failed to rewrite the device's serial number!"
@@ -2280,6 +2365,12 @@ namespace Kirin_Tool
                 return;
             }
 
+            ApprovalAdmission? admission = await RequestGuiApprovalAsync(ApprovalRequests.For(
+                "unlock-bootloader",
+                argv: new[] { "fastboot", "oem", "unlock" },
+                targets: new[] { "bootloader-lock-state", "arb" }));
+            if (admission == null) return;
+
             try
             {
                 string fullOutput = string.Empty;
@@ -2300,7 +2391,7 @@ namespace Kirin_Tool
                     }
                 });
 
-                var unlockTask = _fastbootClient.UnlockBootloaderAsync(progress);
+                var unlockTask = _deviceWriteOps.UnlockBootloaderAsync(admission.RequireTicket(), progress);
 
                 var firstCompleted = await Task.WhenAny(unlockTask, alreadyUnlockedDetected.Task, Task.Delay(2000));
                 bool outcomeKnown = firstCompleted == unlockTask || firstCompleted == alreadyUnlockedDetected.Task;
@@ -2904,7 +2995,12 @@ namespace Kirin_Tool
                     return;
                 }
 
-                var result = await _fastbootClient.RebootAsync();
+                ApprovalAdmission? admission = await RequestGuiApprovalAsync(ApprovalRequests.For(
+                    "reboot",
+                    argv: new[] { "fastboot", "reboot" }));
+                if (admission == null) return;
+
+                var result = await _deviceWriteOps.RebootAsync(admission.RequireTicket());
                 if (result.IsSuccess)
                 {
                     await ShowMessageBox("Success", "Rebooted successfully!");
