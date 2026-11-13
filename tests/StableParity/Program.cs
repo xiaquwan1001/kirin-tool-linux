@@ -66,7 +66,7 @@ try {
     }
     string fake=dir+"/fake-fastboot";
     File.WriteAllText(fake,"#!/usr/bin/python3\nimport sys,json\nprint(json.dumps(sys.argv[1:]))\nsys.exit(7)\n");
-    File.SetUnixFileMode(fake,UnixFileMode.UserRead|UnixFileMode.UserWrite|UnixFileMode.UserExecute);
+    if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(fake,UnixFileMode.UserRead|UnixFileMode.UserWrite|UnixFileMode.UserExecute);
     var fb=new FastbootClient(fake);string unusual=dir+"/image with spaces and \\\"quote.img";
     var result=await fb.FlashPartition("system",unusual);
     Check(result.ExitCode==7,"flash process exit preserved");

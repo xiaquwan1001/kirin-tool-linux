@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Kirin_Tool;
@@ -66,7 +67,7 @@ try {
  window.FindControl<Button>("CopyUdevCommandsButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
  Dispatcher.UIThread.RunJobs();
  Check(window.FindControl<TextBlock>("UdevCopyStatus")!.Text=="Commands copied","actual copy button updates status");
- Check(window.Clipboard!.GetTextAsync().GetAwaiter().GetResult()==UdevRuleNotice.ApplyCommands,"clipboard receives complete commands");
+ Check(window.Clipboard!.TryGetTextAsync().GetAwaiter().GetResult()==UdevRuleNotice.ApplyCommands,"clipboard receives complete commands");
  render.Invoke(window,[new UdevRuleCoverage(true,true,false)]);
  Check(!notice.IsVisible,"existing complete rules hide AppImage notice");
  render.Invoke(window,[new UdevRuleCoverage(true,true,true)]);
