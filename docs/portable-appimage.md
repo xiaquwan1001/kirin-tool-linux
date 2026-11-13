@@ -1,5 +1,16 @@
 # Portable AppImage
 
+Build-image policy (2026-11): the release container stays `ubuntu:20.04` (glibc 2.31)
+even though the *runner host* is now pinned to `ubuntu-24.04`. Aligning the container
+itself to 24.04 would raise the floor to glibc 2.39 and invalidate every "runs on an old
+distro" claim for the AppImage, the deb and the static CLI - that is a product support
+decision, not CI hygiene, so it is not part of a workflow cleanup. 20.04 is EOL upstream,
+but it is only a build sandbox here: nothing from that image runs on a user's machine, and
+`packaging/check-portable-elf.py` still enforces the 2.31 floor. If the floor is ever
+raised on purpose, do it in one commit: base image, `check-portable-elf.py`, this document,
+the dependency floor in [fork-release.md](fork-release.md) and the release notes
+(`debian:bullseye` is the only still-supported base that keeps 2.31).
+
 Version 2.4.8 retains the portable.1 build baseline. Build in
 Ubuntu 20.04 / glibc 2.31 with baseline x86-64 flags, not on the rolling-release
 host. No x86-64-v3/AVX2 requirement is introduced by the native client/USB bridge.

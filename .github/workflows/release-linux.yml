@@ -32,7 +32,7 @@ defaults:
 jobs:
   build:
     name: build binaries + deb + AppImage (glibc 2.31)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: ubuntu:20.04
     timeout-minutes: 120
@@ -56,9 +56,9 @@ jobs:
             python3 curl ca-certificates git dpkg xz-utils rsync file \
             libicu66 libssl1.1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -154,7 +154,7 @@ jobs:
           test -x "$D/KirinTool.Cli"
           "$D/KirinTool.Cli" version
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kirin-tool-linux-release-${{ github.sha }}
           path: dist/
@@ -165,10 +165,10 @@ jobs:
     name: attach artifacts to GitHub release
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: kirin-tool-linux-release-${{ github.sha }}
           path: dist

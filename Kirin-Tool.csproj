@@ -13,6 +13,10 @@
          (found by the 2.4.15 real-device smoke test). tests/VersionMetadata guards this. -->
     <Version>2.4.16</Version>
     <ApplicationIcon>logo.ico</ApplicationIcon>
+    <!-- Warning budget (batch A of the 2026-11 cleanup, docs/warnings-policy.md): these
+         codes are at zero and must stay there. Nullable leftovers (CS86xx) are not gated
+         yet on purpose - half-cleared categories only teach people to sprinkle '!'. -->
+    <WarningsAsErrors>CS4014;CS0168;CA2022;CA1416</WarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
