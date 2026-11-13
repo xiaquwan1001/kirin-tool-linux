@@ -34,6 +34,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using Avalonia.Controls;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using System.Diagnostics;
 using System.IO;
@@ -293,16 +294,15 @@ namespace Kirin_Tool
                     return;
                 }
 
-                var folderDialog = new OpenFolderDialog
+                var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
                 {
-                    Title = "Select Directory to Save Partitions"
-                };
+                    Title = "Select Directory to Save Partitions",
+                    AllowMultiple = false
+                });
+                if (folders.Count == 0) return;
+                string? saveDirectory = folders[0].TryGetLocalPath();
+                if (string.IsNullOrWhiteSpace(saveDirectory)) return;
 
-                var folderResult = await folderDialog.ShowAsync(this);
-                if (string.IsNullOrWhiteSpace(folderResult))
-                    return;
-
-                var saveDirectory = folderResult;
                 Directory.CreateDirectory(saveDirectory);
 
                 await DumpPartitionsProcess(selectedPartitions, saveDirectory);
@@ -431,7 +431,7 @@ namespace Kirin_Tool
 
                 if (dumpResult.IsSuccess)
                 {
-                    Dispatcher.UIThread.InvokeAsync(() =>
+                    _ = Dispatcher.UIThread.InvokeAsync(() =>
                     {
                         progressDialog.OverallStatusText = $"Successfully dumped all {dumpResult.SuccessCount} partitions!";
                         progressDialog.CurrentOperationText = $"Dumping completed successfully.";
@@ -439,7 +439,7 @@ namespace Kirin_Tool
                 }
                 else
                 {
-                    Dispatcher.UIThread.InvokeAsync(() =>
+                    _ = Dispatcher.UIThread.InvokeAsync(() =>
                     {
                         progressDialog.OverallStatusText = $"Completed with {dumpResult.SuccessCount}/{dumpResult.TotalCount} successful";
                         progressDialog.CurrentOperationText = $"Dumping completed with errors.";
@@ -502,7 +502,7 @@ namespace Kirin_Tool
 
                         progressDialog.UpdateCurrentPartition(partition.Name, "Dumping...", 50);
 
-                        Dispatcher.UIThread.InvokeAsync(() =>
+                        _ = Dispatcher.UIThread.InvokeAsync(() =>
                         {
                             progressDialog.CurrentOperationText = $"Dumping {partition.Name}...";
                         });
@@ -656,7 +656,7 @@ namespace Kirin_Tool
 
                         progressDialog.UpdateCurrentPartition(partition.Name, "Flashing...", 50);
 
-                        Dispatcher.UIThread.InvokeAsync(() =>
+                        _ = Dispatcher.UIThread.InvokeAsync(() =>
                         {
                             progressDialog.CurrentOperationText = $"Flashing {partition.Name}...";
                         });
@@ -771,7 +771,7 @@ namespace Kirin_Tool
             }
         }
 
-        private async void FullOtaFile_PropertyChanged(object sender, PropertyChangedEventArgs e)
+        private async void FullOtaFile_PropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
             // Entry-time snapshot: settings restore starts the parse without
             // letting a bad cached file interrupt startup with a dialog.
@@ -812,8 +812,7 @@ namespace Kirin_Tool
 
         private void SetupEventHandlers()
         {
-            TogLivePull.Checked += TogLivePull_Toggled;
-            TogLivePull.Unchecked += TogLivePull_Toggled;
+            TogLivePull.IsCheckedChanged += TogLivePull_Toggled;
             CpuComboBox.SelectionChanged += CpuComboBox_SelectionChanged;
 
             
@@ -1731,7 +1730,7 @@ namespace Kirin_Tool
                     {
                         File.Delete(outputPath);
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
                     }
                 }
@@ -2840,13 +2839,13 @@ namespace Kirin_Tool
             }
         }
 
-        private void TogLivePull_Toggled(object sender, RoutedEventArgs e)
+        private void TogLivePull_Toggled(object? sender, RoutedEventArgs e)
         {
             FileSelectionPanel.IsEnabled = !(TogLivePull.IsChecked == true);
             if (TogLivePull.IsChecked == true) TxtOemInfoFile.Text = "";
         }
 
-        private void CpuComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private void CpuComboBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
         {
             UpdateOemInfoUI();
             UpdateSecurityUI();
@@ -2949,7 +2948,7 @@ namespace Kirin_Tool
             };
         }
 
-        public event PropertyChangedEventHandler PropertyChanged;
+        public new event PropertyChangedEventHandler? PropertyChanged;
         protected virtual void OnPropertyChanged(string propertyName)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));

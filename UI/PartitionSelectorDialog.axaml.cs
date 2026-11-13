@@ -96,7 +96,7 @@ namespace Kirin_Tool.UI
             this.Closed += OnDialogClosed;
         }
 
-        private void OnPartitionPropertyChanged(object sender, PropertyChangedEventArgs e)
+        private void OnPartitionPropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
             if (e.PropertyName == nameof(PartitionInfo.IsSelected))
             {
@@ -204,7 +204,7 @@ namespace Kirin_Tool.UI
             SelectedPartitions = Partitions?.Where(p => p.IsSelected).ToList() ?? new List<PartitionInfo>();
         }
 
-        private void OnDialogClosed(object sender, EventArgs args)
+        private void OnDialogClosed(object? sender, EventArgs args)
         {
             if (Partitions != null)
             {
@@ -217,7 +217,7 @@ namespace Kirin_Tool.UI
             this.Closed -= OnDialogClosed;
         }
 
-        public event PropertyChangedEventHandler PropertyChanged;
+        public new event PropertyChangedEventHandler? PropertyChanged;
         protected virtual void OnPropertyChanged(string propertyName)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
