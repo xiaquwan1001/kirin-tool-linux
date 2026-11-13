@@ -24,6 +24,7 @@ Every link below is checked with `ls` (no dead entries; `docs/audit/` is a direc
 | [op-logging.md](op-logging.md) | Unified operation log: JSONL field table, where the logs live and how to read them, VCOM session-log integration, migration order, `Process.Start` inventory. |
 | [fork-release.md](fork-release.md) | Fork release pipeline: deb / AppImage / tar.gz / CLI assets, deb layout, ICU/OpenSSL dependency policy, CI map. |
 | [verdict-honesty.md](verdict-honesty.md) | Verdict honesty: when this tool is allowed to say "success" (applied vs verified), VCOM ACK evidence, loader pre-flight, backup gate, NVE read-back, and the test map. |
+| [downgrade-gate.md](downgrade-gate.md) | Downgrade erase gate (D-13): `downgrade-enable` (plan only) vs `downgrade-erase` (redline erase behind the approval gate), the GUI/CLI/MCP wiring, the op log and the test map. |
 | [write-verdict-parity.md](write-verdict-parity.md) | Write/verdict parity fix (D-01/D-02/D-03): the oeminfo write capability split, `applied` taken from real device answers, CLI `write-sn` read-back verdict — and what was still false in v2.4.14. |
 | [cli-vcom-unlock-parity.md](cli-vcom-unlock-parity.md) | `vcom-unlock` GUI↔CLI↔MCP alignment (design, item-by-item table, ACK policies, stage split, session log fields, tests). |
 | [ack-default.md](ack-default.md) | ACK default per entry point: CLI/MCP `strict`, GUI `lenient` — decision, exit/JSON table, migration and rollback. |

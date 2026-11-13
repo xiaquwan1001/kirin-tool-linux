@@ -55,6 +55,9 @@ namespace Kirin_Tool.Services.Diagnostics
 
         /// <summary>Writing a converted oeminfo image back to the device.</summary>
         public const string OemInfoWrite = "oeminfo.write";
+
+        /// <summary>Erasing the oeminfo version fields (4 × oem oeminfoerase-*ver) to allow a downgrade.</summary>
+        public const string DowngradeErase = "downgrade.erase";
     }
 
     /// <summary>Tool/category values used by the op scopes below (they become directory names).</summary>

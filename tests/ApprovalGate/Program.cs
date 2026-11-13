@@ -179,6 +179,39 @@ bool threw = false;
 try { deniedAdmission.RequireTicket(); } catch (InvalidOperationException) { threw = true; }
 Check(threw, "admission: RequireTicket() throws instead of handing out a fake ticket");
 
+// ---------------------------------------------------------------- downgrade-erase (D-13)
+// "Enable Downgrade" erases four oeminfo version fields. The registry used to call that PlanOnly while
+// the GUI erased them with no gate at all, so both halves are pinned here: the request is a redline,
+// irreversible one that needs the typed phrase, and the service method is unreachable without a ticket
+// minted for that exact capability.
+ApprovalRequest DowngradeErase() => ApprovalRequests.For("downgrade-erase",
+    argv: new[] { "fastboot", "oem", "oeminfoerase-amssver" }, targets: new[] { "oeminfo" }, sessionId: sessionId);
+Check(DowngradeErase().Kind == CapabilityApprovalKind.RedlineTypedConfirm, "downgrade-erase: registry declares RedlineTypedConfirm");
+Check(DowngradeErase().RequiresTypedConfirm, "downgrade-erase: a request for it requires the typed confirm phrase");
+Check(DowngradeErase().ConfirmPhrase == "I UNDERSTAND downgrade-erase", "downgrade-erase: confirm phrase is per capability");
+Check(DowngradeErase().Reversibility == ApprovalReversibility.Irreversible, "downgrade-erase: declared irreversible");
+Check(DowngradeErase().TouchesRedline, "downgrade-erase: touches a redline target (oeminfo)");
+Check(CapabilityRegistry.ById("downgrade-erase")?.ServiceMethod == "DeviceWriteOps.EnableDowngradeAsync",
+    "downgrade-erase: names DeviceWriteOps.EnableDowngradeAsync as the service method all faces share");
+Check(CapabilityRegistry.ById("downgrade-enable")?.WriteKind == CapabilityWriteKind.PlanOnly,
+    "downgrade-enable stays PlanOnly (it prints the 4 commands and writes nothing)");
+
+var downgradeOps = new Kirin_Tool.Services.WriteOperations.DeviceWriteOps(new Kirin_Tool.Services.FastbootClient("fastboot"));
+bool withoutTicket = false;
+try { await downgradeOps.EnableDowngradeAsync(null!); }
+catch (InvalidOperationException ex) when (ex.Message.Contains("downgrade-erase", StringComparison.Ordinal)) { withoutTicket = true; }
+Check(withoutTicket, "DeviceWriteOps.EnableDowngradeAsync: without an approved WriteTicket it throws (no bypass)");
+
+var downgradeApprover = new GuiApprovalGate(new ScriptedPrompt(new ApprovalPromptAnswer(ApprovalPromptOutcome.Approved)), null, new MemoryApprovalAuditSink());
+ApprovalGates.Install(downgradeApprover);
+ApprovalAdmission otherCapability = await ApprovalGuard.AdmitAsync(
+    ApprovalRequests.For("reboot", argv: new[] { "fastboot", "reboot" }, targets: Array.Empty<string>(),
+        sessionId: "downgrade-ticket-" + Guid.NewGuid().ToString("n")), CancellationToken.None);
+bool wrongTicket = false;
+try { await downgradeOps.EnableDowngradeAsync(otherCapability.RequireTicket()); }
+catch (InvalidOperationException ex) when (ex.Message.Contains("cannot authorize", StringComparison.Ordinal)) { wrongTicket = true; }
+Check(wrongTicket, "DeviceWriteOps.EnableDowngradeAsync: a 'reboot' ticket cannot authorize the erase");
+
 Console.WriteLine();
 if (failures.Count > 0)
 {

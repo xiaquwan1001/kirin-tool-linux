@@ -42,8 +42,9 @@ kirin-tool-cli flash-ota base.app --yes    # real write of all non-redline parti
 |---|---|---|
 | `flash-ota`、`flash-xml` | **RealWrite** | **真实刷写分区**（MCP 路径没有 dry-run）；红线分区仍需 `--allow-redline`（仅 CLI） |
 | `vcom-unlock` | **RealWrite** | **真实上传 loader 到内存**（不碰任何分区），与 GUI「Unlock Fastboot」同一实现；详见下节 |
-| `oeminfo`、`downgrade-enable` | **PlanOnly** | 只确认计划，**永远不写设备**，一律 exit 4（`oeminfo` 只在宿主机上生成镜像） |
+| `oeminfo`、`downgrade-enable` | **PlanOnly** | 只确认计划，**永远不写设备**，一律 exit 4（`oeminfo` 只在宿主机上生成镜像，`downgrade-enable` 只打印 4 条 `oem oeminfoerase-*ver`） |
 | `oeminfo-flash` | **RealWrite** | **真实写入 oeminfo 分区**（红线、不可逆，需 `--yes --allow-redline` + stdin 手输 `I UNDERSTAND oeminfo-flash`；MCP 侧需 `confirm:true` 且在运行中的 GUI 里带外批准） |
+| `downgrade-erase` | **RealWrite** | **真实擦除 oeminfo 版本字段** `amss/base/cust/preload`（红线、不可逆，需 `--yes --allow-redline` + stdin 手输 `I UNDERSTAND downgrade-erase`；MCP 侧同上）。与 `downgrade-enable` 的关系见 [downgrade-gate.md](downgrade-gate.md) |
 
 无 `--yes` 时打印计划清单，exit 4。`--strict-names` 时若 loader 未暴露计划中的分区/标识符则拒绝执行（exit 3），默认只 warning。
 
@@ -153,7 +154,10 @@ GUI 在进度对话框显示该路径并保留到结束；CLI 把路径打在 st
 `KirinTool.Cli mcp` 或 `Kirin-Tool --mcp`：stdio、**换行分隔的 JSON-RPC 2.0**（每行一条报文），
 日志只写 stderr。支持 `initialize`、`notifications/initialized`、`ping`、`tools/list`、`tools/call`。
 
-工具名：`info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`flash_ota`、`flash_xml`、`vcom_unlock`、`oeminfo`、`oeminfo_flash`、`downgrade_enable`。
+工具名（24）：只读 `info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`partitions`、`psid`、
+`capabilities`、`udev`、`logs`；真实写入 `flash_ota`、`flash_xml`、`vcom_unlock`、`reboot`、
+`write_sn`、`frp_remove`、`unlock_bootloader`、`usb_testpoint`、`reboot_usb_update`、`oeminfo_flash`、
+`downgrade_erase`；仅规划 `oeminfo`、`downgrade_enable`。
 
 `oeminfo_flash` 是设备写（红线/不可逆）：`confirm:true` 只是承认「这不是 dry-run」，真正的批准来自
 运行中的 GUI 弹窗；没有 GUI 时返回 `approval_required_human`，不会自行放行。

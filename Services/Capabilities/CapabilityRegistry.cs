@@ -118,9 +118,21 @@ public static class CapabilityRegistry
             Reversibility: ApprovalReversibility.Irreversible,
             ServiceMethod: "DeviceWriteOps.FlashOemInfoAsync"),
 
-        new("downgrade-enable", "启用降级（OEMINFO 版本擦除）规划", "downgrade-enable", "downgrade_enable", "HandleEnableDowngrade",
+        // downgrade was the same lie as oeminfo (D-13): the CLI/MCP printed a plan while the GUI
+        // erased the four oeminfo version fields without any approval. Two capabilities, one per
+        // outcome; the GUI button is the erase, the plan has no GUI face any more.
+        new("downgrade-enable", "启用降级（OEMINFO 版本擦除）规划", "downgrade-enable", "downgrade_enable", null,
             CapabilityWriteKind.PlanOnly, [],
-            ["只打印 4 条 oem oeminfoerase-* 计划，不擦除", "版本字段擦除不可逆"]),
+            ["只打印 4 条 oem oeminfoerase-* 计划，不擦除",
+             "真正的擦除是另一条能力 downgrade-erase（红线、不可逆、手输确认串）"]),
+
+        new("downgrade-erase", "擦除 OEMINFO 版本字段以启用降级", "downgrade-erase", "downgrade_erase", "HandleEnableDowngrade",
+            CapabilityWriteKind.Write, ["yes", "allow-redline", "json"],
+            ["擦除 oeminfo 版本字段 amss/base/cust/preload（4 × oem oeminfoerase-*ver），不可逆",
+             "OKAY 只证明擦除命令被执行；版本记录是否清空、降级是否真的可行都没有读回验证"],
+            Approval: CapabilityApprovalKind.RedlineTypedConfirm,
+            Reversibility: ApprovalReversibility.Irreversible,
+            ServiceMethod: "DeviceWriteOps.EnableDowngradeAsync"),
 
         // ---------- 红线 / 不可逆写：三面齐备，必须手输确认串 ----------
         new("write-sn", "永久改写 NVE 序列号", "write-sn", "write_sn", "HandleWriteSerialNumber",

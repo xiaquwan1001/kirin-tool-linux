@@ -1953,17 +1953,64 @@ namespace Kirin_Tool
             await dialogTask;
         }
 
+        /// <summary>
+        /// downgrade-erase — the GUI face of capability 'downgrade-erase' (Services/Capabilities/
+        /// CapabilityRegistry.cs). The four oem oeminfoerase-*ver commands are an irreversible redline
+        /// erase of the oeminfo version records, so this handler asks the same approval gate and calls
+        /// the same DeviceWriteOps method as the CLI command and the MCP tool do (D-13, same shape as
+        /// D-01 / HandleOemInfoFlash). The plan-only variant lives in the CLI command downgrade-enable
+        /// and has no GUI face: this button erases, nothing here merely prints a plan.
+        /// </summary>
         private async Task HandleEnableDowngrade()
         {
+            ApprovalAdmission? admission = await RequestGuiApprovalAsync(ApprovalRequests.For(
+                "downgrade-erase",
+                argv: new[]
+                {
+                    "fastboot", "oem", "oeminfoerase-amssver", "oem", "oeminfoerase-basever",
+                    "oem", "oeminfoerase-custver", "oem", "oeminfoerase-preloadver",
+                },
+                targets: new[]
+                {
+                    "oeminfo", "oeminfoerase-amssver", "oeminfoerase-basever",
+                    "oeminfoerase-custver", "oeminfoerase-preloadver",
+                },
+                summary: new[]
+                {
+                    "erases the OEMINFO version fields amss/base/cust/preload (4 x oem oeminfoerase-*ver)",
+                    "oeminfo is a redline partition: this erase cannot be undone by this tool",
+                    "OKAY only proves a command ran; whether a downgrade is now possible is NOT verified",
+                }));
+            if (admission == null)
+            {
+                await ShowMessageBox("Downgrade Cancelled",
+                    "Enable Downgrade was cancelled at the approval gate; no version field was erased.");
+                return;
+            }
+
             var downgradeDialog = new EnableDowngradeStepDialog();
             var dialogTask = _dialogService.ShowDialog(downgradeDialog);
 
             downgradeDialog.UpdateOverallStatus("Starting Enable Downgrade...");
 
-            var result = await _fastbootClient.EnableDowngradeWithSteps();
+            EnableDowngradeResult result;
+            try
+            {
+                // The ticket comes from the gate above: there is no other way into this erase.
+                result = await _deviceWriteOps.EnableDowngradeAsync(admission.RequireTicket());
+            }
+            catch (Exception ex)
+            {
+                downgradeDialog.UpdateOverallStatus("Enable Downgrade failed: " + ex.Message);
+                downgradeDialog.ShowCloseButton(false);
+                await dialogTask;
+                return;
+            }
 
             // A step only counts when fastboot exited 0 AND printed OKAY
             // (FastbootClient.EnableDowngradeWithSteps). See the final line for what that means.
+            // The four delays below are presentation only (audit BB-18): they pace the step rows and
+            // are not part of the write. They are deliberately unchanged by the D-13 gate wiring.
             await Task.Delay(500);
             downgradeDialog.UpdateStepStatus(1, result.Step1Success);
             downgradeDialog.UpdateOverallStatus($"Step 1/4 (oeminfoerase-amssver): {(result.Step1Success ? "OKAY" : "no OKAY")}");

@@ -242,7 +242,7 @@ public async Task<(bool IsSuccess, string Output)> UnlockBootloaderAsync(
   `ok:`/`failed:`/`degraded:`/`skipped:`、verdict 字符串、字节数、dload 目录清单与 `CleanDirectory`）。
 - 接入的 op：`flash.xml`、`flash.ota`、`flash.rescue`、`flash.image`（单镜像兜底）、`backup.preop`、
   `backup.dump`（单分区 dump 兜底）、`usbupdate.flash`、`usbupdate.unpack`、`usbupdate.dload-cleanup`、
-  `oeminfo.read`、`oeminfo.convert`、`oeminfo.write`。
+  `oeminfo.read`、`oeminfo.convert`、`oeminfo.write`、`downgrade.erase`（降级擦除的 4 步，lane G6）。
 - **补上的静默点**（只加记录，不改控制流）：`PreOpBackup` 的 manifest 写入 `catch { return null; }`、
   getvar 身份读取、sha256 计算、部分文件删除失败；`USBUpdateFlasherService`/`SoftwareTestpointService`
   的 `try { Directory.Delete } catch { }`；`OtaFlashRunner` 暂存目录清理；`DeviceWriteOps` 的

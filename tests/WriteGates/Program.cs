@@ -176,6 +176,8 @@ if args[:1] == ["reboot"]:
     answer("FAILED (remote: reboot not allowed)", 1) if mode == "reboot-fail" else answer("OKAY")
 if args[:1] == ["flash"]:
     answer("FAILED (remote: flash write failure)", 1) if mode in ("flash-fail", "flash-all-fail") else answer("OKAY")
+if args[:1] == ["oem"] and len(args) > 1 and args[1].startswith("oeminfoerase-"):
+    answer("FAILED (remote: erase not allowed)", 1) if mode == "erase-fail" else answer("OKAY")
 if args[:1] == ["getvar"] and len(args) > 1:
     variable = args[1]
     if variable.startswith("nve:SN@"):
@@ -312,6 +314,104 @@ stubEnvironment["KIRIN_FASTBOOT"] = stub;
         Check(doc.RootElement.GetProperty("readBack").GetString() == "NEWSERIAL9", "write-sn verified: readBack equals the written value");
     }
 }
+// ---------------------------------------------------------------- 7. D-13: downgrade-erase
+// Enable Downgrade used to erase four oeminfo version fields straight from the GUI with no approval
+// and while the registry called it PlanOnly. Two things are pinned here: the erase command reports the
+// loader's answer honestly (a refused erase is never applied), and the write service refuses a ticket
+// that was minted for another capability.
+{
+    var core = typeof(Kirin_Tool.Services.FastbootClient).Assembly;
+    Type runnerType = core.GetType("Kirin_Tool.Cli.CliRunner")
+        ?? throw new Exception("FAIL Kirin_Tool.Cli.CliRunner is gone");
+    var table = ((System.Collections.IEnumerable)runnerType
+        .GetProperty("Commands", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static)!
+        .GetValue(null)!).Cast<object>().ToList();
+    object command = table.Single(candidate =>
+        (string)candidate.GetType().GetProperty("Name")!.GetValue(candidate)! == "downgrade-erase");
+    MethodInfo execute = command.GetType().GetMethod("ExecuteAsync")
+        ?? throw new Exception("FAIL DowngradeEraseCommand.ExecuteAsync is gone");
+    Type parserType = core.GetType("Kirin_Tool.Cli.ArgParser")
+        ?? throw new Exception("FAIL Kirin_Tool.Cli.ArgParser is gone");
+    MethodInfo parse = parserType.GetMethod("Parse", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static)!;
+    Type contextType = core.GetType("Kirin_Tool.Cli.CliContext")
+        ?? throw new Exception("FAIL Kirin_Tool.Cli.CliContext is gone");
+    ConstructorInfo contextCtor = contextType.GetConstructors()
+        .Single(ctor => ctor.GetParameters().Length == 5);
+
+    // The erase is redline + irreversible, so its approval needs the typed phrase: the in-process
+    // gate below types it exactly like a human would. Nothing here is reachable from the product.
+    async Task<(int Code, JsonDocument Json)> RunDowngradeErase(string mode)
+    {
+        ApprovalGates.Install(new GuiApprovalGate(new ApproveEveryRequest()));
+        try
+        {
+            Environment.SetEnvironmentVariable("KIRIN_FASTBOOT", stub);
+            Environment.SetEnvironmentVariable("STUB_MODE", mode);
+            object parsed = parse.Invoke(null, new object[]
+            {
+                new[] { "--yes", "--allow-redline", "--json" },
+                Array.Empty<string>(),
+                new[] { "yes", "allow-redline", "json" },
+            })!;
+            var stdout = new StringWriter();
+            object context = contextCtor.Invoke(new object[] { stdout, new StringWriter(), true, true, root });
+            var call = (Task<int>)execute.Invoke(command, new object[] { parsed, context, CancellationToken.None })!;
+            int code = await call;
+            return (code, JsonDocument.Parse(stdout.ToString()));
+        }
+        finally
+        {
+            ApprovalGates.ResetToFailClosed();
+            Environment.SetEnvironmentVariable("KIRIN_FASTBOOT", null);
+            Environment.SetEnvironmentVariable("STUB_MODE", null);
+        }
+    }
+
+    // 7a. the loader refuses every version-field erase
+    {
+        (int code, JsonDocument doc) = await RunDowngradeErase("erase-fail");
+        Check(code == 3, "downgrade-erase against a refusing loader exits 3 (got " + code + ")");
+        Check(doc.RootElement.GetProperty("applied").GetBoolean() == false, "downgrade-erase failure: applied=false");
+        Check(doc.RootElement.GetProperty("gate").GetString() == "failed", "downgrade-erase failure: gate=failed");
+        JsonElement failureResult = doc.RootElement.GetProperty("result");
+        Check(failureResult.GetProperty("successfulSteps").GetInt32() == 0, "downgrade-erase failure: 0/4 steps succeeded");
+        Check(failureResult.GetProperty("verdictSource").GetString() == "step-outcomes:0/4-okay",
+            "downgrade-erase failure: verdictSource names the rule the verdict came from");
+    }
+
+    // 7b. all four erases answer OKAY
+    {
+        (int code, JsonDocument doc) = await RunDowngradeErase("ok");
+        Check(code == 0, "downgrade-erase against an accepting loader exits 0 (got " + code + ")");
+        Check(doc.RootElement.GetProperty("applied").GetBoolean(), "downgrade-erase success: applied=true");
+        Check(doc.RootElement.GetProperty("gate").GetString() == "applied", "downgrade-erase success: gate=applied");
+        Check(doc.RootElement.GetProperty("result").GetProperty("successfulSteps").GetInt32() == 4,
+            "downgrade-erase success: 4/4 steps succeeded");
+    }
+
+    // 7c. no ticket, or a ticket minted for another capability, never reaches the erase
+    {
+        var ops = new Kirin_Tool.Services.WriteOperations.DeviceWriteOps(new Kirin_Tool.Services.FastbootClient(stub));
+        bool noTicket = false;
+        try { await ops.EnableDowngradeAsync(null!); }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("downgrade-erase", StringComparison.Ordinal)) { noTicket = true; }
+        Check(noTicket, "DeviceWriteOps.EnableDowngradeAsync: without an approved ticket it throws instead of erasing");
+
+        ApprovalGates.Install(new GuiApprovalGate(new ApproveEveryRequest()));
+        try
+        {
+            ApprovalAdmission admission = await ApprovalGuard.AdmitAsync(
+                ApprovalRequests.For("reboot", argv: new[] { "fastboot", "reboot" }, targets: Array.Empty<string>(),
+                    sessionId: "downgrade-ticket-" + Guid.NewGuid().ToString("n")), CancellationToken.None);
+            bool wrongTicket = false;
+            try { await ops.EnableDowngradeAsync(admission.RequireTicket()); }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("cannot authorize", StringComparison.Ordinal)) { wrongTicket = true; }
+            Check(wrongTicket, "DeviceWriteOps.EnableDowngradeAsync: a 'reboot' ticket cannot authorize the erase");
+        }
+        finally { ApprovalGates.ResetToFailClosed(); }
+    }
+}
+
 stubEnvironment.Clear();
 try { Directory.Delete(stubDir, true); } catch { }
 

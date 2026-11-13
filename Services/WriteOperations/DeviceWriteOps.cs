@@ -89,6 +89,59 @@ public sealed class DeviceWriteOps
         }
     }
 
+    /// <summary>
+    /// oem oeminfoerase-{amss,base,cust,preload}ver — the version-field erase that (attempts to) make a
+    /// downgrade possible. Four irreversible commands, so this is a redline capability in its own right
+    /// (D-13): the GUI button, the CLI `downgrade-erase` command and the MCP tool all end up here and
+    /// none of them can skip the ticket. The result is raw on purpose: a step only counts when fastboot
+    /// exited 0 AND printed OKAY, and OKAY is not proof that the record was cleared.
+    /// </summary>
+    public async Task<EnableDowngradeResult> EnableDowngradeAsync(WriteTicket ticket, CancellationToken cancellationToken = default)
+    {
+        Require(ticket, "downgrade-erase");
+        string[] commands =
+        {
+            "oem oeminfoerase-amssver",
+            "oem oeminfoerase-basever",
+            "oem oeminfoerase-custver",
+            "oem oeminfoerase-preloadver",
+        };
+
+        using OperationScope op = OpLog.Begin(OpNames.DowngradeErase, OpLog.FlashTool, commands,
+            "erase the oeminfo version fields (amss/base/cust/preload) to enable a downgrade");
+        op.Step("target: oeminfo version fields amss/base/cust/preload [redline: irreversible version records]");
+        try
+        {
+            EnableDowngradeResult result = await Client.EnableDowngradeWithSteps();
+            op.Step(EraseStep(commands[0], result.Step1Success, result.Step1Output));
+            op.Step(EraseStep(commands[1], result.Step2Success, result.Step2Output));
+            op.Step(EraseStep(commands[2], result.Step3Success, result.Step3Output));
+            op.Step(EraseStep(commands[3], result.Step4Success, result.Step4Output));
+
+            int okSteps = result.SuccessfulStepsCount;
+            // Evidence rule for this op: a step counts only when the loader answered OKAY
+            // (FastbootClient.EnableDowngradeWithSteps). No read-back exists for the version
+            // records, so "4/4 okay" claims the erases were executed, never that a downgrade works.
+            op.Result(okSteps == 4, null, null, null, null,
+                "step-outcomes:" + okSteps + "/4-okay",
+                okSteps == 4
+                    ? "all 4 version-field erases returned OKAY; the records were not read back, so a downgrade is not confirmed"
+                    : okSteps + "/4 version-field erases returned OKAY; the remaining ones did not");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            op.Step(OpLog.FailedPrefix + "enable downgrade: " + OpLog.ExceptionVerdict(ex) + ": " + ex.Message);
+            op.Result(false, null, null, null, ex.Message, OpLog.ExceptionVerdict(ex));
+            throw;
+        }
+    }
+
+    /// <summary>One step line of the four-way erase: command, OKAY token, bounded output tail.</summary>
+    private static string EraseStep(string command, bool ok, string? output) =>
+        (ok ? OpLog.OkPrefix : OpLog.FailedPrefix) + command + " -> " + (ok ? "okay=yes (exit 0)" : "okay=no")
+        + " :: " + OpLog.OneLine(output);
+
     /// <summary>erase frp / erase config / oem frp-erase, three irreversible steps.</summary>
     public Task<FrpBypassResult> FrpEraseAsync(WriteTicket ticket, CancellationToken cancellationToken = default)
     {

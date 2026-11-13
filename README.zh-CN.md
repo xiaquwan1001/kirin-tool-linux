@@ -235,15 +235,15 @@ MCP server（换行分隔 JSON-RPC 2.0 over stdio）：
 }
 ```
 
-工具清单（22 个，1:1 由 CLI 命令表的 `McpName` 生成，没有第二份实现）：
+工具清单（24 个，1:1 由 CLI 命令表的 `McpName` 生成，没有第二份实现）：
 
 | 类型 | 工具名 |
 | :--- | :--- |
 | 只读（11） | `info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`partitions`、`psid`、`capabilities`、`udev`、`logs`（合流后的操作日志查询） |
-| 真实写入（9） | `flash_ota`、`flash_xml`、`reboot`、`write_sn`、`frp_remove`、`unlock_bootloader`、`usb_testpoint`、`reboot_usb_update`、`oeminfo_flash`（要求 `confirm: true` **且**在运行中的 GUI 里由人再批一次；没有 dry-run） |
-| 仅规划（3） | `vcom_unlock`、`oeminfo`、`downgrade_enable`（`confirm: true` 也只确认计划，exit 4） |
+| 真实写入（11） | `flash_ota`、`flash_xml`、`vcom_unlock`、`reboot`、`write_sn`、`frp_remove`、`unlock_bootloader`、`usb_testpoint`、`reboot_usb_update`、`oeminfo_flash`、`downgrade_erase`（要求 `confirm: true` **且**在运行中的 GUI 里由人再批一次；没有 dry-run） |
+| 仅规划（2） | `oeminfo`、`downgrade_enable`（`confirm: true` 也只确认计划，exit 4） |
 
-只读工具共 11 个（`info`…`logs`）、写工具共 12 个（9 真实写入 + 3 仅规划）；写工具一律要求
+只读工具共 11 个（`info`…`logs`）、写工具共 13 个（11 真实写入 + 2 仅规划）；写工具一律要求
 `confirm: true`，永不接受 `allow-redline`，且 `confirm` 之后仍要人工带外批准（见[安全模型](#安全模型)）。GUI/CLI/MCP 三面的一致性与漂移门禁见
 [docs/parity-design.md](docs/parity-design.md)，完整命令表与闸门语义见 [docs/cli-mcp.md](docs/cli-mcp.md)。
 

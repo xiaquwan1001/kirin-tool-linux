@@ -670,3 +670,76 @@ internal sealed class OemInfoFlashCommand : GatedDeviceWriteCommand
                 : "Write Not Confirmed — " + Reason("last output", result.Output));
     }
 }
+
+/// <summary>
+/// downgrade-erase — the device half of "Enable Downgrade". The CLI `downgrade-enable` command only
+/// prints the four commands (PlanOnly, exit 4); erasing the oeminfo version fields is a redline,
+/// irreversible write and needs its own capability + approval, exactly like the GUI button does (D-13,
+/// the same split D-01 made for oeminfo).
+/// </summary>
+internal sealed class DowngradeEraseCommand : GatedDeviceWriteCommand
+{
+    public override string Name => "downgrade-erase";
+    public override string McpName => "downgrade_erase";
+    public override string Summary => "Erase the OEMINFO version fields amss/base/cust/preload to enable a downgrade (irreversible; typed confirm required).";
+    public override string Usage =>
+        "downgrade-erase --yes --allow-redline [--json]\n" +
+        "  runs the 4 irreversible commands 'oem oeminfoerase-{amss,base,cust,preload}ver' in order\n" +
+        "  interactive stdin then asks for the phrase 'I UNDERSTAND downgrade-erase'\n" +
+        "  the plan-only variant (prints the 4 commands, writes nothing, exit 4) is: downgrade-enable";
+    public override IReadOnlyList<CliParam> Params => new[]
+    {
+        new CliParam("allow-redline", "boolean", "acknowledge that the oeminfo version records are erased irreversibly"),
+        new CliParam("yes", "boolean", "acknowledge the request (the typed phrase is still required)"),
+        new CliParam("json", "boolean", "structured output"),
+    };
+
+    protected override string CapabilityId => "downgrade-erase";
+
+    private static readonly string[] EraseCommands =
+    {
+        "oem oeminfoerase-amssver",
+        "oem oeminfoerase-basever",
+        "oem oeminfoerase-custver",
+        "oem oeminfoerase-preloadver",
+    };
+
+    protected override ApprovalRequest BuildRequest(ParsedArgs args, CliContext context) =>
+        ApprovalRequests.For(CapabilityId,
+            argv: new[] { "fastboot" }.Concat(EraseCommands.SelectMany(command => command.Split(' '))).ToArray(),
+            targets: new[] { "oeminfo" }.Concat(EraseCommands.Select(command => command.Split(' ')[1])).ToArray());
+
+    protected override async Task<int> RunAsync(ParsedArgs args, CliContext context, ApprovalAdmission admission, CancellationToken cancellationToken)
+    {
+        FastbootSession? session = await OpenConnectedSessionAsync(context);
+        if (session == null) return ExitCodes.NoDevice;
+
+        var ops = new DeviceWriteOps(session.Client);
+        EnableDowngradeResult result = await ops.EnableDowngradeAsync(admission.RequireTicket(), cancellationToken);
+
+        int okSteps = result.SuccessfulStepsCount;
+        var details = new
+        {
+            steps = new[] { result.Step1Success, result.Step2Success, result.Step3Success, result.Step4Success },
+            successfulSteps = okSteps,
+            allStepsFailed = result.AllStepsFailed,
+            // Evidence name for the op log / JSON: a step counts only when the loader answered OKAY.
+            verdictSource = "step-outcomes:" + okSteps + "/4-okay",
+            outputs = new[] { result.Step1Output, result.Step2Output, result.Step3Output, result.Step4Output },
+        };
+
+        // 4/4 OKAY is the only "applied"; nothing here can prove the version records are gone (no
+        // read-back exists), so the human line says what was and was not established.
+        WriteReport report = okSteps == 4
+            ? WriteReports.Applied(details)
+            : okSteps == 0
+                ? WriteReports.Failed(details, ExitCodes.DeviceRejected, "0/4 version-field erases returned OKAY")
+                : WriteReports.Partial(details, ExitCodes.DeviceRejected,
+                    okSteps + "/4 version-field erases returned OKAY; the rest did not");
+
+        return WriteResult(context, Name, CapabilityId, report,
+            okSteps == 4
+                ? "all 4 version-field erases returned OKAY (OKAY only means the commands ran - a downgrade is NOT confirmed; verify with 'oem dump-emmc oeminfo')"
+                : okSteps + "/4 version-field erases returned OKAY - the downgrade is not confirmed");
+    }
+}

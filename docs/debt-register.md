@@ -19,10 +19,14 @@
   真实结论；`tests/WriteGates` 用桩断言失败时 `applied=false, gate=failed`。
 - **D-03 → fixed-in-2.4.15**：CLI/MCP 的 `write-sn` 写后读回 `nve:SN`，用 `NveWriteCheck.Compare`
   出 verdict（`verified / reason / readBack`），只有读回一致才 exit 0。
+- **D-13 → fixed-in-2.4.15**：`downgrade-enable` 拆成 `downgrade-enable`（PlanOnly，只打印 4 条计划、
+  exit 4）与 `downgrade-erase`（Write + 红线 + 不可逆 + 手输确认串）。GUI `HandleEnableDowngrade` 先过
+  `RequestGuiApprovalAsync`，再走 `DeviceWriteOps.EnableDowngradeAsync(ticket)`（op 日志
+  `downgrade.erase`）；CLI/MCP 同名能力同步，结论走 `WriteReport`（0 条 OKAY = `applied=false,
+  gate=failed`）。设备侧仍是 4 条 `oem oeminfoerase-*ver`，顺序与时序未变（[downgrade-gate.md](downgrade-gate.md)）。
 - **日志已合流（v2.4.15）**：一次操作 = `sessions/<ts>-<pid>-<op>/`（`session.jsonl` + `vcom-trace.txt`
   + `summary.json`），新增只读 `logs list|show|path`；旧 `{vcom,fastboot,flash}/*.jsonl` 只读兼容。
-- **仍未修**：`D-04`（USB Update 成功判据虚）、`D-13`（`downgrade-enable` GUI 直写且绕闸门，形状同
-  D-01）——两者都已单独立 lane 处理。
+- **仍未修**：`D-04`（USB Update 成功判据虚）——已单独立 lane 处理。
 
 ## 0. 口径
 
@@ -89,7 +93,7 @@
 | # | 编号 | 摘要 | 状态 | 证据 |
 | :--- | :--- | :--- | :--- | :--- |
 | D-12 | BB-09 | GUI 的「USB Update 模式刷整包」仍无 CLI/MCP 面（`flash-ota` 只走 fastboot） | open | GUI `MainWindow.axaml.cs:968,979`（`StartUsbUpdateFlash`）；注册表全表（`CapabilityRegistry.cs:64-160`）无对应能力 |
-| D-13 | BB-04 / H90 | `downgrade-enable` 仍 `PlanOnly`：CLI/MCP 只打印 4 条 `oem oeminfoerase-*` 计划，GUI 照旧真擦，**且 GUI 这条写路径也不经过审批闸门**（`HandleEnableDowngrade` 内直接 `EnableDowngradeWithSteps()`，只有装饰性 `Task.Delay(500)`×4） | open | 注册表 `:109-113`（`CapabilityWriteKind.PlanOnly`）；GUI `MainWindow.axaml.cs:1944-1985`；`Services/FastbootClient.cs:148-167`。属**已声明**的债，但 GUI/CLI 不对称、且绕闸门，形状同 D-01 |
+| D-13 | BB-04 / H90 | `downgrade-enable` 仍 `PlanOnly`：CLI/MCP 只打印 4 条 `oem oeminfoerase-*` 计划，GUI 照旧真擦，**且 GUI 这条写路径也不经过审批闸门**（`HandleEnableDowngrade` 内直接 `EnableDowngradeWithSteps()`，只有装饰性 `Task.Delay(500)`×4） | fixed-in-2.4.15 | 拆成 `downgrade-enable`（PlanOnly，exit 4）与 `downgrade-erase`（Write + 红线 + 不可逆 + `RedlineTypedConfirm`，CLI/MCP 同名）：注册表 `Services/Capabilities/CapabilityRegistry.cs`；GUI `HandleEnableDowngrade` 先 `RequestGuiApprovalAsync` 再走 `DeviceWriteOps.EnableDowngradeAsync(ticket)`（op 日志 `downgrade.erase`，verdict `step-outcomes:n/4-okay`）；门禁 `SurfaceParity` H1/H3/H7 + `ApprovalGate` + `WriteGates`；详见 [downgrade-gate.md](downgrade-gate.md) |
 | D-14 | BB-13 / BB-16（GUI 侧） | GUI 仍用相对 CWD 的 `dload`，且开跑前 `Directory.Delete(dload, true)`（无 sentinel 校验） | open | `MainWindow.axaml.cs:159,165`（字面量 `"dload"`）；`Services/USBUpdate/SoftwareTestpointService.cs:46-49` |
 | D-15 | BB-19 | rescue 目标分区仍由 **CPU 下拉** 决定，不读设备真实平台 | open | `MainWindow.axaml.cs:2027`（`RescuePartitionPlan.ForChip(GetSelectedCpu())`） |
 | D-16 | S14 | 电量 <50% 仍只是横幅，任何写路径都不因电量被拒 | open | `MainWindow.ChipCapabilities.cs:72-95` |
@@ -156,7 +160,7 @@ B1 = 副作用在 CLI/MCP 完全不可达。E 之后写能力三面齐备，但�
 | BB-01 | VCOM 解锁 loader 上传 | fixed | 见 §1 |
 | BB-02 | 解锁 bootloader | fixed | 见 §1 |
 | BB-03 | Remove FRP | fixed | 见 §1 |
-| BB-04 | Enable Downgrade（4×`oem oeminfoerase-*ver`） | **open** | 仍 `PlanOnly`：注册表 `:109-113` |
+| BB-04 | Enable Downgrade（4×`oem oeminfoerase-*ver`） | fixed | 拆成 `downgrade-enable`（PlanOnly）+ `downgrade-erase`（Write，过闸门），见 D-13 |
 | BB-05 | OEMInfo 直写（`oeminfoerase-disablewp` + `oeminfowrite-*`） | **open（最高危）** | D-01 |
 | BB-06 | 写 NVE SN | fixed | 见 §1 |
 | BB-07 | Reboot to USB Update（救援分区） | fixed | 见 §1 |

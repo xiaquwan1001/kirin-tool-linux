@@ -147,8 +147,10 @@ old plan output. A cable replug is required between `null` and `XLOADER` on hi9x
 or split with `--stage-only null` then `--stage-only rest` (a `rest` run never re-sends START).
 
 **Never writes:** `oeminfo` (converts an OEMINFO image on the host only) and `downgrade-enable` —
-plan-only, exit 4, even with `--yes`. Writing a converted image to the device is a *separate*
-capability, `oeminfo-flash` (redline, irreversible, typed confirm; MCP needs an out-of-band GUI approval).
+plan-only, exit 4, even with `--yes`. Putting the result on the device is always a *separate*
+capability: `oeminfo-flash` (redline, irreversible, typed confirm) and `downgrade-erase` (the four
+`oem oeminfoerase-*ver` erases; the GUI button asks the same gate first — [docs/downgrade-gate.md](docs/downgrade-gate.md)).
+MCP needs an out-of-band approval in the running GUI for both.
 
 **Session log (GUI and CLI share it):** every VCOM attempt writes
 `~/.local/state/kirin-tool/vcom-<UTC>-<cpu>.log` (override with `KIRIN_LOG_DIR`): pid, port, framing,
@@ -234,11 +236,12 @@ MCP server (newline-delimited JSON-RPC 2.0 over stdio):
 }
 ```
 
-Tools (generated 1:1 from the CLI command table via `McpName`, there is no second
-implementation): read-only `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`,
-`partitions`, `psid`, `capabilities`, `udev`; real writes `flash_ota`, `flash_xml`, `vcom_unlock`,
-`reboot`, `write_sn`, `frp_remove`, `unlock_bootloader`, `usb_testpoint`, `reboot_usb_update`,
-`oeminfo_flash`; plan-only `oeminfo`, `downgrade_enable`. Every write tool requires `confirm: true`
+Tools (24, generated 1:1 from the CLI command table via `McpName`, there is no second
+implementation): read-only (11) `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`,
+`partitions`, `psid`, `capabilities`, `udev`, `logs`; real writes (11) `flash_ota`, `flash_xml`,
+`vcom_unlock`, `reboot`, `write_sn`, `frp_remove`, `unlock_bootloader`, `usb_testpoint`,
+`reboot_usb_update`, `oeminfo_flash`, `downgrade_erase`; plan-only (2) `oeminfo`, `downgrade_enable`.
+Every write tool requires `confirm: true`
 and never accepts `allow-redline`. The GUI/CLI/MCP parity contract and its drift gate live in
 [docs/parity-design.md](docs/parity-design.md); full command table and gates in
 [docs/cli-mcp.md](docs/cli-mcp.md).
