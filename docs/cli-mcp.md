@@ -41,7 +41,8 @@ kirin-tool-cli flash-ota base.app --yes    # real write of all non-redline parti
 |---|---|---|
 | `flash-ota`、`flash-xml` | **RealWrite** | **真实刷写分区**（MCP 路径没有 dry-run）；红线分区仍需 `--allow-redline`（仅 CLI） |
 | `vcom-unlock` | **RealWrite** | **真实上传 loader 到内存**（不碰任何分区），与 GUI「Unlock Fastboot」同一实现；详见下节 |
-| `oeminfo`、`downgrade-enable` | **PlanOnly** | 只确认计划，**永远不写设备**，一律 exit 4 |
+| `oeminfo`、`downgrade-enable` | **PlanOnly** | 只确认计划，**永远不写设备**，一律 exit 4（`oeminfo` 只在宿主机上生成镜像） |
+| `oeminfo-flash` | **RealWrite** | **真实写入 oeminfo 分区**（红线、不可逆，需 `--yes --allow-redline` + stdin 手输 `I UNDERSTAND oeminfo-flash`；MCP 侧需 `confirm:true` 且在运行中的 GUI 里带外批准） |
 
 无 `--yes` 时打印计划清单，exit 4。`--strict-names` 时若 loader 未暴露计划中的分区/标识符则拒绝执行（exit 3），默认只 warning。
 
@@ -54,12 +55,22 @@ kirin-tool-cli flash-ota base.app --yes    # real write of all non-redline parti
 | `plan-only` | 只生成了计划，未确认 |
 | `refused` | 被拒绝，`isError=true`；`reason` 字段说明原因（红线分区未给 `--allow-redline` → exit 4；flash-xml 缺图 → exit 5，缺图先于红线判定） |
 | `confirmed` | PlanOnly 命令已确认，但未写任何内容 |
-| `applied` | 真实写入已执行（全部成功 exit 0；全失败 exit 5；部分失败 exit 3） |
-| `failed` | 真实执行但失败（`vcom-unlock`：`failureKind` 说明是设备侧还是本地文件；`isError=true`） |
+| `applied` | 真实写入已执行且设备接受（全部成功 exit 0） |
+| `partial` | 多步/多分区写入只有一部分成功（`applied` 仍为 true，`reason` 说明几个失败，exit 3；flash-ota / flash-xml / frp-remove） |
+| `failed` | 真实执行但**没有生效**：`applied:false`，`reason` 引用设备原话（`vcom-unlock` 另带 `failureKind`；`isError=true`） |
+| `unconfirmed` | 命令被接受但目标状态未被证实（`applied:false`，如 `flash oeminfo` 退出 0 却没有 `OKAY`、`rescue_enter_recovery` 无 `OKAY`），exit 3 |
+
+`applied` 永远来自设备侧结果：`WriteResult` 只接受调用点构造的 `WriteReport`，没有默认值
+（见 [write-verdict-parity.md](write-verdict-parity.md) D-02）。
 
 ### 退出码
 
-0 成功 / 1 用法 / 2 无设备 / 3 设备拒绝（含 `--strict-names` 拒绝、部分刷写失败）/ 4 被闸门拒（未确认或 PlanOnly 确认）/ 5 文件或校验失败（含刷写 0/0 全失败）。
+0 成功 / 1 用法 / 2 无设备 / 3 设备拒绝（含 `--strict-names` 拒绝、部分刷写失败、写后读回不一致）/ 4 被闸门拒（未确认或 PlanOnly 确认）/ 5 文件或校验失败（含刷写 0/0 全失败）。
+
+`write-sn` 只有**读回一致**才 exit 0：写入命令失败、读回不可用、读回不一致一律 exit 3，`reason` 分别是
+`command_failed` / `readback_unavailable` / `readback_mismatch:<读回值>`，且 JSON 里带
+`verified`、`expected`、`readBack`、`readBackError`。人读输出同样只在读回一致时说成功，否则打印
+`Write Not Confirmed` 与读回值（与 GUI 同一判定，`Services/Verdict/NveWriteVerdict.cs`）。
 
 ### 写入前自动备份（pre-op backup）
 
@@ -141,7 +152,10 @@ GUI 在进度对话框显示该路径并保留到结束；CLI 把路径打在 st
 `KirinTool.Cli mcp` 或 `Kirin-Tool --mcp`：stdio、**换行分隔的 JSON-RPC 2.0**（每行一条报文），
 日志只写 stderr。支持 `initialize`、`notifications/initialized`、`ping`、`tools/list`、`tools/call`。
 
-工具名：`info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`flash_ota`、`flash_xml`、`vcom_unlock`、`oeminfo`、`downgrade_enable`。
+工具名：`info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`flash_ota`、`flash_xml`、`vcom_unlock`、`oeminfo`、`oeminfo_flash`、`downgrade_enable`。
+
+`oeminfo_flash` 是设备写（红线/不可逆）：`confirm:true` 只是承认「这不是 dry-run」，真正的批准来自
+运行中的 GUI 弹窗；没有 GUI 时返回 `approval_required_human`，不会自行放行。
 `vcom_unlock` 的 `confirm:true` 会**真的上传 loader**（`RealWrite`）；`--replug prompt` 在 MCP 里
 按"stdin 非交互"降级为等待 15 s，因此自动化应显式传 `replug: "wait:<秒>"`。
 

@@ -30,6 +30,7 @@ public static class CliRunner
         new UnlockBootloaderCommand(),
         new UsbTestpointCommand(),
         new RebootUsbUpdateCommand(),
+        new OemInfoFlashCommand(),
     };
 
     public static async Task<int> RunAsync(string[] args, TextWriter? stdout = null, TextWriter? stderr = null)

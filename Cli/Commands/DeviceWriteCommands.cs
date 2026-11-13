@@ -6,6 +6,7 @@ using Kirin_Tool.Services;
 using Kirin_Tool.Services.Approval;
 using Kirin_Tool.Services.USBUpdate;
 using Kirin_Tool.Utils;
+using Kirin_Tool.Services.Verdict;
 using Kirin_Tool.Services.WriteOperations;
 
 namespace Kirin_Tool.Cli.Commands;
@@ -56,6 +57,33 @@ internal static class ApprovalReport
         context.Diag("approval refused: " + reason);
         return exit;
     }
+}
+
+/// <summary>
+/// What a write command actually observed, and nothing else. <see cref="Applied"/> answers
+/// "did the device take the write?", <see cref="Gate"/> is the machine-readable token
+/// (`applied` / `partial` / `failed` / `unconfirmed`) and <see cref="ExitCode"/> is the process
+/// code the same facts justify. The only way to build one is one of the factories below, so a
+/// command cannot print "applied" without saying what the device answered (D-02).
+/// </summary>
+internal sealed record WriteReport(bool Applied, string Gate, int ExitCode, string? Reason, object Details);
+
+internal static class WriteReports
+{
+    /// <summary>The write ran and the device accepted it (exit 0).</summary>
+    public static WriteReport Applied(object details) => new(true, "applied", ExitCodes.Ok, null, details);
+
+    /// <summary>Some of the writes in this command took effect (partial success).</summary>
+    public static WriteReport Partial(object details, int exitCode, string reason) => new(true, "partial", exitCode, reason, details);
+
+    /// <summary>The write did not take effect: refused, rejected, or silently ignored.</summary>
+    public static WriteReport Failed(object details, int exitCode, string reason) => new(false, "failed", exitCode, reason, details);
+
+    /// <summary>
+    /// The command was accepted but its goal is not established by evidence (e.g. no OKAY token,
+    /// no read-back). Never exit 0: an unproven write is not a success.
+    /// </summary>
+    public static WriteReport Unconfirmed(object details, int exitCode, string reason) => new(false, "unconfirmed", exitCode, reason, details);
 }
 
 /// <summary>
@@ -115,25 +143,54 @@ internal abstract class GatedDeviceWriteCommand : ICliCommand
         return session;
     }
 
-    protected static void WriteResult(CliContext context, string command, string capabilityId, object details, string? humanLine = null)
+    /// <summary>
+    /// Writes the machine-readable result and returns the exit code the caller must use. The
+    /// verdict is a parameter on purpose: there is no default, so "applied: true" can only be
+    /// printed by a call site that observed the device accepting the write (D-02).
+    /// </summary>
+    protected static int WriteResult(CliContext context, string command, string capabilityId, WriteReport report,
+        string? humanLine = null, IReadOnlyDictionary<string, object?>? evidence = null)
     {
         if (context.Json)
         {
-            context.WriteJson(new
+            // Fixed shape first (command/capability/applied/gate/reason/result/exitCode), then the
+            // command's own evidence keys (e.g. write-sn's verified/expected/readBack) at the top
+            // level, so a client can read the verdict without digging into "result".
+            var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
             {
-                command,
-                capability = capabilityId,
-                dryRun = false,
-                applied = true,
-                gate = "applied",
-                result = details,
-                exitCode = ExitCodes.Ok,
-            });
+                ["command"] = command,
+                ["capability"] = capabilityId,
+                ["dryRun"] = false,
+                ["applied"] = report.Applied,
+                ["gate"] = report.Gate,
+                ["reason"] = report.Reason,
+                ["result"] = report.Details,
+                ["exitCode"] = report.ExitCode,
+            };
+            if (evidence != null)
+            {
+                foreach (var pair in evidence)
+                {
+                    if (!payload.ContainsKey(pair.Key)) payload[pair.Key] = pair.Value;
+                }
+            }
+            context.WriteJson(payload);
         }
         else if (humanLine != null)
         {
             context.Output.WriteLine(humanLine);
         }
+        return report.ExitCode;
+    }
+
+    /// <summary>One short reason line for the JSON: never the whole multi-line fastboot dump.</summary>
+    protected static string Reason(string prefix, string? output)
+    {
+        string? first = (output ?? string.Empty)
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .FirstOrDefault(line => line.Length > 0);
+        return first == null ? prefix + " (fastboot printed nothing)" : prefix + ": " + first;
     }
 }
 
@@ -162,10 +219,12 @@ internal sealed class RebootCommand : GatedDeviceWriteCommand
 
         var ops = new DeviceWriteOps(session.Client);
         ProcessResult result = await ops.RebootAsync(admission.RequireTicket(), cancellationToken);
-        WriteResult(context, Name, CapabilityId,
-            new { success = result.IsSuccess, output = result.Output },
+        var details = new { success = result.IsSuccess, output = result.Output };
+        WriteReport report = result.IsSuccess
+            ? WriteReports.Applied(details)
+            : WriteReports.Failed(details, DeviceOutcome.FailureExit(result.Output), Reason("fastboot reboot failed", result.Output));
+        return WriteResult(context, Name, CapabilityId, report,
             result.IsSuccess ? "reboot sent: the device is rebooting" : "reboot failed: " + result.Output);
-        return result.IsSuccess ? ExitCodes.Ok : DeviceOutcome.FailureExit(result.Output);
     }
 }
 
@@ -202,14 +261,49 @@ internal sealed class WriteSnCommand : GatedDeviceWriteCommand
         FastbootSession? session = await OpenConnectedSessionAsync(context);
         if (session == null) return ExitCodes.NoDevice;
 
+        string value = (args.Value("value") ?? "").Trim();
         var ops = new DeviceWriteOps(session.Client);
-        ProcessResult result = await ops.WriteSerialNumberAsync(admission.RequireTicket(), args.Value("value")!, cancellationToken);
-        WriteResult(context, Name, CapabilityId,
-            new { success = result.IsSuccess, output = result.Output },
-            result.IsSuccess
-                ? "serial number rewritten (no read-back check is available on this path)"
-                : "serial number write failed: " + result.Output);
-        return result.IsSuccess ? ExitCodes.Ok : DeviceOutcome.FailureExit(result.Output);
+        ProcessResult result = await ops.WriteSerialNumberAsync(admission.RequireTicket(), value, cancellationToken);
+
+        // Same verdict as the GUI (Services/Verdict/NveWriteVerdict.cs): exit 0 only means
+        // fastboot did not reject the command locally (audit F04/S18). Read the value back
+        // through the client the write went through; only an identical read-back counts.
+        string? readBack = null;
+        string? readBackError = null;
+        try { readBack = await session.Client.ReadNveVariable("SN"); }
+        catch (Exception ex) { readBackError = ex.Message; }
+
+        NveWriteVerdict verdict = NveWriteCheck.Compare(value, readBack, result.IsSuccess, readBackError);
+        var details = new
+        {
+            success = result.IsSuccess,
+            expected = verdict.Expected,
+            readBack = verdict.ReadBack,
+            readBackError,
+            verified = verdict.Verified,
+            reason = verdict.Reason,
+            output = result.Output,
+        };
+
+        // The reason token is the verdict's own (command_failed / readback_unavailable /
+        // readback_mismatch:<value>), never a re-worded sentence: clients switch on it.
+        WriteReport report = verdict.Verified
+            ? WriteReports.Applied(details)
+            : WriteReports.Failed(details, ExitCodes.DeviceRejected, verdict.Reason);
+
+        var evidence = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["verified"] = verdict.Verified,
+            ["expected"] = verdict.Expected,
+            ["readBack"] = verdict.ReadBack,
+            ["readBackError"] = readBackError,
+        };
+
+        return WriteResult(context, Name, CapabilityId, report,
+            verdict.Verified
+                ? "serial number written and read back from the device: " + verdict.ReadBackDisplay
+                : "Write Not Confirmed — requested '" + verdict.Expected + "', read back '" + verdict.ReadBackDisplay + "'. " + verdict.Explain,
+            evidence);
     }
 }
 
@@ -243,15 +337,21 @@ internal sealed class FrpRemoveCommand : GatedDeviceWriteCommand
 
         var ops = new DeviceWriteOps(session.Client);
         FrpBypassResult result = await ops.FrpEraseAsync(admission.RequireTicket(), cancellationToken);
-        WriteResult(context, Name, CapabilityId, new
+        var details = new
         {
             steps = new[] { result.Step1Success, result.Step2Success, result.Step3Success },
             successfulSteps = result.SuccessfulStepsCount,
             allStepsFailed = result.AllStepsFailed,
-        }, $"{result.SuccessfulStepsCount}/3 FRP erase commands returned OKAY (FRP state itself is not verifiable on this path)");
-        return result.SuccessfulStepsCount == 3 ? ExitCodes.Ok
-            : result.AllStepsFailed ? ExitCodes.DeviceRejected
-            : ExitCodes.DeviceRejected;
+        };
+        // A step only counts when fastboot exited 0 AND printed OKAY (FastbootClient.EraseFrpWithSteps).
+        WriteReport report = result.SuccessfulStepsCount == 3
+            ? WriteReports.Applied(details)
+            : result.SuccessfulStepsCount == 0
+                ? WriteReports.Failed(details, ExitCodes.DeviceRejected, "0/3 FRP erase commands returned OKAY")
+                : WriteReports.Partial(details, ExitCodes.DeviceRejected,
+                    result.SuccessfulStepsCount + "/3 FRP erase commands returned OKAY; the rest did not");
+        return WriteResult(context, Name, CapabilityId, report,
+            $"{result.SuccessfulStepsCount}/3 FRP erase commands returned OKAY (FRP state itself is not verifiable on this path)");
     }
 }
 
@@ -286,10 +386,12 @@ internal sealed class UnlockBootloaderCommand : GatedDeviceWriteCommand
         var ops = new DeviceWriteOps(session.Client);
         var progress = new Progress<string>(output => context.Diag("unlock: " + output));
         (bool IsSuccess, string Output) result = await ops.UnlockBootloaderAsync(admission.RequireTicket(), progress, cancellationToken);
-        WriteResult(context, Name, CapabilityId,
-            new { success = result.IsSuccess, output = result.Output },
+        var details = new { success = result.IsSuccess, output = result.Output };
+        WriteReport report = result.IsSuccess
+            ? WriteReports.Applied(details)
+            : WriteReports.Failed(details, DeviceOutcome.FailureExit(result.Output), Reason("oem unlock did not confirm", result.Output));
+        return WriteResult(context, Name, CapabilityId, report,
             result.IsSuccess ? "unlock reported success (confirm the lock state on the device itself)" : "unlock did not confirm: " + result.Output);
-        return result.IsSuccess ? ExitCodes.Ok : DeviceOutcome.FailureExit(result.Output);
     }
 }
 
@@ -350,13 +452,27 @@ internal sealed class UsbTestpointCommand : GatedDeviceWriteCommand
             });
 
         var ops = new DeviceWriteOps(session.Client, testpoint);
-        await ops.SoftwareTestpointAsync(admission.RequireTicket(), enter, resolved, cancellationToken);
+        try
+        {
+            await ops.SoftwareTestpointAsync(admission.RequireTicket(), enter, resolved, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The service throws on every failure path; "no exception" is its only evidence, so
+            // an exception is the only thing that can turn this into a failure.
+            var failure = new { enter, file = resolved, transferred = false, error = ex.Message };
+            return WriteResult(context, Name, CapabilityId,
+                WriteReports.Failed(failure, ExitCodes.DeviceRejected, "testpoint transfer failed: " + ex.Message),
+                "testpoint transfer FAILED: " + ex.Message);
+        }
 
-        WriteResult(context, Name, CapabilityId, new { enter, file = resolved, transferred = true },
+        // No exception means the frames were sent; it is not evidence about the device state, so
+        // the gate stays "applied" only for the transfer itself and the human line says so.
+        return WriteResult(context, Name, CapabilityId,
+            WriteReports.Applied(new { enter, file = resolved, transferred = true, deviceStateVerified = false }),
             enter
                 ? "testpoint transfer returned without an error report; whether the device really is in VCOM mode is NOT confirmed by this command"
                 : "XLOADER was flashed back; confirm the device answers 'fastboot getvar product' again");
-        return ExitCodes.Ok;
     }
 }
 
@@ -437,14 +553,25 @@ internal sealed class RebootUsbUpdateCommand : GatedDeviceWriteCommand
             }
 
             string modeOutput = await ops.EnterUsbUpdateModeAsync(ticket, cancellationToken);
-            WriteResult(context, Name, CapabilityId, new
+            bool modeConfirmed = DeviceOutcome.LooksRejected(modeOutput) == false &&
+                (modeOutput ?? "").ToUpperInvariant().Contains("OKAY");
+            var rescueDetails = new
             {
                 flashed,
                 modeEntry = modeOutput,
-                modeEntryConfirmed = DeviceOutcome.LooksRejected(modeOutput) == false &&
-                    (modeOutput ?? "").ToUpperInvariant().Contains("OKAY"),
-            }, "rescue partitions flashed: " + string.Join(", ", flashed) + "; loader answer: " + modeOutput);
-            return ExitCodes.Ok;
+                modeEntryConfirmed = modeConfirmed,
+            };
+
+            // The command's goal is USB Update mode. Rescue writes that ran are real, but an
+            // unconfirmed mode entry is not a success (no OKAY token / the loader rejected it).
+            WriteReport report = modeConfirmed
+                ? WriteReports.Applied(rescueDetails)
+                : DeviceOutcome.LooksRejected(modeOutput)
+                    ? WriteReports.Failed(rescueDetails, ExitCodes.DeviceRejected, Reason("rescue_enter_recovery was rejected by the loader", modeOutput))
+                    : WriteReports.Unconfirmed(rescueDetails, ExitCodes.DeviceRejected,
+                        "rescue_enter_recovery printed no OKAY, so USB Update mode entry is not confirmed");
+            return WriteResult(context, Name, CapabilityId, report,
+                "rescue partitions flashed: " + string.Join(", ", flashed) + "; loader answer: " + modeOutput);
         }
         finally
         {
@@ -452,4 +579,76 @@ internal sealed class RebootUsbUpdateCommand : GatedDeviceWriteCommand
         }
     }
 
+}
+
+/// <summary>
+/// flash oeminfo — the device half of the OEMINFO rewrite. The CLI `oeminfo` command only builds
+/// the image locally (PlanOnly); writing it is a redline, irreversible device write and needs its
+/// own capability + approval, exactly like the GUI button does (D-01).
+/// </summary>
+internal sealed class OemInfoFlashCommand : GatedDeviceWriteCommand
+{
+    public override string Name => "oeminfo-flash";
+    public override string McpName => "oeminfo_flash";
+    public override string Summary => "Flash a converted OEMINFO image to the oeminfo partition (redline identity image; irreversible).";
+    public override string Usage =>
+        "oeminfo-flash --file <converted-oeminfo.img> --yes --allow-redline [--json]\n" +
+        "  produce the image first with: oeminfo --model <model> --region <region> --input <oeminfo.img>\n" +
+        "  interactive stdin then asks for the phrase 'I UNDERSTAND oeminfo-flash'";
+    public override IReadOnlyList<CliParam> Params => new[]
+    {
+        new CliParam("file", "string", "converted oeminfo image to write", Required: true),
+        new CliParam("allow-redline", "boolean", "acknowledge that oeminfo is a redline identity partition"),
+        new CliParam("yes", "boolean", "acknowledge the request (the typed phrase is still required)"),
+        new CliParam("json", "boolean", "structured output"),
+    };
+
+    protected override string CapabilityId => "oeminfo-flash";
+
+    protected override ApprovalRequest BuildRequest(ParsedArgs args, CliContext context)
+    {
+        string file = args.Value("file") ?? "";
+        if (file.Length == 0) throw new CliUsageException("oeminfo-flash requires --file <converted-oeminfo.img>");
+        string resolved = Path.GetFullPath(file, context.WorkingDirectory);
+        if (!File.Exists(resolved)) throw new CliFileException("file not found: " + resolved);
+
+        return ApprovalRequests.For(CapabilityId,
+            argv: new[] { "fastboot", "flash", "oeminfo", resolved },
+            targets: new[] { "oeminfo" });
+    }
+
+    protected override async Task<int> RunAsync(ParsedArgs args, CliContext context, ApprovalAdmission admission, CancellationToken cancellationToken)
+    {
+        string resolved = Path.GetFullPath(args.Value("file")!, context.WorkingDirectory);
+        FastbootSession? session = await OpenConnectedSessionAsync(context);
+        if (session == null) return ExitCodes.NoDevice;
+
+        var ops = new DeviceWriteOps(session.Client);
+        ProcessResult result = await ops.FlashOemInfoAsync(admission.RequireTicket(), resolved, cancellationToken);
+
+        // Exit code 0 without an explicit OKAY token is Unknown: fastboot accepted the command,
+        // the write is unproven. Same rule the GUI applies to the same partition.
+        bool okay = result.IsSuccess && (result.Output ?? string.Empty).ToUpperInvariant().Contains("OKAY");
+        var details = new
+        {
+            file = resolved,
+            partition = "oeminfo",
+            success = result.IsSuccess,
+            okay,
+            output = result.Output,
+        };
+
+        WriteReport report = okay
+            ? WriteReports.Applied(details)
+            : result.IsSuccess
+                ? WriteReports.Unconfirmed(details, ExitCodes.DeviceRejected,
+                    "fastboot exited 0 without an OKAY token for 'flash oeminfo'")
+                : WriteReports.Failed(details, DeviceOutcome.FailureExit(result.Output),
+                    Reason("flash oeminfo failed", result.Output));
+
+        return WriteResult(context, Name, CapabilityId, report,
+            okay
+                ? "oeminfo write returned OKAY (the loader accepted the image)"
+                : "Write Not Confirmed — " + Reason("last output", result.Output));
+    }
 }

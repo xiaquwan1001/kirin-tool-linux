@@ -55,6 +55,22 @@ public sealed class DeviceWriteOps
         return Client.WriteNveVariable("SN", value.Trim());
     }
 
+    /// <summary>
+    /// flash oeminfo — the device write for the redline identity image that
+    /// OemInfoService.ConvertOemInfo produced locally. This is the only device entry for an
+    /// oeminfo write: the GUI flash button, the CLI `oeminfo-flash` command and the MCP tool all
+    /// end up here (D-01), so the ticket requirement cannot be skipped by one face.
+    /// The result is raw on purpose: exit 0 alone proves nothing, the callers require an OKAY
+    /// token before they report the write as applied.
+    /// </summary>
+    public Task<ProcessResult> FlashOemInfoAsync(WriteTicket ticket, string imagePath, CancellationToken cancellationToken = default)
+    {
+        Require(ticket, "oeminfo-flash");
+        if (string.IsNullOrWhiteSpace(imagePath))
+            throw new ArgumentException("an oeminfo image path is required", nameof(imagePath));
+        return Client.FlashOemInfo(imagePath);
+    }
+
     /// <summary>erase frp / erase config / oem frp-erase, three irreversible steps.</summary>
     public Task<FrpBypassResult> FrpEraseAsync(WriteTicket ticket, CancellationToken cancellationToken = default)
     {

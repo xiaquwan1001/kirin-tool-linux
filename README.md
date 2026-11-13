@@ -125,7 +125,7 @@ the safety model looks the way it does.
 | "the GUI works, the BD package should too" | BD packages can ship a **gzip-compressed** SUPER. The CLI detects the `0x1f8b` magic and decompresses; the GUI merger path does not yet, which shows up as a 45/46 half-flash. Known gap, listed below. |
 | "cross-version is fine, the GPT has 74 entries either way" | Both do — but `boot` 25→30 MB, `super` 6728→6992 MB, `kpatch` 66→61 MB, `preas` 296→32 MB. Write `ptable` first. |
 | "mix the newest xloader with the loader I already had" | Boot-chain suites are same-generation or nothing: mixing produces a black device with zero enumeration or `load hhee failed`. Intermittent `12d1:3609` appearances mean the chain is failing; recovery is a manual pin short — there is no software EDL exit. |
-| "just edit `Display_Version` in oeminfo to skip a version check" | `oeminfo` is 96 MiB sparse with 32 B-aligned sections and an HMAC keyed per device, which cannot be recomputed offline. That is why `oeminfo` is plan-only in the CLI/MCP. |
+| "just edit `Display_Version` in oeminfo to skip a version check" | `oeminfo` is 96 MiB sparse with 32 B-aligned sections and an HMAC keyed per device, which cannot be recomputed offline. That is why the `oeminfo` command is plan-only in the CLI/MCP; actually putting an image on the device is `oeminfo-flash` (redline, irreversible, typed confirm). |
 | "serial open failed, must be a permissions problem" | On `12d1:3609` with the `option` driver, pyserial fails with `errno 71` (DTR stall). Raw `os.open` + termios 8N1, never touching DTR/RTS, is what works. A half-open BootROM session (HEAD sent, payload not) answers all zeros — unplug, hold power 15 s, re-short. Do not "fix" the frame format. |
 | "flashing died at 60 %, the tool is at fault" | Check the battery first: mid-write power loss is unrecoverable on these devices. Keep ≥ 50 %; the tool warns, it does not block. |
 
@@ -143,7 +143,9 @@ BootROM (`12d1:3609`), exactly like the GUI's "Unlock Fastboot". Needs `--yes`; 
 old plan output. A cable replug is required between `null` and `XLOADER` on hi9xx: use `--replug wait:<s>`
 or split with `--stage-only null` then `--stage-only rest` (a `rest` run never re-sends START).
 
-**Never writes:** `oeminfo`, `downgrade-enable` — plan-only, exit 4, even with `--yes`.
+**Never writes:** `oeminfo` (converts an OEMINFO image on the host only) and `downgrade-enable` —
+plan-only, exit 4, even with `--yes`. Writing a converted image to the device is a *separate*
+capability, `oeminfo-flash` (redline, irreversible, typed confirm; MCP needs an out-of-band GUI approval).
 
 **Session log (GUI and CLI share it):** every VCOM attempt writes
 `~/.local/state/kirin-tool/vcom-<UTC>-<cpu>.log` (override with `KIRIN_LOG_DIR`): pid, port, framing,
@@ -156,8 +158,12 @@ shows the path in the progress dialog; the CLI prints it on stderr. Field table:
 listing the exact partitions in the GUI, and nothing at all over MCP.
 
 **Gate signals.** Every write command with `--json` and every MCP write tool reports `gate`:
-`plan-only`, `refused` (with `reason`), `confirmed` (plan acknowledged, nothing written) or `applied`.
-Branch on `gate`, not on the exit code. Exit codes: 0 ok / 1 usage / 2 no device / 3 device refused
+`plan-only`, `refused` (with `reason`), `confirmed` (plan acknowledged, nothing written), `applied`
+(the device accepted the write), `partial` (some of several writes succeeded, exit 3) or `failed` /
+`unconfirmed` (`applied:false` + `reason` — never a success). `applied` is read off the device answer,
+never defaulted ([write-verdict-parity.md](docs/write-verdict-parity.md)).
+`write-sn` additionally reports `verified`/`expected`/`readBack` and only exits 0 when the value reads
+back identical. Branch on `gate`, not on the exit code. Exit codes: 0 ok / 1 usage / 2 no device / 3 device refused
 (includes `--strict-names`) / 4 gate refusal / 5 file or verification failure.
 
 **Pre-op backup.** Before the first real write, the redline partitions of the plan plus `ptable` are
@@ -224,11 +230,12 @@ MCP server (newline-delimited JSON-RPC 2.0 over stdio):
 }
 ```
 
-Tools (15, generated 1:1 from the CLI command table via `McpName`, there is no second
+Tools (generated 1:1 from the CLI command table via `McpName`, there is no second
 implementation): read-only `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`,
-`partitions`, `psid`, `capabilities`, `udev`; real writes `flash_ota`, `flash_xml`; plan-only
-`vcom_unlock`, `oeminfo`, `downgrade_enable`. Every write tool requires `confirm: true` and never
-accepts `allow-redline`. The GUI/CLI/MCP parity contract and its drift gate live in
+`partitions`, `psid`, `capabilities`, `udev`; real writes `flash_ota`, `flash_xml`, `vcom_unlock`,
+`reboot`, `write_sn`, `frp_remove`, `unlock_bootloader`, `usb_testpoint`, `reboot_usb_update`,
+`oeminfo_flash`; plan-only `oeminfo`, `downgrade_enable`. Every write tool requires `confirm: true`
+and never accepts `allow-redline`. The GUI/CLI/MCP parity contract and its drift gate live in
 [docs/parity-design.md](docs/parity-design.md); full command table and gates in
 [docs/cli-mcp.md](docs/cli-mcp.md).
 

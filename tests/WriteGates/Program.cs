@@ -8,8 +8,10 @@
 // harness is meaningless without it and CI always builds KirinTool.Cli first.
 
 using System.Diagnostics;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using Kirin_Tool.Services.Approval;
 
 string root = Path.GetFullPath(args.Length == 0 ? "." : args[0]);
 int checks = 0;
@@ -25,6 +27,10 @@ string? cli = new[] {
   ?? throw new Exception(
     "FAIL cli binary not found; build it first: dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release");
 
+// Extra environment handed to the CLI process: the stub "fastboot" (KIRIN_FASTBOOT) and the
+// behaviour the stub should imitate (STUB_MODE). Set per case, cleared after it.
+var stubEnvironment = new Dictionary<string, string>(StringComparer.Ordinal);
+
 (int Code, string Out, string Err) Run(params string[] argv)
 {
     bool dll = cli.EndsWith(".dll", StringComparison.Ordinal);
@@ -36,6 +42,7 @@ string? cli = new[] {
     };
     if (dll) psi.ArgumentList.Add(cli);
     foreach (string a in argv) psi.ArgumentList.Add(a);
+    foreach (var pair in stubEnvironment) psi.Environment[pair.Key] = pair.Value;
     using Process process = Process.Start(psi)!;
     string stdout = process.StandardOutput.ReadToEnd();
     string stderr = process.StandardError.ReadToEnd();
@@ -124,10 +131,200 @@ try
         Check(doc.RootElement.GetProperty("exitCode").GetInt32() == 5, "flash-xml: JSON exitCode matches the process exit code");
         Check(doc.RootElement.GetProperty("missingImages").GetArrayLength() == 2, "flash-xml: both missing images reported");
     }
+    // ---- 5. oeminfo-flash: the device write half of oeminfo needs the redline gate ----
+    // The CLI `oeminfo` command stays plan-only (exit 4); writing the converted image is a
+    // separate capability (D-01) and is refused without the redline override + typed phrase.
+    {
+        string image = Path.Combine(work, "converted-oeminfo.img");
+        File.WriteAllBytes(image, new byte[0x400]);
+
+        (int code, string stdout, string stderr) = Run("oeminfo-flash", "--file", image, "--yes", "--json");
+        Check(code == 4, "oeminfo-flash without --allow-redline exits 4 (got " + code + "): " + stderr.Trim());
+        using JsonDocument doc = JsonDocument.Parse(stdout);
+        Check(doc.RootElement.GetProperty("applied").GetBoolean() == false, "oeminfo-flash refusal: applied=false");
+        Check(doc.RootElement.GetProperty("gate").GetString() == "refused", "oeminfo-flash refusal: gate=refused");
+        Check(doc.RootElement.GetProperty("reason").GetString()!.Contains("redline"), "oeminfo-flash refusal: reason names the redline rule");
+
+        (code, stdout, stderr) = Run("oeminfo-flash", "--file", image, "--yes", "--allow-redline", "--json");
+        Check(code == 4, "oeminfo-flash with a non-interactive stdin still exits 4 (got " + code + ")");
+        Check(stderr.Contains("confirm phrase"), "oeminfo-flash refuses because the typed phrase cannot be given here");
+    }
 }
 finally
 {
     try { Directory.Delete(work, true); } catch { }
 }
 
+// ---------------------------------------------------------------- 5. D-02: the JSON verdict
+// The stub "fastboot" answers what the case needs, so the assertions are about the code under
+// test and not about a physical device: a failing loader must never produce applied:true.
+string stubDir = Path.Combine(Path.GetTempPath(), "kirin-writegates-stub-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(stubDir);
+string stub = Path.Combine(stubDir, "stub-fastboot");
+File.WriteAllText(stub, """
+#!/usr/bin/env python3
+import os, pathlib, sys
+mode = os.environ.get("STUB_MODE", "ok")
+state = pathlib.Path(os.path.abspath(__file__)).with_suffix(".state")
+args = sys.argv[1:]
+def answer(text, code=0):
+    print(text)
+    sys.exit(code)
+if args[:1] == ["devices"]:
+    answer("TEST fastboot")
+if args[:1] == ["reboot"]:
+    answer("FAILED (remote: reboot not allowed)", 1) if mode == "reboot-fail" else answer("OKAY")
+if args[:1] == ["flash"]:
+    answer("FAILED (remote: flash write failure)", 1) if mode in ("flash-fail", "flash-all-fail") else answer("OKAY")
+if args[:1] == ["getvar"] and len(args) > 1:
+    variable = args[1]
+    if variable.startswith("nve:SN@"):
+        if mode == "write-fail":
+            answer("FAILED (remote: variable write not allowed)", 1)
+        state.write_text(variable.split("@", 1)[1])
+        answer("OKAY")
+    if variable == "nve:SN":
+        if mode == "readback-fail":
+            answer("FAILED (remote: unknown variable)", 1)
+        if mode == "readback-mismatch":
+            answer("(bootloader) nve:SN:OLDSERIAL7\nOKAY")
+        answer("(bootloader) nve:SN:" + (state.read_text() if state.exists() else "NONE") + "\nOKAY")
+answer("OKAY")
+""");
+File.SetUnixFileMode(stub, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+stubEnvironment["KIRIN_FASTBOOT"] = stub;
+
+// ---- 5a. reboot: the device refuses the command ----
+{
+    stubEnvironment["STUB_MODE"] = "reboot-fail";
+    (int code, string stdout, string stderr) = Run("reboot", "--yes", "--json");
+    Check(code == 3, "reboot against a refusing loader exits 3 (got " + code + "): " + stderr.Trim());
+    using JsonDocument doc = JsonDocument.Parse(stdout);
+    Check(doc.RootElement.GetProperty("applied").GetBoolean() == false, "reboot failure: applied=false (no hardcoded success)");
+    Check(doc.RootElement.GetProperty("gate").GetString() == "failed", "reboot failure: gate=failed");
+    Check(doc.RootElement.GetProperty("reason").GetString()!.Contains("FAILED"), "reboot failure: reason quotes the loader answer");
+    Check(doc.RootElement.GetProperty("exitCode").GetInt32() == code, "reboot failure: JSON exitCode matches the process exit code");
+}
+
+// ---- 5b. reboot: the device accepts the command ----
+{
+    stubEnvironment["STUB_MODE"] = "ok";
+    (int code, string stdout, string stderr) = Run("reboot", "--yes", "--json");
+    Check(code == 0, "reboot against an accepting loader exits 0 (got " + code + "): " + stderr.Trim());
+    using JsonDocument doc = JsonDocument.Parse(stdout);
+    Check(doc.RootElement.GetProperty("applied").GetBoolean(), "reboot success: applied=true");
+    Check(doc.RootElement.GetProperty("gate").GetString() == "applied", "reboot success: gate=applied");
+    Check(!doc.RootElement.TryGetProperty("reason", out JsonElement reason) || reason.ValueKind == JsonValueKind.Null,
+        "reboot success: no reason");
+}
+
+// ---------------------------------------------------------------- 6. D-03: write-sn read-back
+// The command is driven in-process because a redline write needs the confirm phrase typed on an
+// interactive stdin: the harness installs an approving gate instead of faking a terminal. The
+// device is still the stub above, so nothing here touches real hardware.
+{
+    var core = typeof(Kirin_Tool.Services.FastbootClient).Assembly;
+    Type runnerType = core.GetType("Kirin_Tool.Cli.CliRunner")
+        ?? throw new Exception("FAIL Kirin_Tool.Cli.CliRunner is gone");
+    var table = ((System.Collections.IEnumerable)runnerType
+        .GetProperty("Commands", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static)!
+        .GetValue(null)!).Cast<object>().ToList();
+    object command = table.Single(candidate =>
+        (string)candidate.GetType().GetProperty("Name")!.GetValue(candidate)! == "write-sn");
+    MethodInfo execute = command.GetType().GetMethod("ExecuteAsync")
+        ?? throw new Exception("FAIL WriteSnCommand.ExecuteAsync is gone");
+    Type parserType = core.GetType("Kirin_Tool.Cli.ArgParser")
+        ?? throw new Exception("FAIL Kirin_Tool.Cli.ArgParser is gone");
+    MethodInfo parse = parserType.GetMethod("Parse", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static)!;
+    Type contextType = core.GetType("Kirin_Tool.Cli.CliContext")
+        ?? throw new Exception("FAIL Kirin_Tool.Cli.CliContext is gone");
+    ConstructorInfo contextCtor = contextType.GetConstructors()
+        .Single(ctor => ctor.GetParameters().Length == 5);
+
+    async Task<(int Code, JsonDocument Json)> RunWriteSn(string mode, string value)
+    {
+        ApprovalGates.Install(new GuiApprovalGate(new ApproveEveryRequest()));
+        try
+        {
+            // In-process, so the stub reads its behaviour from this process' environment.
+            Environment.SetEnvironmentVariable("KIRIN_FASTBOOT", stub);
+            Environment.SetEnvironmentVariable("STUB_MODE", mode);
+            object parsed = parse.Invoke(null, new object[]
+            {
+                new[] { "--value", value, "--yes", "--allow-redline", "--json" },
+                new[] { "value" },
+                new[] { "yes", "allow-redline", "json" },
+            })!;
+            var stdout = new StringWriter();
+            object context = contextCtor.Invoke(new object[] { stdout, new StringWriter(), true, true, root });
+            var call = (Task<int>)execute.Invoke(command, new object[] { parsed, context, CancellationToken.None })!;
+            int code = await call;
+            return (code, JsonDocument.Parse(stdout.ToString()));
+        }
+        finally
+        {
+            ApprovalGates.ResetToFailClosed();
+            Environment.SetEnvironmentVariable("KIRIN_FASTBOOT", null);
+            Environment.SetEnvironmentVariable("STUB_MODE", null);
+        }
+    }
+
+    // 6a. the write command itself fails
+    {
+        (int code, JsonDocument doc) = await RunWriteSn("write-fail", "NEWSERIAL9");
+        Check(code == 3, "write-sn with a failed write exits 3 (got " + code + ")");
+        Check(doc.RootElement.GetProperty("applied").GetBoolean() == false, "write-sn failed write: applied=false");
+        Check(doc.RootElement.GetProperty("gate").GetString() == "failed", "write-sn failed write: gate=failed");
+        Check(doc.RootElement.GetProperty("verified").GetBoolean() == false, "write-sn failed write: verified=false");
+        Check(doc.RootElement.GetProperty("reason").GetString()!.StartsWith("command_failed", StringComparison.Ordinal),
+            "write-sn failed write: reason=command_failed");
+    }
+
+    // 6b. the write is accepted but the device still reads the old value
+    {
+        (int code, JsonDocument doc) = await RunWriteSn("readback-mismatch", "NEWSERIAL9");
+        Check(code == 3, "write-sn with a read-back mismatch exits 3 (got " + code + ")");
+        Check(doc.RootElement.GetProperty("applied").GetBoolean() == false, "write-sn mismatch: applied=false");
+        Check(doc.RootElement.GetProperty("gate").GetString() == "failed", "write-sn mismatch: gate=failed");
+        Check(doc.RootElement.GetProperty("verified").GetBoolean() == false, "write-sn mismatch: verified=false");
+        Check(doc.RootElement.GetProperty("reason").GetString() == "readback_mismatch:OLDSERIAL7",
+            "write-sn mismatch: reason names the value the device kept (got '" + doc.RootElement.GetProperty("reason").GetString() + "')");
+        Check(doc.RootElement.GetProperty("readBack").GetString() == "OLDSERIAL7", "write-sn mismatch: readBack is reported");
+        Check(doc.RootElement.GetProperty("expected").GetString() == "NEWSERIAL9", "write-sn mismatch: expected is reported");
+    }
+
+    // 6c. the read-back itself is unavailable: that is not a match
+    {
+        (int code, JsonDocument doc) = await RunWriteSn("readback-fail", "NEWSERIAL9");
+        Check(code == 3, "write-sn with an unavailable read-back exits 3 (got " + code + ")");
+        Check(doc.RootElement.GetProperty("verified").GetBoolean() == false, "write-sn unavailable read-back: verified=false");
+        Check(doc.RootElement.GetProperty("reason").GetString() == "readback_unavailable",
+            "write-sn unavailable read-back: reason=readback_unavailable");
+    }
+
+    // 6d. identical read-back only
+    {
+        (int code, JsonDocument doc) = await RunWriteSn("ok", "NEWSERIAL9");
+        Check(code == 0, "write-sn with an identical read-back exits 0 (got " + code + ")");
+        Check(doc.RootElement.GetProperty("applied").GetBoolean(), "write-sn verified: applied=true");
+        Check(doc.RootElement.GetProperty("gate").GetString() == "applied", "write-sn verified: gate=applied");
+        Check(doc.RootElement.GetProperty("verified").GetBoolean(), "write-sn verified: verified=true");
+        Check(doc.RootElement.GetProperty("readBack").GetString() == "NEWSERIAL9", "write-sn verified: readBack equals the written value");
+    }
+}
+stubEnvironment.Clear();
+try { Directory.Delete(stubDir, true); } catch { }
+
 Console.WriteLine(checks + " write gate checks passed.");
+
+/// <summary>
+/// Test prompt: approves every request and, when the request is a redline one, types the exact
+/// per-capability phrase a human would have to type. Nothing here is reachable from the product.
+/// </summary>
+sealed class ApproveEveryRequest : IApprovalPrompt
+{
+    public Task<ApprovalPromptAnswer> AskAsync(ApprovalPromptModel model, CancellationToken cancellationToken) =>
+        Task.FromResult(new ApprovalPromptAnswer(
+            ApprovalPromptOutcome.Approved,
+            model.RequiresTypedConfirm ? model.ConfirmPhrase : null));
+}

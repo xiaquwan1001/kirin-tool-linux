@@ -99,11 +99,6 @@ namespace Kirin_Tool.Services
             }
         }
 
-        public async Task<ProcessResult> FlashConvertedOemInfo(string filePath)
-        {
-            return await _fastbootClient.FlashOemInfo(filePath);
-        }
-
         public void CleanupTempFiles()
         {
             try
