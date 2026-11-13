@@ -26,7 +26,14 @@
   gate=failed`）。设备侧仍是 4 条 `oem oeminfoerase-*ver`，顺序与时序未变（[downgrade-gate.md](downgrade-gate.md)）。
 - **日志已合流（v2.4.15）**：一次操作 = `sessions/<ts>-<pid>-<op>/`（`session.jsonl` + `vcom-trace.txt`
   + `summary.json`），新增只读 `logs list|show|path`；旧 `{vcom,fastboot,flash}/*.jsonl` 只读兼容。
-- **仍未修**：`D-04`（USB Update 成功判据虚）——已单独立 lane 处理。
+- **D-04 → fixed-in-2.4.15**：USB Update 通道改出三态结论（`verified / partial / failed`），
+  握手未建立、缺 `.img`/`.img.header`/0 字节、读到 0 字节早退、空 `else` 全部变成
+  `degraded:`/`skipped:`/`missing:` 事件；`FlashPartitions` 返回 `UsbUpdateVerdict`，GUI/CLI 按三态显示，
+  `WriteReport` 映射 Verified→Applied、Partial→Partial(exit 3)、Failed→Failed(exit 3)。协议命令/时序未变
+  （[usb-update-verdict.md](usb-update-verdict.md)，`tests/UsbUpdateVerdict`）。
+- **D-13 → fixed-in-2.4.15**：`downgrade-enable` 拆出 `downgrade-erase`（Write+红线+不可逆），
+  GUI 先过 `RequestGuiApprovalAsync` 再走 `DeviceWriteOps.EnableDowngradeAsync(ticket)`；CLI/MCP 同步（[downgrade-gate.md](downgrade-gate.md)）。
+- **剩余 open 项**：见下表 `open` 行；`D-12`（整包 USB Update 仍无 CLI/MCP 面）等下一轮。
 
 ## 0. 口径
 
@@ -79,7 +86,7 @@
 | D-01 | BB-05 / S19 / F05 / P20 | **GUI「Convert OEMInfo」的直写分支仍然直写设备**（`oeminfoerase-disablewp` + `oeminfowrite-KTModel@/KTVendor@`），既不经过审批闸门，也没有 CLI/MCP 对应物；而注册表把 `oeminfo` 声明成 `PlanOnly` → 三面契约与现实矛盾 | fixed-in-2.4.15 | GUI 直写 `MainWindow.axaml.cs:2526,2533,2554`，分支入口 `:2500`（`useDirectCommand`）；`BtnConvertOem_Click`（`:2485`）直到 `:2570` 之间没有任何 `RequestGuiApprovalAsync`/`ConfirmRedlineWriteAsync`（闸门只出现在 `:1517,1602,1846,1888,2030,2227,2409,2675,3039`，其中 `:2675` 属另一条「转换后 Flash Back」路径 `FlashOemInfoToDevice`）；注册表 `CapabilityRegistry.cs:105-108`；`oeminfoerase-disablewp` 返回值被丢弃（S19）。**误判后果**：读文档/注册表的人以为 oeminfo 只出计划，实际 GUI 一点就写；写 SN/FRP 都要手输确认串，这里连普通确认都没有 |
 | D-02 | F07 | 所有新写命令共用 `WriteResult`，**无条件**输出 `applied=true, gate="applied", exitCode=0`，即使 `result.success=false` | fixed-in-2.4.15 | `Cli/Commands/DeviceWriteCommands.cs:118-133`。**误判后果**：只读 `applied`/`gate`/`exitCode` 字段的 AI 会把失败写当成功（这是审计 F07 的更严重版本，覆盖面从 flash 扩到全部写命令） |
 | D-03 | F04 残余（CLI/MCP 侧） | `write-sn` 的 CLI/MCP 路径**没有读回比对**，只有 fastboot 退出码 | fixed-in-2.4.15 | `Cli/Commands/DeviceWriteCommands.cs:210` 原文 "no read-back check is available on this path"；GUI 侧已有（§1）。**误判后果**：同一个能力在 GUI 会报「未确认」，在 CLI/MCP 报成功 |
-| D-04 | F10 / S03 / S04 / S06 / S07 / S09 / F13 | USB Update 通道的成功判据仍然虚：握手 3 次失败只写一行日志继续；缺 `.img`/`.img.header`/0 字节的分区 `continue` 且不计失败；读到 0 字节 `break` 后 `return null`（=成功）；`if (success) … else { }` 空分支 | open | `Services/USBUpdate/UsbDownloadService.cs:187-211`（握手 void + "continuing the existing protocol sequence"）、`:303-320`（三处 `continue`）、`:406`（`if (bytesRead == 0) break;`）、`:99-110`（空 else）。**误判后果**：`FlashPartitions` 返回 true 时设备可能一片没写，GUI 仍显示 completed |
+| D-04 | F10 / S03 / S04 / S06 / S07 / S09 / F13 | USB Update 通道的成功判据仍然虚：握手 3 次失败只写一行日志继续；缺 `.img`/`.img.header`/0 字节的分区 `continue` 且不计失败；读到 0 字节 `break` 后 `return null`（=成功）；`if (success) … else { }` 空分支 | fixed-in-2.4.15 | 五处全部改成显式结论/事件：握手 `DoHandshake` 返回 bool（失败 = `HandshakeEstablished=false` + `degraded:`），缺 `.img`/`.img.header` → `Skipped[]`、0 字节 → `Missing[]`（`skipped:`/`missing:`），`bytesRead==0` → `NoteStreamEndedEarly`（不再是成功），空 `if/else` → `degraded:` 事件。结论三态见 `Services/USBUpdate/UsbUpdateVerdict.cs`，上层映射见 [usb-update-verdict.md](usb-update-verdict.md)；`tests/UsbUpdateVerdict`（39 checks）逐条覆盖；`StableParity` 哈希按「结论模型变化、协议未变」刷新 |
 | D-05 | F03 / S17 | GUI 把被跳过的分区计成成功：`CompletePartition(..., true, "Skipped")` 且 `successCount++` → 「Successfully flashed all N partitions!」恒成立 | open | `MainWindow.axaml.cs:637-638`、`:698-701`。CLI 侧已有 `OtaPlan.Skipped` 单列（`Cli/Commands/OtaFlashRunner.cs:32,212`），GUI 没有 |
 | D-06 | H20 / H23 | pwn 后跳转的 `xloaderStart` 与漏洞 `returnAddr` 仍是 `switch` 里的裸字面量，与 `CpuAddresses` 表分离，无法外置/审查 | open | `Services/VcomFlasher.cs:213-222`、`:239-247`。审计定为「变砖级」字面量，改一个字节即换行为；外置表尚未做 |
 | D-07 | P11 / P12 / P13 / H32 | 找不到随包 fastboot 时**静默**回落到 `/usr/bin/fastboot` → PATH（Google platform-tools 对华为临时 loader 的 `getvar` 全面失败）；`doctor` 的 `ok` 只判「找到 && 能跑」，不判血统 | open | `Services/FastbootClient.cs:78-86`（回落后无警告）；`Cli/Commands/ReadCommands.cs:191`（`ok = fastbootPath != null && fastbootVersion != null`）、`:143-156`（有 per-check 表，无 parity 探针）。**误判后果**：AI 按 `ok:true` 认为环境健康，随后所有读都失败并被归因到「连接问题」 |
@@ -196,13 +203,13 @@ B1 = 副作用在 CLI/MCP 完全不可达。E 之后写能力三面齐备，但�
 | 2 | H20/H23 pwn 入口与返回地址 | open | D-06 |
 | 3 | F01 "Unlock Complete" | fixed | §1 |
 | 4 | F02/S15 `Skipped` + 继续 | fixed | §1 |
-| 5 | F10/S06/S07 USB Update 假成功 | open | D-04 |
+| 5 | F10/S06/S07 USB Update 假成功 | fixed | D-04 |
 | 6 | S10/S11 `--require-backup` 静默失效 | fixed | §1 |
 | 7 | S12 ArgParser 宽松 | fixed | §1 |
 | 8 | F04/S18 写 SN 只看退出码 | GUI fixed / CLI open | §1 + D-03 |
 | 9 | F03/S17 跳过计成功 | GUI open / CLI 部分 | D-05 |
 | 10 | F07 `applied:true` 在 0/N 时也出 | open（范围更大） | D-02 |
-| 11 | S03/S04/S05 握手与 reboot 返回值丢弃 | open | D-04 |
+| 11 | S03/S04/S05 握手与 reboot 返回值丢弃 | fixed | D-04 |
 | 12 | P11/P12/P14/P13 fastboot 血统 | open | D-07 |
 | 13 | F09/S22 dump 只判 >0 字节 | open | D-09 |
 | 14 | S19 `oeminfoerase-disablewp` 结果丢弃 | open | D-01 |

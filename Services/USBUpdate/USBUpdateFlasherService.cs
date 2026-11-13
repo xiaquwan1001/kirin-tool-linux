@@ -89,7 +89,12 @@ namespace Kirin_Tool.Services.USBUpdate
         /// <c>true</c> only after the user explicitly confirmed that THIS operation may
         /// overwrite identity/calibration/key material.
         /// </param>
-        public async Task FlashPartitions(IEnumerable<(string FilePath, string Label, List<string> SelectedPartitions)> filesData, CancellationToken cancellationToken = default, bool allowRedline = false)
+        /// <returns>
+        /// What the device actually established (D-04): `verified` / `partial` / `failed`. A
+        /// non-verified transfer no longer hides behind a bool or behind an exception, so the GUI
+        /// and the CLI can report all three states; the caller must read this value.
+        /// </returns>
+        public async Task<UsbUpdateVerdict> FlashPartitions(IEnumerable<(string FilePath, string Label, List<string> SelectedPartitions)> filesData, CancellationToken cancellationToken = default, bool allowRedline = false)
         {
             // One op for the whole USB-update transfer (docs/op-scope-map.md row 7): every unpack,
             // the redline decision and every per-partition transfer is a step of this file.
@@ -334,6 +339,15 @@ namespace Kirin_Tool.Services.USBUpdate
 
             cancellationToken.ThrowIfCancellationRequested();
 
+            // The required set is the caller's own selection, never a hardcoded partition list
+            // (D-04). An empty selection means "the plan decides": every list.txt entry with
+            // flag == 1 is required.
+            List<string> requiredPartitions = filesData
+                .Where(data => data.SelectedPartitions != null && data.SelectedPartitions.Count > 0)
+                .SelectMany(data => data.SelectedPartitions ?? new List<string>())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
             var usbService = new UsbDownloadService(_log, _dloadDirectory);
             usbService.OnRetryRequired += (title, message) =>
             {
@@ -352,10 +366,16 @@ namespace Kirin_Tool.Services.USBUpdate
                 OnPartitionCompleted?.Invoke(index, name, success, msg);
             };
 
-            bool flashSuccess = false;
+            UsbUpdateVerdict verdict;
             try
             {
-                flashSuccess = await Task.Run(() => usbService.FlashImages(), cancellationToken);
+                verdict = await Task.Run(() => usbService.FlashImagesWithVerdict(
+                    requiredPartitions.Count == 0 ? null : requiredPartitions,
+                    // Every degraded/skipped/missing/written fact becomes a structured op step:
+                    // the event token is the log prefix, the fields carry partition/required.
+                    onEvent: evt => op.Step(evt.Line, "usb-update.event", evt.Fields,
+                        evt.Kind == UsbUpdateEventKind.Written ? true : (bool?)null,
+                        "usb-event:" + evt.Token)), cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -369,15 +389,12 @@ namespace Kirin_Tool.Services.USBUpdate
                 throw new Exception($"USB Flashing failed: {ex.Message}", ex);
             }
 
-            if (!flashSuccess)
-            {
-                op.Result(false, null, null, null, null, "usb-transfer:failed",
-                    "at least one partition reported failure (see the per-partition steps)");
-                throw new Exception("One or more partitions failed to flash.");
-            }
-
-            op.Result(true, null, null, null, null, "usb-transfer:ok",
-                allPartitions.Count + " partition(s) transferred over the USB-update channel");
+            // Three-state mapping (D-04, docs/usb-update-verdict.md): only `verified` is ok.
+            op.Step("usb-update verdict: " + verdict.Describe());
+            op.Result(verdict.Verified, null, null, null, null,
+                "usb-verdict:" + verdict.Token + ":required=" + verdict.RequiredWrittenCount + "/" + verdict.RequiredPartitions.Count,
+                verdict.Describe());
+            return verdict;
         }
     }
 }

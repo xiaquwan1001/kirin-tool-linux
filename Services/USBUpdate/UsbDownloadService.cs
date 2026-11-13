@@ -36,8 +36,12 @@ namespace Kirin_Tool.Services.USBUpdate
     {
         private readonly Action<string> _log;
         private readonly string _dloadDirectory;
+        private readonly Func<IUpdateTransport?>? _connectionFactory;
 
         public string? LastError { get; private set; }
+
+        /// <summary>The verdict of the most recent transfer (null before the first one).</summary>
+        public UsbUpdateVerdict? LastVerdict { get; private set; }
         private static string FailureReason(Exception error) => error.InnerException == null
             ? error.Message : $"{error.Message} ({error.GetBaseException().Message})";
         private bool RecordFailure(string details)
@@ -54,15 +58,51 @@ namespace Kirin_Tool.Services.USBUpdate
         public Action<int, string, bool, string>? OnPartitionCompleted;
 
         public UsbDownloadService(Action<string> log, string dloadDirectory)
+            : this(log, dloadDirectory, null)
+        {
+        }
+
+        /// <summary>
+        /// Same channel, but the transport comes from <paramref name="connectionFactory"/> instead of
+        /// <see cref="BuildConnection"/>. Nothing else changes: same commands, same waits, same 3
+        /// handshake attempts. The seam exists so the verdict rules of D-04 can be exercised without
+        /// a device; the shipped callers keep using the two-argument constructor.
+        /// </summary>
+        public UsbDownloadService(Action<string> log, string dloadDirectory, Func<IUpdateTransport?>? connectionFactory)
         {
             _log = log;
             _dloadDirectory = dloadDirectory;
+            _connectionFactory = connectionFactory;
         }
 
-        public bool FlashImages()
+        /// <summary>
+        /// Where one partition's image bytes come from (default: a read-only <see cref="FileStream"/>).
+        /// A seam for the same reason as the connection factory: an image stream that ends before its
+        /// declared size is a real degradation and must be testable without a device.
+        /// </summary>
+        public Func<string, Stream>? OpenImageStream { get; set; }
+
+        /// <summary>
+        /// Legacy boolean view of the channel: true only for a <see cref="UsbUpdateOutcome.Verified"/>
+        /// transfer. Callers that must tell "partial" from "failed" use
+        /// <see cref="FlashImagesWithVerdict"/> and read <see cref="LastVerdict"/>.
+        /// </summary>
+        public bool FlashImages() => FlashImagesWithVerdict().Verified;
+
+        /// <summary>
+        /// Run the USB-update transfer and report what the device actually established (D-04).
+        /// </summary>
+        /// <param name="requiredPartitions">
+        /// The set that must all be written for a `verified` verdict. Null/empty means "the plan
+        /// decides": every entry list.txt selects (flag == 1) is required.
+        /// </param>
+        /// <param name="onEvent">Optional structured sink for every degraded/skipped/missing/written fact.</param>
+        public UsbUpdateVerdict FlashImagesWithVerdict(IEnumerable<string>? requiredPartitions = null,
+            Action<UsbUpdateEvent>? onEvent = null)
         {
             LastError = null;
             _log("Opening USB Update connection.");
+            var verdictBuilder = new UsbUpdateVerdictBuilder(requiredPartitions, _log, onEvent);
             IUpdateTransport port = null;
             
             while (port == null)
@@ -90,21 +130,40 @@ namespace Kirin_Tool.Services.USBUpdate
             try
             {
                 _log("USB Update connection opened; starting handshake.");
-                DoHandshake(port);
-                
-                _log("Handshake routine returned; sending package authorization if present.");
-                SendUnlockCommand(port);
-                
-                success = FlashPartitions(port);
-
-                if (success)
+                if (DoHandshake(port))
                 {
-                    SendCommand(port, CreateRebootCommand(), 0.3);
-                    Thread.Sleep(50);
-                    SendCommand(port, CreateForceRebootCommand(), 0.3);
+                    verdictBuilder.HandshakeEstablished();
                 }
                 else
                 {
+                    verdictBuilder.HandshakeMissing("3 handshake attempts got no expected answer (7E 26 00 00 25 A7)");
+                }
+                
+                _log("Handshake routine returned; sending package authorization if present.");
+                if (!SendUnlockCommand(port))
+                {
+                    verdictBuilder.AuthorizationMissing("package authorization (unlockcode) was sent but not acknowledged");
+                }
+                
+                success = FlashPartitions(port, verdictBuilder);
+
+                if (success)
+                {
+                    if (!SendCommand(port, CreateRebootCommand(), 0.3))
+                    {
+                        verdictBuilder.NoteDegraded("reboot command (0x0A) was not acknowledged by the device");
+                    }
+                    Thread.Sleep(50);
+                    if (!SendCommand(port, CreateForceRebootCommand(), 0.3))
+                    {
+                        verdictBuilder.NoteDegraded("force-reboot command (0x32) was not acknowledged by the device");
+                    }
+                }
+                else
+                {
+                    // Was an empty else (D-04): after a hard stop the reboot commands are deliberately
+                    // NOT sent, and that decision is an explicit event instead of a silent branch.
+                    verdictBuilder.NoteDegraded("reboot commands were not sent: the transfer stopped before every selected partition was written");
                 }
             }
             catch (Exception ex)
@@ -118,7 +177,16 @@ namespace Kirin_Tool.Services.USBUpdate
                 port?.Close();
                 port?.Dispose();
             }
-            return success;
+
+            UsbUpdateVerdict outcome = verdictBuilder.Build();
+            LastVerdict = outcome;
+            _log(outcome.Describe());
+            if (outcome.Outcome == UsbUpdateOutcome.Failed && LastError == null)
+            {
+                // A failed transfer always carries a reason, even when nothing threw.
+                LastError = outcome.Reason;
+            }
+            return outcome;
         }
 
         private IUpdateTransport BuildConnection()
@@ -126,6 +194,7 @@ namespace Kirin_Tool.Services.USBUpdate
             SerialPort? serial = null;
             try
             {
+                if (_connectionFactory != null) return _connectionFactory();
                 if (OperatingSystem.IsLinux()) return BufferedUsbTransport.Open();
                 string portName = FindHiSiliconUsbUpdatePort();
                 if (portName == null) return null;
@@ -184,7 +253,12 @@ namespace Kirin_Tool.Services.USBUpdate
             return null;
         }
 
-        private void DoHandshake(IUpdateTransport port)
+        /// <summary>
+        /// Send the handshake and report whether the expected answer was seen. Was: `void`, so a
+        /// silent device left the caller unable to say anything about the link (D-04). The command
+        /// bytes, the 3 attempts and the 50/200 ms waits are unchanged.
+        /// </summary>
+        private bool DoHandshake(IUpdateTransport port)
         {
             const int maxRetries = 3;
             byte[] expectedPrefix = new byte[] { 0x7E, 0x26, 0x00, 0x00, 0x25, 0xA7 };
@@ -200,7 +274,7 @@ namespace Kirin_Tool.Services.USBUpdate
                 if (ContainsSequence(response, expectedPrefix))
                 {
                     _log("Expected handshake response received.");
-                    return;
+                    return true;
                 }
 
                 if (attempt < maxRetries)
@@ -208,15 +282,21 @@ namespace Kirin_Tool.Services.USBUpdate
                     Thread.Sleep(200);
                 }
             }
-            _log("Expected handshake response not observed; continuing the existing protocol sequence.");
+            _log("Expected handshake response not observed; the link is unconfirmed, so the verdict can be at most partial.");
+            return false;
         }
 
-        private void SendUnlockCommand(IUpdateTransport port)
+        /// <summary>
+        /// Send the package-authorization command when the package carried an unlockcode. Returns
+        /// false when the command was sent but not acknowledged (was: an empty if-body, D-04).
+        /// </summary>
+        private bool SendUnlockCommand(IUpdateTransport port)
         {
             string unlockPath = Path.Combine(_dloadDirectory, "unlockcode");
             if (!File.Exists(unlockPath))
             {
-                return;
+                _log("No unlockcode in the transfer directory; package authorization is not applicable.");
+                return true;
             }
 
             byte[] unlockCode = File.ReadAllBytes(unlockPath);
@@ -233,14 +313,20 @@ namespace Kirin_Tool.Services.USBUpdate
             finalCmd.AddRange(converted);
             finalCmd.Add(0x7E);
 
-            if (!SendCommand(port, finalCmd.ToArray(), 0.1)) {}
+            return SendCommand(port, finalCmd.ToArray(), 0.1);
         }
 
-        private bool FlashPartitions(IUpdateTransport port)
+        /// <summary>
+        /// Send every partition the plan selects. Returns false only when the transfer stopped at a
+        /// partition; every skip / missing image / cut-off stream is recorded on
+        /// <paramref name="verdict"/> instead of being silently continued (D-04).
+        /// </summary>
+        private bool FlashPartitions(IUpdateTransport port, UsbUpdateVerdictBuilder verdict)
         {
             string listPath = Path.Combine(_dloadDirectory, "list.txt");
             if (!File.Exists(listPath))
             {
+                verdict.NoteFatal("transfer preparation: list.txt was not found");
                 return RecordFailure("Transfer preparation: list.txt was not found.");
             }
 
@@ -266,7 +352,12 @@ namespace Kirin_Tool.Services.USBUpdate
             {
                 var parts = line.Split(' ');
                 if (parts.Length < 2)
+                {
+                    // Was a silent continue: a malformed plan line changes nothing, but it must not
+                    // disappear. lineIndex is deliberately not advanced (plan mapping unchanged).
+                    verdict.NoteDegraded("list.txt line " + (lineIndex + 1) + " is malformed; the line was ignored");
                     continue;
+                }
 
                 string name = parts[0];
                 int flag = 0;
@@ -274,9 +365,13 @@ namespace Kirin_Tool.Services.USBUpdate
 
                 if (flag != 1)
                 {
+                    // Declared but not selected: not required, never silent.
+                    verdict.NoteSkipped(name, "not selected for transfer (list.txt flag=" + flag + ")");
                     lineIndex++;
                     continue;
                 }
+
+                verdict.DeclareRequired(name);
 
                 if (partitionSourceMap.ContainsKey(lineIndex))
                 {
@@ -291,6 +386,7 @@ namespace Kirin_Tool.Services.USBUpdate
                         long sourceSize = new FileInfo(sourceImg).Length;
                         if (sourceSize == 0)
                         {
+                            verdict.NoteMissing(name, "mapped source image is 0 bytes: " + sourceImg);
                             lineIndex++;
                             continue;
                         }
@@ -307,12 +403,14 @@ namespace Kirin_Tool.Services.USBUpdate
                 
                 if (!File.Exists(imgPath))
                 {
+                    verdict.NoteSkipped(name, "image file is missing: " + imgPath);
                     lineIndex++;
                     continue;
                 }
                 
                 if (!File.Exists(headerPath))
                 {
+                    verdict.NoteSkipped(name, "header file is missing: " + headerPath);
                     lineIndex++;
                     continue;
                 }
@@ -320,6 +418,7 @@ namespace Kirin_Tool.Services.USBUpdate
                 long fileSize = new FileInfo(imgPath).Length;
                 if (fileSize == 0)
                 {
+                    verdict.NoteMissing(name, "image file is 0 bytes: " + imgPath);
                     lineIndex++;
                     continue;
                 }
@@ -340,18 +439,30 @@ namespace Kirin_Tool.Services.USBUpdate
                 catch (Exception ex)
                 {
                     string details = $"Partition {name}, header: {FailureReason(ex)}";
-                    RecordFailure(details);
-                    throw new IOException(details, ex);
+                    // Was: throw out of the transfer (no verdict was ever produced). The transfer
+                    // now stops here like the data/tail stage does, so the caller always gets a
+                    // verdict whose reason names this partition and stage (D-04).
+                    verdict.NoteTransferStopped(name, details);
+                    OnPartitionCompleted?.Invoke(lineIndex, name, false, details);
+                    _log(ex.ToString());
+                    return RecordFailure(details);
                 }
 
                 int blockSize = 0x20000;
                 string stage = "data transfer";
+                bool streamCutShort = false;
+                long sentBytes = 0;
                 try
                 {
                     _log($"Partition {name}: sending data.");
-                    string? imageError = SendImage(port, lineIndex, name, blockSize);
+                    string? imageError = SendImage(port, lineIndex, name, blockSize, out sentBytes, out streamCutShort);
                     if (imageError != null)
                     {
+                        if (streamCutShort)
+                        {
+                            // Was: `break` + success. The cut-off stream is a missing partition now.
+                            verdict.NoteStreamEndedEarly(name, sentBytes, fileSize);
+                        }
                         throw new IOException(imageError);
                     }
                     stage = "finalization";
@@ -361,12 +472,17 @@ namespace Kirin_Tool.Services.USBUpdate
                     {
                         throw new IOException(tailError);
                     }
+                    verdict.NoteWritten(name);
                     OnPartitionCompleted?.Invoke(lineIndex, name, true, "Success");
                     _log($"Partition {name}: completed successfully.");
                 }
                 catch (Exception ex)
                 {
                     string details = $"Partition {name}, {stage}: {FailureReason(ex)}";
+                    if (!streamCutShort)
+                    {
+                        verdict.NoteTransferStopped(name, details);
+                    }
                     OnPartitionCompleted?.Invoke(lineIndex, name, false, details);
                     _log(ex.ToString());
                     return RecordFailure(details);
@@ -377,8 +493,17 @@ namespace Kirin_Tool.Services.USBUpdate
             return true;
         }
 
-        private string? SendImage(IUpdateTransport port, int lineIndex, string name, int blockSize)
+        /// <summary>
+        /// Push one image. A stream that ends before its declared size is an ERROR now (was: `break`
+        /// followed by `return null`, i.e. success); the caller turns it into
+        /// `NoteStreamEndedEarly`. The block size, compression, timeout and command bytes are
+        /// unchanged.
+        /// </summary>
+        private string? SendImage(IUpdateTransport port, int lineIndex, string name, int blockSize,
+            out long sentBytes, out bool streamCutShort)
         {
+            sentBytes = 0;
+            streamCutShort = false;
             string imgPath = Path.Combine(_dloadDirectory, $"{name}.img");
             long fileSize = new FileInfo(imgPath).Length;
             uint addr = 0;
@@ -391,10 +516,12 @@ namespace Kirin_Tool.Services.USBUpdate
                 Array.Reverse(fileSeq);
             }
 
-            using (FileStream fs = new FileStream(imgPath, FileMode.Open, FileAccess.Read))
+            Func<string, Stream> openStream = OpenImageStream
+                ?? (path => new FileStream(path, FileMode.Open, FileAccess.Read));
+            long totalSent = 0;
+            using (Stream fs = openStream(imgPath))
             {
                 long remaining = fileSize;
-                long totalSent = 0;
                 
                 byte[] readBuffer = new byte[blockSize];
                 int lastReportedProgress = -1;
@@ -403,7 +530,15 @@ namespace Kirin_Tool.Services.USBUpdate
                 {
                     int toRead = (int)Math.Min(blockSize, remaining);
                     int bytesRead = fs.Read(readBuffer, 0, toRead);
-                    if (bytesRead == 0) break;
+                    if (bytesRead == 0)
+                    {
+                        // Was: `break` and then a null (= no error) return, so a truncated image
+                        // counted as a written partition (D-04).
+                        streamCutShort = true;
+                        sentBytes = totalSent;
+                        return "Stream ended early: " + totalSent + " of " + fileSize
+                            + " bytes could be read; the remainder was never sent.";
+                    }
 
                     byte[] compressed = Compression.ZlibCompress(readBuffer, 0, bytesRead);
                     byte[] dataCmd = CreateDataCommand(compressed, bytesRead, fileSeq, addr);
@@ -438,6 +573,7 @@ namespace Kirin_Tool.Services.USBUpdate
                     }
                 }
             }
+            sentBytes = totalSent;
             return null;
         }
 
