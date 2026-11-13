@@ -11,6 +11,7 @@ Fork-relevant guides first; inherited-baseline guides follow. Entry point: [READ
 | [fork-release.md](fork-release.md) | Fork release pipeline: deb / AppImage / tar.gz / CLI assets, deb layout, ICU/OpenSSL dependency policy, CI map. |
 | [verdict-honesty.md](verdict-honesty.md) | Verdict honesty: when this tool is allowed to say "success" (applied vs verified), VCOM ACK evidence, loader pre-flight, backup gate, NVE read-back, and the test map. |
 | [cli-vcom-unlock-parity.md](cli-vcom-unlock-parity.md) | `vcom-unlock` GUI↔CLI↔MCP alignment (design, item-by-item table, ACK policies, stage split, session log fields, tests). |
+| [ack-default.md](ack-default.md) | ACK default per entry point: CLI/MCP `strict`, GUI `lenient` — decision, exit/JSON table, migration and rollback. |
 | [features.md](features.md) | Feature overview across GUI, CLI and MCP. |
 | [FORK-NOTICE.md](FORK-NOTICE.md) | Fork provenance, BSL 1.1 license position, compliance checklist. |
 | [screenshots.md](screenshots.md) | Screenshot set: file names, content and capture guidance (images under docs/images/). |
