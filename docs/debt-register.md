@@ -95,7 +95,7 @@
 | BB-12 / BB-35 | About 页三个外链用 `Process.Start(UseShellExecute=true)` 打开浏览器，无服务抽象、无 CLI 面 | wontfix | 打开外部链接不是设备写，也不该暴露成 CLI/MCP 能力（会把「上网」变成 agent 可发起动作）。代码位置 `MainWindow.axaml.cs:2864,2870,2875` |
 | BB-33 | 进度框「关闭=取消」语义、关窗后不保留结果 | wontfix | 结论现在同时写 JSONL 操作日志与会话日志（`Services/Diagnostics/OperationLogger.cs`、`Services/VcomSessionLogger.cs`），UI 不再是唯一落点 |
 | H12 / H18 / H28 / H70 / H75 / H76 / H77 / H78 / H79 / H84 / H85 / H87 / H88 | 协议固定值（VID/PID、START 帧、命令字、UPDATE.APP magic、sparse magic、USB Update 端口/帧/CRC）不外置 | wontfix | 外置协议常量只会把「配错就变砖」从代码问题变成配置问题；审计原文也把这些标为 `可外置=N` |
-| `gui-ui-only.txt` 里的 18 个 handler（导航/文件对话框/勾选/剪贴板/外链） | 纯 UI 管道，无设备副作用 | wontfix | 已由 `tests/SurfaceParity`（门禁 E/E3）逐个要求「必须存在 + 必须写理由」；清单 `tests/SurfaceParity/gui-ui-only.txt` |
+| `gui-ui-only.txt` 里的 17 个 handler（导航/文件对话框/勾选/剪贴板/外链） | 纯 UI 管道，无设备副作用 | wontfix | 已由 `tests/SurfaceParity`（门禁 E/E3）逐个要求「必须存在 + 必须写理由」；清单 `tests/SurfaceParity/gui-ui-only.txt` |
 
 ---
 
@@ -238,5 +238,5 @@ B1 = 副作用在 CLI/MCP 完全不可达。E 之后写能力三面齐备，但�
 
 - 已关闭：16 条（B1 类 7 条、TOP15 中 6 条、其余为 S/F/H/P 单点）。
 - 仍 open：27 条（D-01…D-27），TOP3 = D-01（GUI OEMInfo 直写且绕闸门）/ D-02（`applied:true` 恒真）/ D-03（CLI 写 SN 无读回）。
-- wontfix：4 组（B 类 2 条 + 协议常量 13 条 + 纯 UI handler 18 个）。
+- wontfix：4 组（B 类 2 条 + 协议常量 13 条 + 纯 UI handler 17 个）。
 - unknown：审计报告中未逐行复核的剩余条目（见附录 E），数量取决于复核粒度，不在此虚报。
