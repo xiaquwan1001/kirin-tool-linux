@@ -220,6 +220,24 @@ v2.4.13 界面的 headless 渲染（commit `47fb3da`，来自真实 Avalonia 控
 | :-- | :-- |
 | ![红线确认](docs/images/screenshot-redline-confirm.png) | ![CLI 输出](docs/images/screenshot-cli-doctor.png) |
 
+## 什么时候会显示『未验证』
+
+工具把两件事分开报：**「字节/命令发出去了」（`applied`）** 和 **「设备侧确认收下了」（`verified`）**。
+只有后者成立才会说成功。下表是全部会出现「未验证」的地方：
+
+| 场景 | 结论 | 怎么变成"验证过" |
+| :--- | :--- | :--- |
+| VCOM loader 上传（GUI 进度窗 / `vcom-unlock`）有帧没拿到 `0xAA` ACK | GUI 琥珀色 **"Uploaded — Unverified"** + `frames sent / ACKed / missing`；CLI `gate=applied-unverified`, `reason=ack_missing:<n>` | 换线/换口重跑；或加 `--require-ack` 让它直接失败（exit 3） |
+| `--ack-mode off`（从不读 ACK） | `verified=false`, `reason=ack_not_requested` | 用默认 lenient 或 strict |
+| loader 缺失或无法 DTL 解密 | 直接在**发第一帧之前**失败：`failureKind=missing-loader`, `framesSent=0`，exit 5 | 补齐 `loaders/<chip>/*.ktl` |
+| 写 NVE 序列号（GUI NVMe▸Write SN） | 只有写后 `getvar nve:SN` 读回一致才报成功；否则弹 **"Write Not Confirmed"** 并附读回值与原因 | 读回值正确即成功；不一致重试 |
+| `--require-backup` 但备份目录建不出来 / dump 不完整 | 拒绝写入：exit 4，`reason=require_backup_failed`，stderr 给出原因 | 修好备份目录/权限后重跑 |
+| 选项拼错（如 `--require-backu`） | exit 1 并指名未知选项（不再被当成无害 flag 静默吞掉） | 用 `--help`；确实需要旧行为时加 `--lenient-args` |
+
+默认（不带 `--require-ack`）的"未验证"退出码仍是 0：`applied` 描述的是"已写出"这一事实，
+闸门契约与 35c6f6b 保持一致；**要把它当失败处理就加 `--require-ack`**。完整判定模型见
+[docs/verdict-honesty.md](docs/verdict-honesty.md)。
+
 ## 真机已验证 / 未验证
 
 | 真机已验证 | 未验证 |

@@ -218,7 +218,41 @@ GUI 与 CLI 共用 `Services/VcomSessionLogger.cs`（无新依赖，只用 Syste
 
 `tests/StableParity` 本身未放宽：仍是逐文件哈希比对（35 checks 全绿）。
 
-## 9. 未做（明确边界）
+## 9. 结论诚实化：`verified` / `--require-ack`（本 lane 增补）
+
+§2 的 ACK 策略只规定了"读不读、fail 不 fail"。本 lane 把**读到的 ACK 变成结论**：
+
+| JSON 字段 | 含义 |
+| :--- | :--- |
+| `applied` | 帧真的写出去了（与设备是否答话无关） |
+| `verified` | 每个期待 ACK 的帧都收到 `0xAA` |
+| `reason` | `ack_ok` / `ack_missing:<n>` / `ack_not_requested`（`--ack-mode off`）/ `missing_loader` / `replug_required` / `not_attempted` |
+| `gate` | `applied`（已验证）/ `applied-unverified`（已上传未验证）/ `failed` / `refused` / `plan-only` |
+| `conclusion` | `unlocked-fastboot-loaded` / `loaders-uploaded-unverified` / `failed` |
+| `ack.{expected,ok,bad,timeouts,missing,missingRatio,acked,notExpected}` | 全局计数；`missingRatio = missing/expected`（分母不含本就无 ACK 的 START/TAIL/exploit HEAD） |
+| `stages[].{framesSent,acks,missing,missingRatio}` | 同一套计数**按阶段**归属（靠 `UnlockOptions.StageBeginObserver`，不靠地址——hisi970..990 的 `null` 与 `XLOADER` 同址 0x22000） |
+
+新增参数：
+
+```bash
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes --require-ack      # 缺 ACK ⇒ exit 3, gate=failed
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes                    # 缺 ACK ⇒ exit 0, gate=applied-unverified
+```
+
+`--require-ack` **不改变线上行为**：flasher 仍是 lenient（继续记录、不中途抛），失败由结论层判定，
+因此传输中断不会因为"要严格"而半途炸掉；`--ack-mode off` 与 `--require-ack` 组合是参数错误（exit 1）。
+
+配套的服务侧改动（`Services/FirmwareUnlocker.cs`）：**发第一帧前**校验该 SoC 全部选中 loader 存在且
+DTL 可解，缺一即 `UnlockFailureKind.MissingLoader`、`framesSent=0`、exit 5；进度状态里不再有
+`Skipped`（缺失是失败，不是跳过）。
+
+GUI 侧同一套判定：ACK 计数够 ⇒ 绿 "Upload Verified"；不够 ⇒ 琥珀 "Uploaded — Unverified" 并显示
+`frames/ACKed/missing`；**不再**出现"只上传成功就弹 Unlock Complete"。GUI 的会话日志如今也含
+`frame.write`/`frame.ack` 行（此前 GUI 传 `Flasher=null`，帧行缺失）。
+
+（本节 DONE-9）
+
+## 10. 未做（明确边界）
 
 - GUI 侧没有自动化用例（Avalonia 不在 CI）；GUI 的日志接入靠共用服务 + `ProgressDialog` 显示路径。
 - `--stage-only rest` 不校验"确实拔过线"（只保证不重发 START）。

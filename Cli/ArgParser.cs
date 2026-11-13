@@ -22,6 +22,14 @@ internal sealed class ParsedArgs
 
     public List<string> Positionals { get; } = new();
 
+    /// <summary>Options that are not registered anywhere; only reachable with <c>--lenient-args</c>.</summary>
+    public IReadOnlyList<string> UnknownOptions => _unknown;
+    private readonly List<string> _unknown = new();
+    public void AddUnknown(string name)
+    {
+        if (!_unknown.Contains(name, StringComparer.OrdinalIgnoreCase)) _unknown.Add(name);
+    }
+
     public IReadOnlyDictionary<string, string> Values => _values;
     public bool HasFlag(string name) => _flags.Contains(name);
     public bool HasValue(string name) => _values.ContainsKey(name);
@@ -32,14 +40,30 @@ internal sealed class ParsedArgs
 
 internal static class ArgParser
 {
+    /// <summary>Options every command accepts, whatever its own <see cref="CliParam"/> list says.</summary>
+    private static readonly string[] GlobalFlags = { "json", "yes", "help", "lenient-args" };
+
     /// <summary>
     /// Minimal, predictable parser: <c>--name value</c>, <c>--name=value</c>, short aliases
-    /// (-o output, -y yes, -j json, -h help) and bare positionals. Unknown options are flags.
+    /// (-o output, -y yes, -j json, -h help) and bare positionals.
+    /// <para>
+    /// An option that is neither a registered value nor a registered flag is a <b>usage error</b>
+    /// (audit S12): a misspelled <c>--require-backup</c>/<c>--strict-names</c> used to be swallowed
+    /// as a harmless flag, which silently turned a gate off. <c>--lenient-args</c> restores the old
+    /// accept-anything behaviour and is reported back through
+    /// <see cref="ParsedArgs.UnknownOptions"/> so the caller can warn.
+    /// </para>
     /// </summary>
-    public static ParsedArgs Parse(IReadOnlyList<string> args, IEnumerable<string> valueOptions)
+    /// <param name="flagOptions">Names the command declares as booleans (its <see cref="CliParam"/> flags).</param>
+    public static ParsedArgs Parse(IReadOnlyList<string> args, IEnumerable<string> valueOptions, IEnumerable<string>? flagOptions = null)
     {
         var parsed = new ParsedArgs();
         var values = new HashSet<string>(valueOptions, StringComparer.OrdinalIgnoreCase);
+        var known = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        foreach (string flag in (flagOptions ?? Array.Empty<string>()).Concat(GlobalFlags)) known.Add(flag);
+
+        // "kirintool flash-xml --help" must print usage even next to a misspelled option.
+        bool helpRequested = args.Any(token => token is "--help" or "-h" or "--h" or "-help");
 
         for (int i = 0; i < args.Count; i++)
         {
@@ -70,6 +94,8 @@ internal static class ArgParser
                     _ => name,
                 };
 
+                if (!known.Contains(name)) parsed.AddUnknown(name);
+
                 if (inline != null)
                 {
                     parsed.SetValue(name, inline);
@@ -89,6 +115,15 @@ internal static class ArgParser
             }
 
             parsed.Positionals.Add(token);
+        }
+
+        if (parsed.UnknownOptions.Count > 0 && !parsed.HasFlag("lenient-args") && !helpRequested)
+        {
+            string list = string.Join(", ", parsed.UnknownOptions.Select(option => "--" + option));
+            throw new CliUsageException(
+                $"unknown option{(parsed.UnknownOptions.Count > 1 ? "s" : string.Empty)} {list}; " +
+                "a misspelled option used to be accepted as a flag, which can silently disable a gate. " +
+                "Run with --help to see the accepted options, or pass --lenient-args to accept it as a flag anyway.");
         }
 
         return parsed;

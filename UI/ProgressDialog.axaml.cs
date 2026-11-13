@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using Avalonia.Controls;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Kirin_Tool.Models;
 using System.Collections.ObjectModel;
@@ -42,6 +43,28 @@ namespace Kirin_Tool.UI
             {
                 LogPathTextBlock.Text = "log: " + logPath;
                 LogPathTextBlock.IsVisible = true;
+            });
+        }
+
+        /// <summary>
+        /// Honest close state. Green only when the device confirmed the operation; amber
+        /// "Uploaded — Unverified" when the bytes went out but no device-side evidence came back
+        /// (audit F01/F02: the dialog used to say "Unlock Complete" for a bare upload).
+        /// The counts that decided it are shown right under the title, so the user can see
+        /// whether the device answered at all.
+        /// </summary>
+        public void ShowVerdict(bool verified, string title, string detail)
+        {
+            Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                CloseButton.IsVisible = true;
+                Title = title ?? (verified ? "Operation Complete" : "Operation Complete — Unverified");
+                if (!string.IsNullOrWhiteSpace(detail))
+                {
+                    OverallStatusTextBlock.Text = detail;
+                    OverallStatusTextBlock.Foreground = new SolidColorBrush(
+                        Color.Parse(verified ? "#2E7D32" : "#B26A00"));
+                }
             });
         }
 

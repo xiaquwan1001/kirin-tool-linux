@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
+using Kirin_Tool.Services.Verdict;
 using Kirin_Tool.Utils;
 
 namespace Kirin_Tool.Cli.Commands;
@@ -20,12 +21,13 @@ internal sealed class VcomUnlockCommand : ICliCommand
     public string McpName => "vcom_unlock";
     public string Summary => "Load the unlocked-boot loaders over the VCOM BootROM (12d1:3609); uploads only with --yes.";
     public string Usage =>
-        "vcom-unlock --cpu <chip> [--ack-mode strict|lenient|off] [--ack-timeout <sec>]\n" +
+        "vcom-unlock --cpu <chip> [--ack-mode strict|lenient|off] [--require-ack] [--ack-timeout <sec>]\n" +
         "            [--replug skip|prompt|wait:<sec>] [--loader-dir <dir>] [--stage-only all|null|xloader|rest]\n" +
         "            [--port <tty>] [--use-fastflash-loader] [--dry-run] [--yes] [--json]\n" +
         "  without --yes only the plan is printed (exit 4); --dry-run keeps that behaviour even with --yes\n" +
         "  --stage-only rest continues after a manual replug and never re-sends the START frame\n" +
         "  ack-mode default lenient == the GUI's behaviour (read the ACK, never fail on its value)\n" +
+        "  the JSON always reports verified/reason; --require-ack turns 'applied but unverified' into exit 3\n" +
         "  progress/ACK frames go to stderr; the last line of stdout is one JSON document";
     public CliWriteKind WriteKind => CliWriteKind.RealWrite;
 
@@ -34,6 +36,7 @@ internal sealed class VcomUnlockCommand : ICliCommand
         new CliParam("cpu", "string", "chipset loader family, e.g. hisi980, hisi990", Required: true, Enum: BundledLoaders.SupportedChips().ToList()),
         new CliParam("ack-mode", "string", "ACK policy: strict (fail unless 0xAA) | lenient (record only, GUI behaviour) | off (never wait)", Enum: new[] { "strict", "lenient", "off" }, Default: "lenient"),
         new CliParam("ack-timeout", "string", "seconds to wait for each ACK (default 10, the GUI value)"),
+        new CliParam("require-ack", "boolean", "fail (exit 3, verified=false) when any frame is missing its 0xAA ACK; the lenient recording behaviour is kept, so the upload is not aborted mid-transfer"),
         new CliParam("replug", "string", "cable prompt policy: skip (non-interactive default) | prompt | wait:<seconds>"),
         new CliParam("loader-dir", "string", "directory holding the per-chip loader subdirectories (default: <program dir>/loaders)"),
         new CliParam("stage-only", "string", "stage subset: all | null | xloader | rest (rest never re-sends START)", Enum: new[] { "all", "null", "xloader", "rest" }, Default: "all"),
@@ -76,6 +79,9 @@ internal sealed class VcomUnlockCommand : ICliCommand
     private async Task<int> ExecuteCoreAsync(ParsedArgs args, CliContext context, string cpu, VcomSessionLogger logger, CancellationToken cancellationToken)
     {
         VcomAckMode ackMode = ParseAckMode(args.Value("ack-mode"));
+        bool requireAck = args.HasFlag("require-ack");
+        if (requireAck && ackMode == VcomAckMode.Off)
+            throw new CliUsageException("--require-ack needs an ACK policy that actually reads the answer (lenient or strict); --ack-mode off never reads one");
         TimeSpan ackTimeout = ParseAckTimeout(args.Value("ack-timeout"));
         (ReplugPolicy replug, int replugWaitSeconds) = ParseReplug(args.Value("replug"));
         UnlockStageSelection stages = ParseStages(args.Value("stage-only"));
@@ -101,6 +107,7 @@ internal sealed class VcomUnlockCommand : ICliCommand
             implementation = "Services/FirmwareUnlocker.UnlockFastboot + Services/VcomFlasher (invoked: this command performs the real upload)",
             requiresVcomMode = "HUAWEI USB COM 1.0 (12d1:3609)",
             ackMode = AckModeName(ackMode),
+            requireAck,
             ackTimeoutSeconds = ackTimeout.TotalSeconds,
             replug = ReplugName(replug, replugWaitSeconds),
             stageSelection = StageName(stages),
@@ -139,6 +146,10 @@ internal sealed class VcomUnlockCommand : ICliCommand
                     command = Name,
                     dryRun = true,
                     applied = false,
+                    verified = false,
+                    reason = "not_attempted",
+                    conclusion = "failed",
+                    requireAck,
                     confirmed = context.Yes || args.HasFlag("yes"),
                     gate = "plan-only",
                     gateReason = dryRun
@@ -162,14 +173,16 @@ internal sealed class VcomUnlockCommand : ICliCommand
         if (!Directory.Exists(loaderDirectory))
         {
             context.Diag($"error: loader directory not found: {loaderDirectory}");
-            return Finish(context, false, "failed", planPayload, Array.Empty<UnlockStageReport>(), null, 0,
+            return Finish(context, "failed", planPayload, Array.Empty<UnlockStageReport>(), null,
+                VcomVerdict.NotAttempted("missing_loader"), requireAck,
                 $"loader directory not found: {loaderDirectory}", "local-file", 0, ExitCodes.FileOrVerify);
         }
         if (presentCount == 0)
         {
             string list = string.Join(", ", planned.Select(stage => stage.File));
             context.Diag($"error: none of the selected loaders exist in {loaderDirectory} ({list})");
-            return Finish(context, false, "failed", planPayload, Array.Empty<UnlockStageReport>(), null, 0,
+            return Finish(context, "failed", planPayload, Array.Empty<UnlockStageReport>(), null,
+                VcomVerdict.NotAttempted("missing_loader"), requireAck,
                 $"no selected loader file present in {loaderDirectory} ({list})", "local-file", 0, ExitCodes.FileOrVerify);
         }
 
@@ -182,14 +195,16 @@ internal sealed class VcomUnlockCommand : ICliCommand
             context.Diag("refused: this chip's null→XLOADER handoff requires a physical cable replug; " +
                          "pass --replug wait:<seconds> (or --replug prompt) for the handoff, or split the run: " +
                          "--stage-only null, then unplug/replug, then --stage-only rest");
-            return Finish(context, false, "refused", planPayload, Array.Empty<UnlockStageReport>(), null, 0,
+            return Finish(context, "refused", planPayload, Array.Empty<UnlockStageReport>(), null,
+                VcomVerdict.NotAttempted("replug_required"), requireAck,
                 "cable replug required between null and XLOADER; use --replug wait:<seconds>/prompt or --stage-only null + rest",
                 "replug-required", 0, ExitCodes.Gated);
         }
 
         // ---- real run ----
         var stageReports = new List<UnlockStageReport>();
-        int framesSent = 0, ackExpected = 0, ackOk = 0, ackBad = 0, ackTimeouts = 0;
+        // Single source of truth for "did the device answer": the flasher's own frame observer.
+        var ledger = new VcomAckLedger();
 
         logger.Event("run",
             ("cpu", cpu),
@@ -208,13 +223,7 @@ internal sealed class VcomUnlockCommand : ICliCommand
             Logger = logger,
             FrameObserver = frame =>
             {
-                framesSent++;
-                switch (frame.AckStatus)
-                {
-                    case "ok": ackExpected++; ackOk++; break;
-                    case "bad": ackExpected++; ackBad++; break;
-                    case "timeout": ackExpected++; ackTimeouts++; break;
-                }
+                ledger.OnFrame(frame);
                 if (!frameLog) return;
                 string where = frame.Address is { } address
                     ? $" addr=0x{address:X8}" + (frame.Sequence is { } seq ? $" seq={seq}" : string.Empty)
@@ -239,6 +248,9 @@ internal sealed class VcomUnlockCommand : ICliCommand
             Flasher = flasherOptions,
             Logger = logger,
             Stages = stages,
+            // Frames are attributed to a stage here, not by address: hisi970..990 load the
+            // null and XLOADER stages at the same 0x22000.
+            StageBeginObserver = stage => ledger.EnterStage(stage),
             StageObserver = report =>
             {
                 stageReports.Add(report);
@@ -292,38 +304,55 @@ internal sealed class VcomUnlockCommand : ICliCommand
         catch (OperationCanceledException)
         {
             context.Diag("error: cancelled");
-            return Finish(context, false, "failed", planPayload, stageReports, ackMode, framesSent, "cancelled", "cancelled",
-                stopwatch.ElapsedMilliseconds, ExitCodes.FileOrVerify);
+            return Finish(context, "failed", planPayload, stageReports, ackMode,
+                VcomVerdict.Failed(ledger.Total, "cancelled"), requireAck, "cancelled", "cancelled",
+                stopwatch.ElapsedMilliseconds, ExitCodes.FileOrVerify, ledger);
         }
         stopwatch.Stop();
 
-        int exitCode = result.IsSuccess ? ExitCodes.Ok : result.FailureKind switch
+        VcomAckCounts counts = ledger.Total;
+        VcomVerdict verdict = result.IsSuccess
+            ? VcomVerdict.From(counts, ackMode)
+            : VcomVerdict.Failed(counts, FailureReason(result.FailureKind));
+
+        // --require-ack promotes "applied but unverified" to a failure without touching what the
+        // flasher puts on the wire: the frames were still sent (applied stays true), only the
+        // conclusion refuses to call them confirmed.
+        bool ackShortfall = requireAck && result.IsSuccess && !verdict.Verified;
+        int exitCode = !result.IsSuccess ? result.FailureKind switch
         {
             UnlockFailureKind.NoDevice => ExitCodes.NoDevice,
             UnlockFailureKind.Cancelled => ExitCodes.Gated,
-            UnlockFailureKind.LocalFile => ExitCodes.FileOrVerify,
+            UnlockFailureKind.LocalFile or UnlockFailureKind.MissingLoader => ExitCodes.FileOrVerify,
             _ => ExitCodes.DeviceRejected,
-        };
+        }
+            : ackShortfall ? ExitCodes.DeviceRejected
+            : ExitCodes.Ok;
 
         string failureKind = result.IsSuccess
-            ? "none"
-            : result.FailureKind.ToString().ToLowerInvariant() switch
+            ? (ackShortfall ? "ack-missing" : "none")
+            : result.FailureKind switch
             {
-                "nodevice" => "no-device",
-                "devicerejected" => "device-rejected",
-                "localfile" => "local-file",
-                "cancelled" => "cancelled",
+                UnlockFailureKind.NoDevice => "no-device",
+                UnlockFailureKind.DeviceRejected => "device-rejected",
+                UnlockFailureKind.LocalFile => "local-file",
+                UnlockFailureKind.MissingLoader => "missing-loader",
+                UnlockFailureKind.Cancelled => "cancelled",
                 _ => "other",
             };
 
         if (!result.IsSuccess)
             context.Diag($"error: {result.Message} (failureKind={failureKind}, exit {exitCode})");
+        else if (verdict.Verified)
+            context.Diag($"unlock complete and ACK-verified: {result.Message}");
+        else if (ackShortfall)
+            context.Diag($"error: loaders were uploaded but NOT verified ({verdict.Reason}); --require-ack makes this a failure (exit {exitCode})");
         else
-            context.Diag($"unlock complete: {result.Message}");
+            context.Diag($"uploaded but NOT verified ({verdict.Reason}); pass --require-ack to make an unverified upload fail");
 
-        return Finish(context, result.IsSuccess, result.IsSuccess ? "applied" : "failed", planPayload, stageReports, ackMode,
-            framesSent, result.Message, failureKind, stopwatch.ElapsedMilliseconds, exitCode,
-            new { expected = ackExpected, ok = ackOk, bad = ackBad, timeouts = ackTimeouts });
+        string gate = ackShortfall ? "failed" : verdict.Gate;
+        return Finish(context, gate, planPayload, stageReports, ackMode, verdict, requireAck,
+            result.Message, failureKind, stopwatch.ElapsedMilliseconds, exitCode, ledger);
     }
 
     /// <summary>
@@ -332,32 +361,48 @@ internal sealed class VcomUnlockCommand : ICliCommand
     /// </summary>
     private static int Finish(
         CliContext context,
-        bool applied,
         string gate,
         object plan,
         IReadOnlyList<UnlockStageReport> stages,
         VcomAckMode? ackMode,
-        int framesSent,
+        VcomVerdict verdict,
+        bool requireAck,
         string message,
         string failureKind,
         long elapsedMs,
         int exitCode,
-        object? ack = null)
+        VcomAckLedger? ledger = null)
     {
+        VcomAckCounts counts = verdict.Counts;
         var payload = new
         {
             command = "vcom-unlock",
             dryRun = false,
-            applied,
+            applied = verdict.Applied,
+            // The honesty fields: "we wrote the frames" and "the device answered" are separate
+            // facts, and only the second one licenses the word "success".
+            verified = verdict.Verified,
+            reason = verdict.Reason,
             confirmed = true,
             gate,
+            requireAck,
             cpu = plan.GetType().GetProperty("cpu")!.GetValue(plan),
             loaderDirectory = plan.GetType().GetProperty("loaderDirectory")!.GetValue(plan),
             stageSelection = plan.GetType().GetProperty("stageSelection")!.GetValue(plan),
             replug = plan.GetType().GetProperty("replug")!.GetValue(plan),
             ackMode = ackMode is { } mode ? AckModeName(mode) : plan.GetType().GetProperty("ackMode")!.GetValue(plan),
-            ack,
-            framesSent,
+            ack = new
+            {
+                expected = counts.FramesExpectingAck,
+                ok = counts.Acked,
+                bad = counts.Bad,
+                timeouts = counts.Timeouts,
+                missing = counts.Missing,
+                missingRatio = Math.Round(counts.MissingRatio, 6),
+                acked = counts.Acked,
+                notExpected = counts.NotExpectingAck,
+            },
+            framesSent = counts.FramesSent,
             stages = stages.Select(stage => new
             {
                 stage = stage.Stage,
@@ -370,19 +415,34 @@ internal sealed class VcomUnlockCommand : ICliCommand
                 status = stage.Status,
                 durationMs = stage.DurationMs,
                 note = stage.Note,
+                // Per-stage ACK evidence (frames sent / acked / missing / missingRatio), attributed
+                // through the stage-begin callback rather than by load address.
+                framesSent = ledger?.ForStage(stage.Stage).FramesSent ?? 0,
+                missing = ledger?.ForStage(stage.Stage).Missing ?? 0,
+                missingRatio = Math.Round(ledger?.ForStage(stage.Stage).MissingRatio ?? 0d, 6),
             }).ToList(),
             elapsedMs,
-            conclusion = applied ? "unlocked-fastboot-loaded" : "failed",
+            conclusion = verdict.Applied
+                ? (verdict.Verified ? "unlocked-fastboot-loaded" : "loaders-uploaded-unverified")
+                : "failed",
             failureKind,
             message,
             exitCode,
         };
         context.WriteJson(payload);
-        context.Diag($"{conclusionText(applied)} exit={exitCode} elapsed={elapsedMs}ms frames={framesSent}");
+        context.Diag($"{conclusionText(verdict)} exit={exitCode} elapsed={elapsedMs}ms frames={counts.FramesSent} " +
+                     $"acked={counts.Acked} missing={counts.Missing} reason={verdict.Reason}");
         return exitCode;
     }
 
-    private static string conclusionText(bool applied) => applied ? "conclusion: unlocked fastboot loaded" : "conclusion: failed";
+    private static string conclusionText(VcomVerdict verdict) => verdict.Applied
+        ? (verdict.Verified
+            ? "conclusion: unlocked fastboot loaded (device ACK-verified)"
+            : $"conclusion: loaders uploaded but NOT verified ({verdict.Reason})")
+        : "conclusion: failed";
+
+    /// <summary>Stable reason string for a run that stopped before/without a verdict of its own.</summary>
+    private static string FailureReason(UnlockFailureKind kind) => UnlockVerdictText.FailureReason(kind);
 
     private static void WritePlanText(CliContext context, string cpu, string loaderDirectory,
         IReadOnlyList<(string Stage, string File, int Address, bool PwnFlag, bool Exists)> planned,
@@ -397,7 +457,7 @@ internal sealed class VcomUnlockCommand : ICliCommand
             stage.Stage, "0x" + stage.Address.ToString("X8", CultureInfo.InvariantCulture), stage.File, stage.Exists ? "present" : "MISSING",
         }).ToList(), "STAGE", "ADDRESS", "LOADER", "FILE"));
         if (planned.Any(stage => !stage.Exists))
-            context.Output.WriteLine("warning: missing loader files are skipped by the service; a run with none present exits 5.");
+            context.Output.WriteLine("warning: a confirmed run refuses to start unless every selected loader is present and decryptable (no frame is sent).");
     }
 
     private static bool StageSelected(string stageName, UnlockStageSelection stages) => stages switch

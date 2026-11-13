@@ -20,6 +20,7 @@
 
 using Kirin_Tool.Models;
 using Kirin_Tool.Security;
+using Kirin_Tool.Services.Verdict;
 using Org.BouncyCastle.Crypto;
 using System;
 using System.Collections.Generic;
@@ -44,6 +45,12 @@ namespace Kirin_Tool.Services
         /// <summary>The operator cancelled at a cable prompt.</summary>
         Cancelled,
         Other,
+        /// <summary>
+        /// The loader set is incomplete: a stage's <c>.ktl</c> is missing or does not DTL-decrypt.
+        /// Detected before the first frame, so nothing was uploaded and no gate can be argued from
+        /// "no exception thrown" (audit F02/S15).
+        /// </summary>
+        MissingLoader,
     }
 
     /// <summary>Which loader stages of the address table to run (split runs around a manual replug).</summary>
@@ -91,6 +98,12 @@ namespace Kirin_Tool.Services
         public TimeSpan NullStageSettlingDelay { get; init; } = TimeSpan.FromSeconds(1);
         /// <summary>Session audit log: every progress line, stage boundary, prompt and exception.</summary>
         public VcomSessionLogger? Logger { get; init; }
+        /// <summary>
+        /// Called with the stage name right before its first frame goes out, so a frame observer
+        /// can attribute ACK counts to a stage (addresses alone are ambiguous: on hisi970..990 the
+        /// <c>null</c> and <c>XLOADER</c> stages share the 0x22000 load address).
+        /// </summary>
+        public Action<string>? StageBeginObserver { get; init; }
     }
 
     public class UnlockResult
@@ -168,6 +181,32 @@ namespace Kirin_Tool.Services
                     return Fail(UnlockFailureKind.LocalFile, $"Loader directory for {cpu} not found at '{loaderDir}'");
                 }
 
+                // ---- pre-flight: the loader set is verified before the first frame ----
+                // A partial loader set cannot boot anything, so a missing/undecryptable stage is a
+                // hard failure here (audit F02/S15: it used to be "Skipped" + IsSuccess = true).
+                overallProgress.Report("Verifying the loader set before the first frame...");
+                var precheck = await LoaderPrecheck.RunAsync(cpu, loaderDir, useFastFlashLoader, name => StageSelected(name, stages));
+                foreach (var broken in precheck.Stages.Where(stage => stage.Data == null))
+                {
+                    var brokenItem = progressItems.FirstOrDefault(p => p.FileName == broken.Stage);
+                    if (brokenItem != null)
+                    {
+                        brokenItem.ProgressValue = 0;
+                        brokenItem.StatusText = "Missing";
+                    }
+                    Report(new UnlockStageReport(broken.Stage, broken.File, broken.Address, broken.Pwn, 0, 0, 0, "missing", 0, broken.Problem));
+                }
+                if (!precheck.Ok)
+                {
+                    overallProgress.Report($"Loader pre-check failed: {precheck.Describe}");
+                    return Fail(UnlockFailureKind.MissingLoader,
+                        $"Loader pre-check failed before any frame was sent: {precheck.Describe}");
+                }
+                logger?.Event("stage.precheck",
+                    ("ok", true),
+                    ("stages", precheck.Stages.Count),
+                    ("bytes", precheck.Stages.Sum(stage => stage.Data!.LongLength)));
+
                 using (var flasher = new VcomFlasher(options?.Flasher))
                 {
                     overallProgress.Report("Attempting to connect to device in VCOM mode...");
@@ -197,38 +236,32 @@ namespace Kirin_Tool.Services
                         }
 
                         var filePath = Path.Combine(loaderDir, fileName);
-                        if (!File.Exists(filePath))
+                        var payload = precheck.Stages.FirstOrDefault(stage =>
+                            string.Equals(stage.Stage, loaderInfo.Name, StringComparison.Ordinal) &&
+                            string.Equals(stage.File, fileName, StringComparison.Ordinal));
+                        if (payload?.Data == null)
                         {
-                            currentItem.ProgressValue = 100;
-                            currentItem.StatusText = "Skipped";
-                            overallProgress.Report($"Skipping missing file: {Path.GetFileName(filePath)}");
-                            Report(new UnlockStageReport(loaderInfo.Name, fileName, loaderInfo.Address, loaderInfo.PwnFlag, 0, 0, 0, "skipped", 0,
-                                $"missing file: {filePath}"));
-                            continue;
+                            // Defence in depth: the pre-flight already refused the run, so this branch
+                            // only fires when the loader vanished between the check and its stage.
+                            currentItem.ProgressValue = 0;
+                            currentItem.StatusText = "Missing";
+                            overallProgress.Report($"Loader {fileName} is gone before its stage; aborting with no further frames.");
+                            Report(new UnlockStageReport(loaderInfo.Name, fileName, loaderInfo.Address, loaderInfo.PwnFlag, 0, 0, 0, "missing", 0,
+                                payload?.Problem ?? $"missing loader file: {fileName}"));
+                            return Fail(UnlockFailureKind.MissingLoader, $"Loader '{fileName}' is missing; the chain was aborted before this stage.");
                         }
 
-                        currentItem.StatusText = "Decrypting";
-                        overallProgress.Report($"Decrypting {Path.GetFileName(filePath)}...");
+                        byte[] decryptedData = payload.Data;
+                        currentItem.StatusText = "Verified";
+                        overallProgress.Report($"Payload {Path.GetFileName(filePath)} verified ({decryptedData.Length} bytes).");
                         logger?.Event("stage.start",
                             ("stage", loaderInfo.Name),
                             ("file", fileName),
                             ("addr", "0x" + loaderInfo.Address.ToString("X8")),
                             ("pwn", loaderInfo.PwnFlag));
-                        byte[] decryptedData;
                         var stageWatch = System.Diagnostics.Stopwatch.StartNew();
                         int framesBefore = flasher.FramesSent;
                         int acksBefore = flasher.AckOk;
-                        try
-                        {
-                            decryptedData = CryptoUtil.DTL(await File.ReadAllBytesAsync(filePath));
-                        }
-                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException
-                                                   || ex.GetType().Name.Contains("Crypto", StringComparison.Ordinal))
-                        {
-                            Report(new UnlockStageReport(loaderInfo.Name, fileName, loaderInfo.Address, loaderInfo.PwnFlag, 0, 0, 0, "failed", 0,
-                                $"cannot read/decrypt loader: {ex.Message}"));
-                            return Fail(UnlockFailureKind.LocalFile, $"Loader '{fileName}' could not be read/decrypted: {ex.Message}");
-                        }
 
                         currentItem.StatusText = "Uploading...";
                         overallProgress.Report($"Uploading {loaderInfo.Name}...");
@@ -237,6 +270,7 @@ namespace Kirin_Tool.Services
                             if (fp.total > 0) currentItem.ProgressValue = ((double)fp.sent / fp.total) * 100;
                         });
 
+                        options?.StageBeginObserver?.Invoke(loaderInfo.Name);
                         await flasher.UploadData(decryptedData, loaderInfo.Address, (loaderInfo.PwnFlag, cpu), fileProgress);
 
                         currentItem.ProgressValue = 100;
@@ -279,12 +313,14 @@ namespace Kirin_Tool.Services
                     }
                 }
 
-                overallProgress.Report("Unlock process completed successfully!");
+                // "Uploaded" is all this service can prove: it holds no device-side evidence (the
+                // ACK ledger lives in the caller), so it must not claim more than the frames it wrote.
+                overallProgress.Report("All selected loaders were uploaded; the device verdict is decided by the caller.");
                 logger?.Event("unlock.done",
                     ("success", true),
-                    ("message", "Unlocked fastboot should be loaded now."),
+                    ("message", "All selected loaders were uploaded."),
                     ("elapsedMs", stopwatch.ElapsedMilliseconds));
-                var success = new UnlockResult { IsSuccess = true, Message = "Unlocked fastboot should be loaded now." };
+                var success = new UnlockResult { IsSuccess = true, Message = "All selected loaders were uploaded." };
                 success.Stages = reports;
                 return success;
             }
