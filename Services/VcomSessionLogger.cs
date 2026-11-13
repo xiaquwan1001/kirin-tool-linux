@@ -88,7 +88,7 @@ namespace Kirin_Tool.Services
             {
                 OperationSession session = OperationLogger.BeginSession(SessionOp, "vcom",
                     new[] { "--cpu", cpu ?? "unknown" }, rootOverride: directory);
-                var logger = new VcomSessionLogger(cpu, session.IsEnabled ? session : null);
+                var logger = new VcomSessionLogger(cpu ?? "unknown", session.IsEnabled ? session : null);
                 logger.Event("session.open", ("tool", "Kirin-Tool"),
                     ("version", typeof(VcomSessionLogger).Assembly.GetName().Version?.ToString() ?? "unknown"));
                 return logger;
@@ -96,7 +96,7 @@ namespace Kirin_Tool.Services
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"VCOM log unavailable: {ex.Message}");
-                return new VcomSessionLogger(cpu, null);
+                return new VcomSessionLogger(cpu ?? "unknown", null);
             }
         }
 

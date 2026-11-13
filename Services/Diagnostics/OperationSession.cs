@@ -84,7 +84,7 @@ namespace Kirin_Tool.Services.Diagnostics
         private string? _rootVerdict;
         private string? _rootNote;
 
-        private readonly EventHandler _processExit;
+        private readonly EventHandler? _processExit;
 
         internal OperationSession(string op, string tool, IReadOnlyList<string> argv, string? notes, string? rootOverride = null)
         {

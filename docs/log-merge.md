@@ -166,3 +166,77 @@ session.End(ok: true, verdictSource: "vcom:ack");                               
 | `tests/SurfaceParity` | `logs` 的 CLI/MCP/GUI 三面对齐（A/A2/A3/A4/B/B2/C/C2），GUI handler 为 `null` 不引入 GUI-only 债务 |
 | `tests/VcomUnlockCli` | 转录文件位置改为 `sessions/<id>/vcom-trace.txt`，逐帧内容不变 |
 | 全量 | `dotnet build` + `tests/suites.txt` 逐套 `dotnet run` 全绿 |
+
+## 10. 实施记录
+
+### 10.1 DONE-2/3：单写入器 + 会话
+
+| 文件 | 角色 |
+|---|---|
+| `Services/Diagnostics/OperationSession.cs`（新） | 会话本体：建目录、写 `session.jsonl`、懒创建 `vcom-trace.txt`、结束时写 `summary.json`（含 `ProcessExit` 兜底）；`LogFields` 描述嵌套字段；`OperationSessionApprovalSink`/`TeeApprovalAuditSink` 把审批决定并入时间线 |
+| `Services/Diagnostics/OperationLogger.cs`（改） | `BeginSession/EnsureSession/EndSession/CurrentSession`、`CapabilityScope(capabilityId, approvalId)`、`Begin(op, tool, argv, notes, parentId)`；`OperationScope` 仍是原来的方法（`Step/Prompt/Result/Dispose/FilePath`），但现在写进会话文件并带 `sessionId/seq/scopeId/parentId` |
+| `Services/VcomSessionLogger.cs`（改） | 适配器：人读转录照旧（`FilePath` = `vcom-trace.txt`），每行同时映射成结构化事件；新增 `MainLogPath/SessionDirectory/SessionId`。`Event/Progress/Error` 签名不变 ⇒ `VcomFlasher.cs`/`FirmwareUnlocker.cs` **零改动**（StableParity 哈希不变） |
+| `Services/Approval/ApprovalAudit.cs`（改） | 默认 sink 变成 `TeeApprovalAuditSink(approvals.jsonl, 当前会话)`：审批决定进时间线，`approvals.jsonl` 照旧 |
+
+要点：
+
+- **行级 `seq` 是会话级**（锁内自增，跨 scope 唯一）；VCOM 数据帧自己的序号改名 `frame.frameSeq`。
+- **会话内多 op**：每行的 `op`/`tool` 取自**写它的那个 scope**，不是会话的 op；会话自身的 `start` 行 `step=session.open` 且没有 `scopeId`。
+- **会话级事件无 `scopeId`**：VCOM 适配器的事件属于会话（`sessionId` + `seq` + `step` 已足够定位），scope 才是命令行操作的容器。
+- **嵌套对象**：`frame.write`/`frame.ack`/`port.*`/`stage.*` 的所有键收进各自对象（`frame`/`ack`/`port`/`stage`），避免和行级 `op/tool/seq/tool` 撞名（`session.open` 的 `tool/version` 改名 `app/appVersion`）。
+- **空闲轮换**：`KIRIN_LOG_SESSION_IDLE_SECONDS`（默认 1800，`0` 关闭）。GUI 常驻进程不会整天写一个目录；测试里设 0 保证确定性。
+- **并发**：会话写行在 `lock` 内完成（`Utf8JsonWriter` → 单次 `Write` + `Flush`），多 scope 交错不混行。
+- **失败降级**：任何 IO 异常只 stderr 打一次 `[operation-log] disabled after error: …`，绝不改变返回值（`KIRIN_LOG_DISABLE=1` 整层关）。
+
+### 10.2 DONE-3：时间线与关联字段
+
+`capabilityId`/`approvalId` 由 `OperationLogger.CapabilityScope(...)` 提供环境上下文，三面入口包一层即可：
+CLI `vcom-unlock`（`vcom-unlock`；审批指纹由审批 sink 直接写在审批事件上）、GUI `HandleUnlockFastboot`
+（先 `vcom-unlock`，审批后追加 `admission.Request.Fingerprint`）。`parentId` 缺省是会话 id（scope 属于会话），
+显式传入可把某条 fastboot 命令挂到更细的父级。
+
+### 10.3 DONE-4：`logs` 只读命令
+
+```bash
+kirintool logs list --json | jq '.count, (.items[0]|{sessionId,kind,op,ok,eventCount})'
+kirintool logs show latest --json | jq -r '.events[] | select(.phase=="result") | [.op,.ok,.verdictSource]|@tsv'
+cd "$(kirintool logs path latest | jq -r .dir)" && ls    # session.jsonl vcom-trace.txt summary.json
+```
+
+- 选择器：`latest`、完整 id、唯一前缀、路径（会话目录 / `session.jsonl` / 转录 / 旧文件）。
+- 旧日志：`kind=legacy-jsonl`（`<root>/<category>/*.jsonl`）与 `kind=legacy-vcom-text`（`<root>/vcom-*.log`），`legacy:true`，`sessionId` 合成 `legacy:<category>/<file>`；旧文本行被解析成同名事件（`event=frame.write` → `step=frame.write`，原 seq 保留为 `traceSeq`）。
+- 注册表新增 `logs`（`ReadOnly`，`GuiHandler=null`）：`tests/SurfaceParity` 的 A/A2/A3/A4/B/B2/C/C2/G 全通过（A3 参数集 `verb/session/trace/root` 与 CLI 声明逐项一致）。
+- MCP 同名工具 `logs`：`readOnlyHint=true`，schema 无 `confirm`（读操作不走审批闸门）。
+
+### 10.4 DONE-5：测试
+
+| 套件 | 检查数 | 覆盖 |
+|---|---|---|
+| `tests/OpLogging`（扩展） | **115** | 会话布局/`session.jsonl`、`seq` 单调、`sessionId`/`scopeId`/`parentId`、`capabilityId`/`approvalId` 上下文进出、`summary.json`（失败路径 + 计数 + 0600/0700）、审批决定进时间线、kill 开关 |
+| `tests/LogMerge`（新增） | **79** | ①VCOM 适配器 + 真实子进程（名为 `fastboot` 的 shell 桩）落在同一 `session.jsonl` 且 `seq` 单调 ②旧 `vcom/*.jsonl` 与 `vcom-*.log` 仍可 `logs show`（事件化）③`logs list --json` 字段完整、`logs path` 路径正确、未知选择器 exit 5、未知动词 exit 1 ④`summary.json` 正常/失败两条路径都写 ⑤600/700 ⑥MCP `logs` 只读且无 `confirm` |
+| `tests/VcomUnlockCli` | 88 | 转录位置改为 `sessions/<id>/vcom-trace.txt`（逐帧内容一字未变），并断言同目录有 `session.jsonl`/`summary.json`、目录 0700 |
+| `tests/SurfaceParity` | 380 | `logs` 三面对齐（GUI handler 为 `null`，不产生 GUI-only 债务） |
+| `tests/StableParity` | 35 | `VcomFlasher.cs`/`FirmwareUnlocker.cs` 哈希**未变**（线协议零改动）；`MainWindow.axaml.cs`、`UI/ProgressDialog.axaml.cs` 只加日志显示，哈希刷新并在 `boundary.json` 写明理由 |
+
+全量（`tests/suites.txt` 23 套）本地全绿：`dotnet build Kirin-Tool.sln -c Release` 0 error，逐套 `dotnet run` 无 FAILED。
+
+### 10.5 DONE-6：真实文件示例
+
+`KIRIN_LOG_DIR=/tmp/klm kirintool vcom-unlock --cpu hisi990 --json`（无真机，只到计划门）：
+
+```
+/tmp/klm/sessions/20261113-120502-1084941-vcom.session/
+├── session.jsonl     # 7 行：session.open / command.start / plan / command.end / result
+├── vcom-trace.txt    # 人读转录，旧格式（event=… k=v）
+└── summary.json      # {"ok":false,"verdictSource":"vcom-unlock:exit-4",…}
+```
+
+```json
+{"ts":"2026-11-13T12:05:02.670Z","pid":1084941,"sessionId":"20261113-120502-1084941-vcom.session","seq":1,"phase":"start","op":"vcom.session","tool":"vcom","step":"session.open","capabilityId":"vcom-unlock","argv":["--cpu","hisi990"],"notes":"cli vcom-unlock"}
+```
+
+### 10.6 未做（后继 lane 可接）
+
+- GUI 没有日志浏览器（`logs` 只有 CLI/MCP 面；注册表 `GuiHandler=null`，未产生 GUI-only 债务）。
+- 旧日志不做自动归档/清理（本工具只读，只列出体积与计数）。
+- 会话不做跨进程合并（MCP 服务进程与 GUI 进程各自一个会话；跨进程只能靠 `sessionId`/时间戳对账）。

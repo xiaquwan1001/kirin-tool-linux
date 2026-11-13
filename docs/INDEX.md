@@ -7,6 +7,7 @@ Fork-relevant guides first; inherited-baseline guides follow. Entry point: [READ
 | [README](../README.md) · [中文 README](../README.zh-CN.md) | Overview, what this line changes vs upstream, design trade-offs, field notes, safety model, install. |
 | [refresh-changelog.md](refresh-changelog.md) | Per-release changes of the refresh line (with reasons) and known gaps. |
 | [cli-mcp.md](cli-mcp.md) | CLI commands, write kinds, redline gate, gate signals, exit codes, MCP stdio protocol. |
+| [log-merge.md](log-merge.md) | Log merge: one operation = one session directory = one `session.jsonl` (+ `vcom-trace.txt`, `summary.json`), the unified field table, the VCOM-frame→phase map, `logs` command, migration/compat and retention. |
 | [op-logging.md](op-logging.md) | Unified operation log: JSONL field table, where the logs live and how to read them, VCOM session-log integration, migration order, `Process.Start` inventory. |
 | [fork-release.md](fork-release.md) | Fork release pipeline: deb / AppImage / tar.gz / CLI assets, deb layout, ICU/OpenSSL dependency policy, CI map. |
 | [verdict-honesty.md](verdict-honesty.md) | Verdict honesty: when this tool is allowed to say "success" (applied vs verified), VCOM ACK evidence, loader pre-flight, backup gate, NVE read-back, and the test map. |
