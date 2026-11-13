@@ -302,13 +302,23 @@ internal sealed class FlashOtaCommand : ICliCommand
             // success is 0, and a partial write is a device rejection (3).
             int exitCode = ok == 0 ? ExitCodes.FileOrVerify : (ok == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected);
 
+            // applied/gate follow the device answers: nothing flashed is a failure, a partial
+            // write is "partial", only a full success may say "applied" (D-02).
+            string otaGate = ok == 0 ? "failed" : (ok == outcomes.Count ? "applied" : "partial");
+            string? otaReason = ok == outcomes.Count
+                ? null
+                : ok == 0
+                    ? "every partition write failed"
+                    : (outcomes.Count - ok) + " of " + outcomes.Count + " partition writes failed";
+
             if (context.Json)
                 context.WriteJson(new
                 {
                     command = "flash-ota",
                     dryRun = false,
-                    applied = true,
-                    gate = "applied",
+                    applied = ok > 0,
+                    gate = otaGate,
+                    reason = otaReason,
                     fastboot = session.ExecutablePath,
                     backup = PreOpBackupCli.JsonPayload(backup),
                     flashed = ok,
@@ -584,13 +594,21 @@ internal sealed class FlashXmlCommand : ICliCommand
         // JSON exitCode matches the real return code: nothing flashed is a file/verify
         // failure (5), a full success is 0, a partial write is a device rejection (3).
         int exitCode = okCount == 0 ? ExitCodes.FileOrVerify : (okCount == outcomes.Count ? ExitCodes.Ok : ExitCodes.DeviceRejected);
+        // Same rule as flash-ota: the JSON verdict is the device answers, never a default (D-02).
+        string xmlGate = okCount == 0 ? "failed" : (okCount == outcomes.Count ? "applied" : "partial");
+        string? xmlReason = okCount == outcomes.Count
+            ? null
+            : okCount == 0
+                ? "every identifier write failed"
+                : (outcomes.Count - okCount) + " of " + outcomes.Count + " identifier writes failed";
         if (context.Json)
             context.WriteJson(new
             {
                 command = Name,
                 dryRun = false,
-                applied = true,
-                gate = "applied",
+                applied = okCount > 0,
+                gate = xmlGate,
+                reason = xmlReason,
                 fastboot = session.ExecutablePath,
                 backup = PreOpBackupCli.JsonPayload(backup),
                 flashed = okCount,

@@ -102,9 +102,20 @@ public static class CapabilityRegistry
             ServiceMethod: "FirmwareUnlocker.UnlockFastboot",
             Tool: "vcom"),
 
-        new("oeminfo", "OEMINFO 型号/区域改写规划", "oeminfo", "oeminfo", "BtnConvertOem_Click",
+        // oeminfo was one row that lied about itself: the CLI/MCP only plan, while the GUI flashed
+        // the result of that plan straight to the device. Two capabilities, one per outcome (D-01).
+        new("oeminfo-convert", "OEMINFO 型号/区域改写（本地生成镜像）", "oeminfo", "oeminfo", "BtnConvertOem_Click",
             CapabilityWriteKind.PlanOnly, ["model", "region", "input", "pull"],
-            ["只生成改写计划，不刷 oeminfo", "oeminfo 是红线段（HMAC 无法离线重算）"]),
+            ["在宿主机上生成改写后的 oeminfo.img（只写本地文件，不写设备）",
+             "oeminfo 是红线段（HMAC 用设备密钥，无法离线重算）；把它写进设备是另一条能力 oeminfo-flash"]),
+
+        new("oeminfo-flash", "刷写转换后的 OEMINFO 镜像", "oeminfo-flash", "oeminfo_flash", "HandleOemInfoFlash",
+            CapabilityWriteKind.Write, ["file", "allow-redline", "yes", "json"],
+            ["把转换后的镜像真实写入 oeminfo 分区（红线段：身份/型号/区域，HMAC 由设备密钥生成）",
+             "写错无法在工具内回退，只能整包重刷或走救援"],
+            Approval: CapabilityApprovalKind.RedlineTypedConfirm,
+            Reversibility: ApprovalReversibility.Irreversible,
+            ServiceMethod: "DeviceWriteOps.FlashOemInfoAsync"),
 
         new("downgrade-enable", "启用降级（OEMINFO 版本擦除）规划", "downgrade-enable", "downgrade_enable", "HandleEnableDowngrade",
             CapabilityWriteKind.PlanOnly, [],

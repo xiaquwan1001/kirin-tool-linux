@@ -2648,12 +2648,12 @@ namespace Kirin_Tool
                     }
                     else
                     {
-                        var write = await FlashOemInfoToDevice(savePath);
-                        if (!write.WriteSucceeded)
+                        await HandleOemInfoFlash(savePath);
+                        if (!_lastOemInfoFlash.WriteSucceeded)
                         {
                             await ShowMessageBox("Conversion Complete / Write Not Confirmed",
                                 conversionReport.Replace("Device write: none performed.", "Device write: not confirmed.") +
-                                $"\n\n{write.Detail}");
+                                $"\n\n{_lastOemInfoFlash.Detail}");
                         }
                     }
                 }
@@ -2668,13 +2668,33 @@ namespace Kirin_Tool
             }
         }
 
-        private async Task<(bool WriteSucceeded, string Detail)> FlashOemInfoToDevice(string filePath)
+        /// <summary>Outcome of the most recent oeminfo flash, reported by the convert dialog.</summary>
+        private (bool WriteSucceeded, string Detail) _lastOemInfoFlash = (false, "no oeminfo write was attempted");
+
+        /// <summary>
+        /// oeminfo-flash — the GUI face of capability 'oeminfo-flash' (Services/Capabilities/
+        /// CapabilityRegistry.cs). Converting an OEMINFO image is a host-side file operation; the
+        /// device write is a redline, irreversible operation, so it asks the same approval gate and
+        /// calls the same DeviceWriteOps method as the CLI command and the MCP tool (D-01).
+        /// </summary>
+        private async Task HandleOemInfoFlash(string filePath)
         {
-            // OEMInfo is a redline partition: the conversion prompt above is not an opt-in
-            // for the write itself.
-            if (!await ConfirmRedlineWriteAsync(new[] { "oeminfo" }, "Writing the converted OEMInfo"))
+            _lastOemInfoFlash = (false, "no oeminfo write was attempted");
+
+            ApprovalAdmission? admission = await RequestGuiApprovalAsync(ApprovalRequests.For(
+                "oeminfo-flash",
+                argv: new[] { "fastboot", "flash", "oeminfo", filePath },
+                targets: new[] { "oeminfo" },
+                summary: new[]
+                {
+                    "writes the converted image into the oeminfo partition (model / region / identity fields)",
+                    "oeminfo is a redline partition: its HMAC is keyed by device secrets and cannot be recomputed offline",
+                    "a wrong image cannot be undone by this tool - it needs a full package or the rescue path",
+                }));
+            if (admission == null)
             {
-                return (false, "The oeminfo write was cancelled at the redline confirmation, no write was performed.");
+                _lastOemInfoFlash = (false, "The oeminfo write was cancelled at the approval gate; nothing was written.");
+                return;
             }
 
             try
@@ -2690,7 +2710,8 @@ namespace Kirin_Tool
                 progressDialog.ProgressItems[0].StatusText = "Flashing";
                 progressDialog.ProgressItems[0].ProgressValue = 50;
 
-                var flashResult = await _oemInfoService.FlashConvertedOemInfo(filePath);
+                // The ticket comes from the gate above: there is no other way into this write.
+                var flashResult = await _deviceWriteOps.FlashOemInfoAsync(admission.RequireTicket(), filePath);
 
                 // Success needs the process exit code AND an explicit OKAY token. Exit code 0
                 // without OKAY is Unknown: fastboot accepted the command, the write is unproven.
@@ -2701,7 +2722,8 @@ namespace Kirin_Tool
                     progressDialog.ProgressItems[0].ProgressValue = 100;
                     progressDialog.ShowCloseButton(true, "Write Complete");
                     await dialogTask;
-                    return (true, "flash oeminfo returned OKAY (exit code 0).");
+                    _lastOemInfoFlash = (true, "flash oeminfo returned OKAY (exit code 0).");
+                    return;
                 }
 
                 string detail = flashResult.IsSuccess
@@ -2716,12 +2738,12 @@ namespace Kirin_Tool
                 progressDialog.ShowCloseButton(false, "Write Not Confirmed");
 
                 await dialogTask;
-                return (false, detail);
+                _lastOemInfoFlash = (false, detail);
             }
             catch (Exception ex)
             {
                 await ShowMessageBox("Flash Error", $"Error flashing OEMInfo: {ex.Message}");
-                return (false, $"The flash raised an error: {ex.Message}");
+                _lastOemInfoFlash = (false, $"The flash raised an error: {ex.Message}");
             }
         }
 

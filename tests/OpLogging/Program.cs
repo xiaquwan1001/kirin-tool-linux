@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
+using Kirin_Tool.Services.Approval;
 using Kirin_Tool.Services.Diagnostics;
 using Kirin_Tool.Utils;
 
@@ -440,7 +441,13 @@ try
         Check(LatestOp(work, "oeminfo.convert")[^1].GetProperty("verdictSource").GetString() == "arg-validation",
             "a missing input is arg-validation (nothing was read)");
 
-        ProcessResult write = await service.FlashConvertedOemInfo(oeminfo);
+        // v2.4.15: the device half moved to DeviceWriteOps.FlashOemInfoAsync so it cannot bypass
+        // the approval gate; the op name and verdict rules are unchanged, so this check stays.
+        ApprovalGates.Install(new GuiApprovalGate(new ApproveEveryRequest()));
+        ApprovalAdmission admission = await ApprovalGuard.AdmitAsync(ApprovalRequests.For("oeminfo-flash",
+            argv: new[] { "fastboot", "flash", "oeminfo", oeminfo }, targets: new[] { "oeminfo" }));
+        var writeOps = new Kirin_Tool.Services.WriteOperations.DeviceWriteOps(new FastbootClient("/bin/true"));
+        ProcessResult write = await writeOps.FlashOemInfoAsync(admission.RequireTicket(), oeminfo);
         Check(write.IsSuccess, "/bin/true stub oeminfo write still reports success");
         List<JsonElement> writeLines = LatestOp(work, "oeminfo.write");
         Check(writeLines[0].GetProperty("phase").GetString() == "start", "oeminfo.write starts with a start line");
@@ -480,3 +487,12 @@ finally
 }
 
 Console.WriteLine(checks + " operation-logging checks passed; no device, fastboot or adb was contacted.");
+
+/// <summary>Test double: approves everything, and types the confirm phrase when the gate asks.</summary>
+internal sealed class ApproveEveryRequest : IApprovalPrompt
+{
+    public Task<ApprovalPromptAnswer> AskAsync(ApprovalPromptModel model, CancellationToken cancellationToken) =>
+        Task.FromResult(new ApprovalPromptAnswer(
+            ApprovalPromptOutcome.Approved,
+            model.RequiresTypedConfirm ? model.ConfirmPhrase : null));
+}

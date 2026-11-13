@@ -112,7 +112,7 @@ XML 计划是人写的，可能合法使用了只在部分 loader 上成立的�
 | 「GUI 能刷，BD 包应该也行」 | BD 包可能带 **gzip 压缩的** SUPER。CLI 会识别 `0x1f8b` 魔数并解压，GUI 的合并路径还没做，表现是 45/46 半刷。已知缺口，见下。 |
 | 「跨版本没事，反正 GPT 都是 74 项」 | 都是 74 项没错——但 `boot` 25→30 MB、`super` 6728→6992 MB、`kpatch` 66→61 MB、`preas` 296→32 MB。先写 `ptable`。 |
 | 「新 xloader 混着我手上那个 loader 一起用」 | 启动链套件必须同代，混代的结果是全黑、零枚举，或 `load hhee failed`。`12d1:3609` 间歇性出现即启动链失败；恢复只能人肉短接——没有软件 EDL 出口。 |
-| 「改 oeminfo 里的 `Display_Version` 就能绕过版本校验」 | `oeminfo` 是 96 MiB 稀疏、32 B 对齐的 section，HMAC 用设备密钥，无法离线重算。这也是 `oeminfo` 在 CLI/MCP 里只做规划的原因。 |
+| 「改 oeminfo 里的 `Display_Version` 就能绕过版本校验」 | `oeminfo` 是 96 MiB 稀疏、32 B 对齐的 section，HMAC 用设备密钥，无法离线重算。这也是 `oeminfo` 命令在 CLI/MCP 里只做规划的原因；真要把镜像写进设备是 `oeminfo-flash`（红线、不可逆、需手输确认串）。 |
 | 「串口打不开，肯定是权限」 | `12d1:3609` 配 `option` 驱动时 pyserial 会报 `errno 71`（DTR stall）。可用做法是裸 `os.open` + termios 8N1，全程不碰 DTR/RTS。BootROM 半截会话（发了 HEAD 没传数据）之后所有字节全零——拔线、长按电源 15 s、重新短接，别去「修」帧格式。 |
 | 「刷到 60% 挂了，工具的问题」 | 先看电量：写入中掉电在这类设备上不可恢复。保持 ≥50%，工具只警告不拦。 |
 
@@ -121,8 +121,9 @@ XML 计划是人写的，可能合法使用了只在部分 loader 上成立的�
 
 ## 安全模型
 
-**会写设备：** 8 条写能力（`flash-ota`、`flash-xml`、`reboot`、`write-sn`、`frp-remove`、
-`unlock-bootloader`、`usb-testpoint`、`reboot-usb-update`），**GUI / CLI / MCP 三个入口都有，且都过同一个审批闸门**。
+**会写设备：** 9 条写能力（`flash-ota`、`flash-xml`、`reboot`、`write-sn`、`frp-remove`、
+`unlock-bootloader`、`usb-testpoint`、`reboot-usb-update`、`oeminfo-flash`），**GUI / CLI / MCP 三个入口都有，
+且都过同一个审批闸门**。
 确认之后没有 dry-run。`flash-xml` 跳过 loader 未暴露的标识符，`--strict-names` 则拒绝（exit 3）。
 
 **只写内存、不碰分区：** `vcom-unlock` —— 经 VCOM BootROM（`12d1:3609`）装载 loader 链，与 GUI 的
@@ -130,9 +131,9 @@ XML 计划是人写的，可能合法使用了只在部分 loader 上成立的�
 之间必须人工拔插：用 `--replug wait:<秒>`，或拆成 `--stage-only null` 再 `--stage-only rest`
 （`rest` 绝不重发 START）。
 
-**CLI/MCP 永不写设备：** `oeminfo`、`downgrade-enable` —— 只出计划，即便加了 `--yes` 也 exit 4。
-（GUI 的 OEMInfo「Convert」按钮仍直接写 `oeminfoerase-disablewp` + `oeminfowrite-*`；这个不对称是
-[docs/debt-register.md](docs/debt-register.md) 里的最高危未修项。）
+**永不写设备：** `oeminfo`（只在宿主机上生成镜像）、`downgrade-enable` —— 只出计划，即便加了
+`--yes` 也 exit 4。把转换结果真正写进设备是**另一条能力** `oeminfo-flash`（红线、不可逆、手输确认串；
+MCP 需在运行中的 GUI 里带外批准）。
 
 **会话日志（GUI 与 CLI 同一份）：** 每次 VCOM 尝试写
 `~/.local/state/kirin-tool/vcom-<UTC>-<cpu>.log`（可用 `KIRIN_LOG_DIR` 覆盖）：pid、端口、framing、
@@ -156,7 +157,10 @@ agent 的请求会以审批弹窗的形式出现在 GUI 里，弹窗写明发起
 完整设计见 [docs/approval-gate.md](docs/approval-gate.md)。
 
 **闸门信号。** 所有写命令的 `--json` 与所有 MCP 写工具都返回 `gate`：`plan-only`、`refused`（带
-`reason`）、`confirmed`（确认了计划但未写）、`applied`。请按 `gate` 分支，不要只看退出码。
+`reason`）、`confirmed`（确认了计划但未写）、`applied`（设备接受了写入）、`partial`（多步写入只有一部分
+成功，exit 3）、`failed`/`unconfirmed`（`applied:false` + `reason`，绝不算成功）。`applied` 一律来自设备侧
+结果，没有默认值（[write-verdict-parity.md](docs/write-verdict-parity.md)）。`write-sn` 另带
+`verified`/`expected`/`readBack`，只有读回一致才 exit 0。请按 `gate` 分支，不要只看退出码。
 退出码：0 成功 / 1 用法 / 2 无设备 / 3 设备拒绝（含 `--strict-names`）/ 4 闸门拒绝 / 5 文件或校验失败。
 
 **写入前备份。** 第一次真实写入之前，把计划中的红线分区与 `ptable` dump 进带时间戳的目录
@@ -230,15 +234,15 @@ MCP server（换行分隔 JSON-RPC 2.0 over stdio）：
 }
 ```
 
-工具清单（21 个，1:1 由 CLI 命令表的 `McpName` 生成，没有第二份实现）：
+工具清单（22 个，1:1 由 CLI 命令表的 `McpName` 生成，没有第二份实现）：
 
 | 类型 | 工具名 |
 | :--- | :--- |
 | 只读（10） | `info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`partitions`、`psid`、`capabilities`、`udev` |
-| 真实写入（9） | `flash_ota`、`flash_xml`、`vcom_unlock`、`reboot`、`write_sn`、`frp_remove`、`unlock_bootloader`、`usb_testpoint`、`reboot_usb_update`（要求 `confirm: true` **且**在运行中的 GUI 里由人再批一次；没有 dry-run。`vcom_unlock` 不给 `confirm` 时只出计划） |
-| 仅规划（2） | `oeminfo`、`downgrade_enable`（`confirm: true` 也只确认计划，exit 4） |
+| 真实写入（9） | `flash_ota`、`flash_xml`、`reboot`、`write_sn`、`frp_remove`、`unlock_bootloader`、`usb_testpoint`、`reboot_usb_update`、`oeminfo_flash`（要求 `confirm: true` **且**在运行中的 GUI 里由人再批一次；没有 dry-run） |
+| 仅规划（3） | `vcom_unlock`、`oeminfo`、`downgrade_enable`（`confirm: true` 也只确认计划，exit 4） |
 
-只读工具共 10 个（`info`…`udev`）、写工具共 11 个（9 真实写入 + 2 仅规划，`oeminfo` 的 GUI「Convert」按钮仍直写设备，列为已知债务）；写工具一律要求
+只读工具共 10 个（`info`…`udev`）、写工具共 12 个（9 真实写入 + 3 仅规划）；写工具一律要求
 `confirm: true`，永不接受 `allow-redline`，且 `confirm` 之后仍要人工带外批准（见[安全模型](#安全模型)）。GUI/CLI/MCP 三面的一致性与漂移门禁见
 [docs/parity-design.md](docs/parity-design.md)，完整命令表与闸门语义见 [docs/cli-mcp.md](docs/cli-mcp.md)。
 

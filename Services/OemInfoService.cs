@@ -145,27 +145,6 @@ namespace Kirin_Tool.Services
             }
         }
 
-        public async Task<ProcessResult> FlashConvertedOemInfo(string filePath)
-        {
-            using var op = OpLog.Begin(OpNames.OemInfoWrite, new[] { filePath ?? "(none)" },
-                "write a converted oeminfo image");
-            op.Step("target: " + OpLog.FileStep(filePath) + " [redline: oeminfo holds device identity]");
-            try
-            {
-                ProcessResult result = await _fastbootClient.FlashOemInfo(filePath);
-                op.Step(OpLog.ResultStep("flash oeminfo", result, result.IsSuccess));
-                op.Result(result.IsSuccess, result.ExitCode, null, result.Output, null,
-                    OpLog.ExitVerdict(result), "verdict rule: fastboot exit code");
-                return result;
-            }
-            catch (Exception ex)
-            {
-                op.Step(OpLog.FailedPrefix + "flash oeminfo: " + OpLog.ExceptionVerdict(ex) + ": " + ex.Message);
-                op.Result(false, null, null, null, ex.Message, OpLog.ExceptionVerdict(ex));
-                throw;
-            }
-        }
-
         public void CleanupTempFiles()
         {
             try

@@ -56,6 +56,39 @@ public sealed class DeviceWriteOps
         return Client.WriteNveVariable("SN", value.Trim());
     }
 
+    /// <summary>
+    /// flash oeminfo — the device write for the redline identity image that
+    /// OemInfoService.ConvertOemInfo produced locally. This is the only device entry for an
+    /// oeminfo write: the GUI flash button, the CLI `oeminfo-flash` command and the MCP tool all
+    /// end up here (D-01), so the ticket requirement cannot be skipped by one face.
+    /// The result is raw on purpose: exit 0 alone proves nothing, the callers require an OKAY
+    /// token before they report the write as applied.
+    /// </summary>
+    public async Task<ProcessResult> FlashOemInfoAsync(WriteTicket ticket, string imagePath, CancellationToken cancellationToken = default)
+    {
+        Require(ticket, "oeminfo-flash");
+        if (string.IsNullOrWhiteSpace(imagePath))
+            throw new ArgumentException("an oeminfo image path is required", nameof(imagePath));
+
+        using OperationScope op = OpLog.Begin(OpNames.OemInfoWrite, OpLog.FlashTool, new[] { imagePath },
+            "write a converted oeminfo image");
+        op.Step("target: " + OpLog.FileStep(imagePath) + " [redline: oeminfo holds device identity]");
+        try
+        {
+            ProcessResult result = await Client.FlashOemInfo(imagePath);
+            op.Step(OpLog.ResultStep("flash oeminfo", result, result.IsSuccess));
+            op.Result(result.IsSuccess, result.ExitCode, null, result.Output, null,
+                OpLog.ExitVerdict(result), "verdict rule: fastboot exit code");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            op.Step(OpLog.FailedPrefix + "flash oeminfo: " + OpLog.ExceptionVerdict(ex) + ": " + ex.Message);
+            op.Result(false, null, null, null, ex.Message, OpLog.ExceptionVerdict(ex));
+            throw;
+        }
+    }
+
     /// <summary>erase frp / erase config / oem frp-erase, three irreversible steps.</summary>
     public Task<FrpBypassResult> FrpEraseAsync(WriteTicket ticket, CancellationToken cancellationToken = default)
     {
