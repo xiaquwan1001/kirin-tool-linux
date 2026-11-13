@@ -437,6 +437,9 @@ namespace Kirin_Tool.Services.Diagnostics
             WriteSummary(derived ?? false, verdict);
             CloseQuietly();
             OperationLogger.ReleaseSession(this);
+
+            // The process-exit safety net is only needed while the session is still open.
+            try { if (_processExit != null) AppDomain.CurrentDomain.ProcessExit -= _processExit; } catch { }
         }
 
         private bool? DeriveOk()
