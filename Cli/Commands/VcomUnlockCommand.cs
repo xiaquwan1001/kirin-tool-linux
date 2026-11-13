@@ -26,7 +26,7 @@ internal sealed class VcomUnlockCommand : ICliCommand
         "            [--port <tty>] [--use-fastflash-loader] [--dry-run] [--yes] [--json]\n" +
         "  without --yes only the plan is printed (exit 4); --dry-run keeps that behaviour even with --yes\n" +
         "  --stage-only rest continues after a manual replug and never re-sends the START frame\n" +
-        "  ack-mode default lenient == the GUI's behaviour (read the ACK, never fail on its value)\n" +
+        "  ack-mode default strict: exit 3 unless the device answers 0xAA (the GUI keeps lenient)\n" +
         "  the JSON always reports verified/reason; --require-ack turns 'applied but unverified' into exit 3\n" +
         "  progress/ACK frames go to stderr; the last line of stdout is one JSON document";
     public CliWriteKind WriteKind => CliWriteKind.RealWrite;
@@ -34,7 +34,10 @@ internal sealed class VcomUnlockCommand : ICliCommand
     public IReadOnlyList<CliParam> Params => new[]
     {
         new CliParam("cpu", "string", "chipset loader family, e.g. hisi980, hisi990", Required: true, Enum: BundledLoaders.SupportedChips().ToList()),
-        new CliParam("ack-mode", "string", "ACK policy: strict (fail unless 0xAA) | lenient (record only, GUI behaviour) | off (never wait)", Enum: new[] { "strict", "lenient", "off" }, Default: "lenient"),
+        // CLI/MCP default is strict (an automated caller must not read "exit 0" out of a device
+        // that never answered); the GUI keeps lenient by leaving VcomFlasherOptions.AckMode alone.
+        // MCP has no default of its own: the tool schema copies this Default value.
+        new CliParam("ack-mode", "string", "ACK policy: strict (fail unless 0xAA, CLI/MCP default) | lenient (record only, no failure — the GUI behaviour) | off (never wait)", Enum: new[] { "strict", "lenient", "off" }, Default: "strict"),
         new CliParam("ack-timeout", "string", "seconds to wait for each ACK (default 10, the GUI value)"),
         new CliParam("require-ack", "boolean", "fail (exit 3, verified=false) when any frame is missing its 0xAA ACK; the lenient recording behaviour is kept, so the upload is not aborted mid-transfer"),
         new CliParam("replug", "string", "cable prompt policy: skip (non-interactive default) | prompt | wait:<seconds>"),
@@ -470,10 +473,12 @@ internal sealed class VcomUnlockCommand : ICliCommand
 
     private enum ReplugPolicy { Skip, Prompt, Wait }
 
-    private static VcomAckMode ParseAckMode(string? value) => (value ?? "lenient").Trim().ToLowerInvariant() switch
+    // CLI/MCP fallback is strict (see docs/ack-default.md): an unspecified policy must not be the
+    // one that turns "the device said nothing" into exit 0. An empty value is treated as unspecified.
+    private static VcomAckMode ParseAckMode(string? value) => (value ?? "strict").Trim().ToLowerInvariant() switch
     {
-        "lenient" or "" => VcomAckMode.Lenient,
-        "strict" => VcomAckMode.Strict,
+        "strict" or "" => VcomAckMode.Strict,
+        "lenient" => VcomAckMode.Lenient,
         "off" => VcomAckMode.Off,
         _ => throw new CliUsageException($"--ack-mode must be strict, lenient or off (got '{value}')"),
     };

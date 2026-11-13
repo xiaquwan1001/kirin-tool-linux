@@ -95,7 +95,7 @@ public static class CapabilityRegistry
              "port", "use-fastflash-loader", "no-frame-log", "json"],
             ["向 BootROM 上传 null/xloader+pwn/uce/fastboot/bl2 到 RAM（断电即失效）",
              "真实注入走同一 FirmwareUnlocker + VcomFlasher（GUI 与 CLI 同源）",
-             "默认 --ack-mode lenient 等于 GUI 行为：ACK 只记录不校验，结论需看 verified/ack 统计",
+             "默认 --ack-mode strict：CLI/MCP 下设备不回 0xAA 即 exit 3（GUI 仍为 lenient：ACK 只记录不校验，结论看 verified/ack 统计）",
              "缺 --yes 时只打印计划（plan-only 门控）"],
             Approval: CapabilityApprovalKind.Once,
             Reversibility: ApprovalReversibility.Reversible,

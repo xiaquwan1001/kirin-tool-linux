@@ -32,8 +32,9 @@ namespace Kirin_Tool.Services
 {
     /// <summary>
     /// How <see cref="VcomFlasher"/> treats the one-byte answer the BootROM returns for a
-    /// command frame. GUI (and the CLI default) is <c>Lenient</c>, which is what the shipped
-    /// GUI has always done: read a byte, do not validate its value, never fail on silence.
+    /// command frame. The flasher itself has no default of its own: the entry point decides.
+    /// The GUI has always used <c>Lenient</c> (read a byte, do not validate its value, never
+    /// fail on silence); the CLI and MCP entry points default to <c>Strict</c> since v2.4.15.
     /// </summary>
     public enum VcomAckMode
     {
@@ -58,6 +59,14 @@ namespace Kirin_Tool.Services
         public string? PortName { get; init; }
         /// <summary>Force the bulk-only framing (no modem-line signalling). Default: explicit port → true, auto-detect → option driver check.</summary>
         public bool? BulkOnly { get; init; }
+        /// <summary>
+        /// ACK policy. The class default stays <c>Lenient</c> because the GUI builds these
+        /// options without setting it (the GUI must keep its historical "read it, never fail
+        /// on it" behaviour). The <b>CLI and MCP entry points default to <c>Strict</c></b>:
+        /// they pass an explicit value from <c>--ack-mode</c> (whose CLI/MCP default is
+        /// <c>strict</c>), so the difference lives in the entry layer, not here.
+        /// See docs/ack-default.md.
+        /// </summary>
         public VcomAckMode AckMode { get; init; } = VcomAckMode.Lenient;
         public TimeSpan AckTimeout { get; init; } = TimeSpan.FromSeconds(10);
         /// <summary>Per-frame trace sink (CLI writes these to stderr).</summary>
