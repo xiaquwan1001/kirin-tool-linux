@@ -204,9 +204,13 @@ MCP server (newline-delimited JSON-RPC 2.0 over stdio):
 }
 ```
 
-Tools: `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`, `flash_ota`, `flash_xml`,
-`vcom_unlock`, `oeminfo`, `downgrade_enable`. Write tools require `confirm: true` and never accept
-`allow-redline`. Full command table and gates: [docs/cli-mcp.md](docs/cli-mcp.md).
+Tools (15, generated 1:1 from the CLI command table via `McpName`, there is no second
+implementation): read-only `info`, `doctor`, `getvar`, `extract`, `dump`, `backup`,
+`partitions`, `psid`, `capabilities`, `udev`; real writes `flash_ota`, `flash_xml`; plan-only
+`vcom_unlock`, `oeminfo`, `downgrade_enable`. Every write tool requires `confirm: true` and never
+accepts `allow-redline`. The GUI/CLI/MCP parity contract and its drift gate live in
+[docs/parity-design.md](docs/parity-design.md); full command table and gates in
+[docs/cli-mcp.md](docs/cli-mcp.md).
 
 ## Screenshots
 

@@ -170,6 +170,10 @@ kirin-tool-cli extract UPDATE.APP out/                  # 解出全部分区
 kirin-tool-cli flash-ota base.app --json                # 只打印计划，gate=plan-only，exit 4
 kirin-tool-cli flash-ota base.app --yes                 # 真写全部非红线分区
 kirin-tool-cli backup --json                            # 只读 dump 身份分区 + manifest
+kirin-tool-cli partitions --json                        # 设备分区表（GUI 分区选择器同源）
+kirin-tool-cli psid --json                              # 设备标识（oem get-psid）
+kirin-tool-cli capabilities                             # 逐芯片能力矩阵 + rescue 计划（不需设备）
+kirin-tool-cli udev                                     # 宿主机 udev 规则覆盖（缺则打印修复命令）
 ```
 
 MCP server（换行分隔 JSON-RPC 2.0 over stdio）：
@@ -185,9 +189,17 @@ MCP server（换行分隔 JSON-RPC 2.0 over stdio）：
 }
 ```
 
-工具名：`info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`flash_ota`、`flash_xml`、
-`vcom_unlock`、`oeminfo`、`downgrade_enable`。写工具要求 `confirm: true`，且永不接受
-`allow-redline`。完整命令表与闸门语义见 [docs/cli-mcp.md](docs/cli-mcp.md)。
+工具清单（15 个，1:1 由 CLI 命令表的 `McpName` 生成，没有第二份实现）：
+
+| 类型 | 工具名 |
+| :--- | :--- |
+| 只读（10） | `info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`partitions`、`psid`、`capabilities`、`udev` |
+| 真实写入（2） | `flash_ota`、`flash_xml`（要求 `confirm: true`，没有 dry-run） |
+| 仅规划（3） | `vcom_unlock`、`oeminfo`、`downgrade_enable`（`confirm: true` 也只确认计划，exit 4） |
+
+只读工具共 10 个（`info`…`udev`）、写工具共 5 个（2 真实写入 + 3 仅规划）；写工具一律要求
+`confirm: true`，且永不接受 `allow-redline`。GUI/CLI/MCP 三面的一致性与漂移门禁见
+[docs/parity-design.md](docs/parity-design.md)，完整命令表与闸门语义见 [docs/cli-mcp.md](docs/cli-mcp.md)。
 
 ## 截图
 

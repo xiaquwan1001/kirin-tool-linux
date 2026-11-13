@@ -30,6 +30,10 @@ kirin-tool-cli flash-ota base.app --yes    # real write of all non-redline parti
 | `extract <UPDATE.APP> [outdir]` | 列出并导出全部分区 | `Services.PartitionExtractor.Read/ExtractAsync`（`Utils.UpdateApp`） |
 | `dump <partition> -o <dir>` | 先 `oem dump-emmc`，失败回退 `oem dump-storage` 导出分区 | `Services.FastbootFlasherService.DumpPartitionAsync`（临时 VCOM loader 两者都回 `invalid command`，属预期） |
 | `backup [partition...]` | 只读备份：把指定分区（默认身份分区集 + `ptable`）dump 进时间戳目录并写 `manifest.json` | `Services.PreOpBackup` + `FastbootFlasherService.DumpPartitionAsync` |
+| `partitions` | 设备分区表（GUI 分区选择器读的第一步） | `FastbootFlasherService.GetPartitionTableAsync`（GUI 同一个方法） |
+| `psid` | 设备标识 `oem get-psid`（GUI「Read identifiers」按钮） | `FastbootClient.ReadPsidAsync` |
+| `capabilities` | 逐芯片能力矩阵 + 内置 loader 清单 + rescue 分区计划（不需设备） | `ChipCapabilities.Allows`、`RescuePartitionPlan`、`FirmwareUnlocker.CpuAddresses` |
+| `udev` | 宿主机 udev 规则覆盖检查（GUI「Check again」按钮）；覆盖则 exit 0，否则 exit 5 并打印修复命令 | `Services.UdevRuleNotice.Inspect` |
 
 写操作分两类（`CliWriteKind`，`Cli/Commands/ICliCommand.cs`）：
 
@@ -73,6 +77,12 @@ flash-ota / flash-xml（以及 GUI 的全部真实写入路径）在**第一次�
 - 同一进程内同一分区只 dump 一次。
 
 flash-ota 默认 staging 目录 `<首个文件目录>/.kirintool-cli-tmp` 在结束时（含异常/取消）自动删除；显式 `--work-dir` 则保留。
+
+## 三面一致性（parity）
+
+GUI、CLI、MCP 的对应关系登记在 `Services/Capabilities/CapabilityRegistry.cs`，由
+`tests/SurfaceParity` 在 CI 里强制对齐（命令缺失、写工具没有 `confirm` 门控、GUI 长出未登记的
+`Handle*`/`*_Click` 都会让它变红）。设计与迁移计划见 [parity-design.md](parity-design.md)。
 
 ## 约定
 

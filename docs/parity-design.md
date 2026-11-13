@@ -148,3 +148,71 @@ GUI 按钮 ──► service（Services/*.cs）           ◄── CLI 命令�
 | 反射访问 internal 类型（`CliRunner`/`McpServer`） | 重命名/可见性变更导致门禁静默失效 | 门禁显式断言"反射到的东西非空"，拿不到就 FAIL，而不是跳过 |
 | 门禁跑进程内 MCP schema，误判真实协议 | 假绿 | G 门额外跑一次真实 `mcp` 子进程 `tools/list` 对齐（与 `tests/McpProtocol` 同风格） |
 | 新补的只读命令跨 lane 冲突 | 合并冲突 | 只改 `Cli/Commands/ReadCommands.cs` + 新增 `Services/Capabilities/`，不碰 VCOM/logger |
+
+---
+
+## 6. 实测结果（本 lane 完成后，分支 `feat/mcp-parity`）
+
+`dotnet run --project tests/SurfaceParity -c Release` 输出（同样的数字在 CI 里复现）：
+
+```text
+faces: 22 capabilities, 15 CLI commands, 15 MCP tools, 34 GUI handlers (16 with CLI+MCP, 6 GUI-only)
+268 surface parity checks passed.
+```
+
+| 指标 | 基线 35c6f6b | 本 lane 后 |
+| :--- | :--- | :--- |
+| CLI 命令 | 11 | **15**（+`partitions` `psid` `capabilities` `udev`） |
+| MCP 工具 | 11 | **15**（自动跟随，0 行手写 schema） |
+| 注册表登记能力 | — | **22**（16 有 CLI+MCP，6 仅 GUI 且带理由） |
+| GUI 设备能力入口 | 22（无结构约束） | 22，**全部登记**；34 个 `Handle*`/`*_Click` 里 17 个纯 UI 管道进白名单 |
+| 只读 GUI-only 能力 | 3（psid / udev / 分区表） | **0** |
+| 写能力 GUI-only 债务 | 6（未登记，隐形） | 6，**逐条带理由登记**（可见、可门禁） |
+| 门禁检查条数 | 0 | **268**（`tests/SurfaceParity`） |
+
+### 6.1 门禁上线时实际拦下的缺口（TOP5，原样保留）
+
+在第一版注册表（登记了 4 条尚无 CLI 命令的只读能力）之后、补齐实现之前，门禁报 8 条失败：
+
+```text
+A psid:         CLI command 'psid' exists         <- missing; add it to CliRunner.Commands or fix the registry row
+A partitions:   CLI command 'partitions' exists   <- missing
+A capabilities: CLI command 'capabilities' exists <- missing
+A udev-check:   CLI command 'udev' exists         <- missing
+B psid / partitions / capabilities / udev:        MCP tool '<name>' is generated <- missing
+```
+
+也就是说门禁在**实现补上之前就是红的**，不是事后补的断言。补齐 4 条只读命令后转绿，
+其中 MCP 侧 4 个工具**没有写一行代码**（`McpServer` 由 `ICliCommand` 生成）。
+
+### 6.2 白名单现状（逐条）
+
+`tests/SurfaceParity/gui-ui-only.txt` 共 17 条，全部是**纯 UI 管道**（点开文件对话框、勾选、切页、
+复制文本、外链、关弹窗）——它们不触 fastboot/adb/USB，因此不构成能力：
+
+`HandleNavigation`、`BrowseExtractionSource_Click`、`BrowseExtractionDestination_Click`、
+`BrowseOtaFile_Click`、`EditOtaFile_Click`、`ClearOtaFile_Click`、`BrowseOemInfoFile_Click`、
+`SelectExtractionAll_Click`、`SelectExtractionNone_Click`、`CancelExtraction_Click`、
+`CopyUdevCommands_Click`、`OperationButton_Click`、`GlobalInteractionDone_Click`、
+`GlobalInteractionCancel_Click`、`HelpButton_Click`、`TelegramButton_Click`、`GithubButton_Click`。
+
+没有一条「能自动化但懒得做」的项进白名单：能自动化的只读能力已经全部落成 CLI+MCP。
+
+### 6.3 迁移计划落点（含验证方式）
+
+| # | 事项 | 状态 | 验证 |
+| :--- | :--- | :--- | :--- |
+| 1 | 注册表 + 门禁 + 4 条只读能力 | **完成** | tests/SurfaceParity 268 条 + 全量 18 个 suite |
+| 2 | 文档同步（README / cli-mcp.md / 本文） | **完成** | 工具清单 15 个与注册表一致 |
+| 3 | `extract --partitions` 与 GUI 选择器语义对齐 | 待做 | 门禁 A3 会在加参数后强制登记 |
+| 4 | `reboot` / `reboot-usb-update` 纳入 CLI（消两条写债务） | 待做 | 门禁 F 会把债务数从 6 降到 4 |
+| 5 | 红线段（write-sn / frp-remove / unlock-bootloader）保持 GUI-only | **决定** | 理由写进注册表 GuiOnlyReason；MCP 结构性拒绝 allow-redline |
+| 6 | `usb-testpoint` 等 VCOM 传输层稳定后接 CLI | 待另一 lane | — |
+
+### 6.4 复现
+
+```bash
+cd ~/src/wt/ktl-mcp
+dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release
+dotnet run --project tests/SurfaceParity -c Release          # 268 checks
+```
