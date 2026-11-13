@@ -13,7 +13,7 @@ One implementation, three entry points: the **Avalonia GUI**, the **headless CLI
 - **Huawei fastboot** — bundled native AOSP 35.0.2-based client with reconstructed Huawei extensions: dump/upload (DDR + eMMC geometry), UFS-eye, UltraFlash negotiation, staging/fetch, slots, fastbootd, logical partitions, boot-header/vbmeta support, TCP/UDP transports, bundled filesystem helpers. Coverage and limits: [native-fastboot-parity-v2.4.5.md](native-fastboot-parity-v2.4.5.md).
 - **Real OTA flashing** — `flash-ota` writes a Full-OTA package partition-by-partition through a temporary VCOM loader, with name resolution against the loader's exposed partition table, per-partition OKAY verification and staging cleanup. Verified on a P40 Pro (ELS-AN00), 46/46 partitions. `flash-xml` writes a flashing.xml plan.
 - **USB Update** — userspace libusb transport (vendor 12d1, interface ff/13/23), no DKMS module; VCOM loader path remains serial-based. See [usb-update-userspace.md](usb-update-userspace.md).
-- **Rescue / unlock workflows** — loader-based rescue flashing, plan-only `vcom-unlock` / `oeminfo` / `downgrade-enable` CLI commands.
+- **Rescue / unlock workflows** — loader-based rescue flashing, real `vcom-unlock` (VCOM loader upload, same services as the GUI, `--stage-only` split around the manual replug), plan-only `oeminfo` / `downgrade-enable` CLI commands.
 
 ## Safety (see README §Safety model)
 
@@ -21,7 +21,8 @@ One implementation, three entry points: the **Avalonia GUI**, the **headless CLI
 - Machine-readable `gate` signals (`plan-only` / `refused` / `confirmed` / `applied`) and exit codes 0–5.
 - Write success requires a device `OKAY` reply, not just exit 0.
 - Explicit GUI confirmations for SN rewrite, FRP erase, and USB Update redline partitions discovered after unpacking.
-- Global unhandled-exception logging; plan-only commands never write.
+- Global unhandled-exception logging; plan-only commands never write; every VCOM session (GUI and CLI) leaves a
+  frame-level audit log under `~/.local/state/kirin-tool/` (`vcom-<UTC>-<cpu>.log`).
 - Pre-op backup before every real write: redline partitions of the plan + `ptable` into a timestamped directory with a SHA256 `manifest.json` (best effort; `--require-backup` / `--no-backup` / `--backup-dir`), plus a read-only `backup` command.
 
 ## Packaging & CI

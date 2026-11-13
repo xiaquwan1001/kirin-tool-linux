@@ -213,11 +213,11 @@ internal static class BundledLoaders
         }
     }
 
-    public static IReadOnlyList<(string Stage, string File, int Address, bool PwnFlag, bool Exists)> Plan(string chip, bool useFastFlashLoader = false)
+    public static IReadOnlyList<(string Stage, string File, int Address, bool PwnFlag, bool Exists)> Plan(string chip, bool useFastFlashLoader = false, string? loaderRoot = null)
     {
         if (!FirmwareUnlocker.CpuAddresses.TryGetValue(chip, out var stages)) return Array.Empty<(string, string, int, bool, bool)>();
 
-        string chipDirectory = Path.Combine(Directory, chip);
+        string chipDirectory = Path.Combine(loaderRoot ?? Directory, chip);
         return stages.Select(stage =>
         {
             string file = useFastFlashLoader && stage.Name == "FASTBOOT"

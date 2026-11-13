@@ -31,6 +31,20 @@ namespace Kirin_Tool.UI
             Dispatcher.UIThread.InvokeAsync(() => OverallStatusTextBlock.Text = status);
         }
 
+        /// <summary>
+        /// Shows the VCOM audit log path in the dialog. The file stays on disk after the run, so
+        /// the path is left visible (and selectable) once the operation finishes.
+        /// </summary>
+        public void ShowLogPath(string logPath)
+        {
+            if (string.IsNullOrWhiteSpace(logPath)) return;
+            Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                LogPathTextBlock.Text = "log: " + logPath;
+                LogPathTextBlock.IsVisible = true;
+            });
+        }
+
         public void ShowCloseButton(bool isSuccess = true, string title = null)
         {
             Dispatcher.UIThread.InvokeAsync(() =>

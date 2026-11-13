@@ -15,12 +15,14 @@ string root = Path.GetFullPath(args.Length == 0 ? "." : args[0]);
 int checks = 0;
 void Check(bool ok, string name) { if (!ok) throw new Exception("FAIL " + name); Console.WriteLine("PASS " + name); checks++; }
 
+// Newest build wins: a stale Release binary from an older checkout would assert old behaviour.
 string? cli = new[] {
     Path.Combine(root, "KirinTool.Cli/bin/Release/net10.0/KirinTool.Cli"),
     Path.Combine(root, "KirinTool.Cli/bin/Debug/net10.0/KirinTool.Cli"),
     Path.Combine(root, "KirinTool.Cli/bin/Release/net10.0/KirinTool.Cli.dll"),
     Path.Combine(root, "KirinTool.Cli/bin/Debug/net10.0/KirinTool.Cli.dll"),
-}.FirstOrDefault(File.Exists) ?? throw new Exception(
+}.Where(File.Exists).OrderByDescending(path => File.GetLastWriteTimeUtc(path)).FirstOrDefault()
+  ?? throw new Exception(
     "FAIL cli binary not found; build it first: dotnet build KirinTool.Cli/KirinTool.Cli.csproj -c Release");
 
 (int Code, string Out, string Err) Run(params string[] argv)
@@ -58,11 +60,18 @@ string work = Path.Combine(Path.GetTempPath(), "kirin-writegates-" + Guid.NewGui
 Directory.CreateDirectory(work);
 try
 {
-    // ---- 1. vcom-unlock: acknowledged plan for a real chip still writes nothing ----
+    // ---- 1. vcom-unlock: plan-only without --yes, and a dry run that never touches the port ----
+    // The command itself is a REAL write now (CliWriteKind.RealWrite), so the gate is asserted
+    // with --dry-run: exit 4, gate=plan-only, and no device access. That keeps this harness
+    // hardware-free even when a real VCOM device happens to be attached.
     {
-        (int code, string stdout, string stderr) = Run("vcom-unlock", "--cpu", "hisi990", "--yes", "--json");
-        Check(code == 4, "vcom-unlock --yes exits 4 (got " + code + "); stderr: " + stderr.Trim());
+        (int code, string stdout, string stderr) = Run("vcom-unlock", "--cpu", "hisi990", "--json");
+        Check(code == 4, "vcom-unlock without --yes exits 4 (got " + code + "); stderr: " + stderr.Trim());
         CheckGatedPlan(stdout, "vcom-unlock");
+
+        (code, stdout, stderr) = Run("vcom-unlock", "--cpu", "hisi990", "--yes", "--dry-run", "--json");
+        Check(code == 4, "vcom-unlock --dry-run exits 4 (got " + code + "); stderr: " + stderr.Trim());
+        CheckGatedPlan(stdout, "vcom-unlock --dry-run");
     }
 
     // ---- 2. oeminfo: acknowledged rewrite of a synthetic OEMINFO image ----

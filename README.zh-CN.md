@@ -67,7 +67,7 @@ GUI、无头 CLI 与 MCP server 共用同一份实现，每一个破坏性操作
 | **写入前自动备份**（计划中的红线分区 + `ptable`，时间戳目录 + `manifest.json` 记录大小/SHA256/状态） | 最容易后悔的那次写入，恰恰是撤不回来的那次。参数见下。 |
 | **低电量横幅（仅警告）** | 见[为什么电量只是警告](#为什么电量只是警告不是闸门)。 |
 | **`flash-xml` 默认跳过 loader 未暴露的标识符**（仅警告），`--strict-names` 才拒绝（exit 3） | 人手写的 XML 可能合法地写了只在某些 loader 上成立的别名；默认硬拒没有拦住任何真实风险，只让人困惑。 |
-| **只读规划类命令真的不写**（`vcom-unlock`、`oeminfo`、`downgrade-enable` 恒 exit 4） | 参见 oeminfo 那条实操记录：这类写入无法离线计算，诚实的产物就是一份计划。 |
+| **VCOM 只有一份实现，GUI 与 CLI 共用**（`vcom-unlock` 已能真上传；`oeminfo`、`downgrade-enable` 仍恒 exit 4） | loader 装载协议原来只有 GUI 路径，同一次解锁只能手点界面。现在 CLI/MCP 直接调 `FirmwareUnlocker`/`VcomFlasher`：同样的帧、同样的地址表，外加可注入的 ACK 策略与会话日志（[对齐表](docs/cli-vcom-unlock-parity.md)）。oeminfo 的 HMAC 仍无法离线重算，所以它保留"只出计划"。 |
 | **自建发布流水线**（deb / AppImage / tar.gz / 单文件 CLI 同源于一个提交），deb 依赖策略 + 三个 Ubuntu 代的 `apt-get -s` 模拟 | 上游 release 从不匹配 Linux 运行时现实：ICU soname 每个发行版都变、24.04+ 的 `libssl3` 变成 `libssl3t64`、dpkg alternatives 不支持通配。详见 [docs/fork-release.md](docs/fork-release.md)。 |
 | **双 CI + 测试单一事实源**（`tests/suites.txt`，17 套免硬件 harness，GitHub Actions 与 GitLab CI 同跑） | 只有一条流水线跑的测试，注定会烂。`FlashPolicy` 现在缺 CLI 二进制就硬失败，不再静默 SKIP。 |
 | **`StableParity` 哈希冻结面**：`loaders/`、fastboot payload、`SuperMerger`、`VcomFlasher`、USB Update | 硬件 blob 与串口协议不允许被顺手改掉；这些位置只接受行为保持型改动。 |
@@ -124,7 +124,18 @@ XML 计划是人写的，可能合法使用了只在部分 loader 上成立的�
 **会写设备：** `flash-ota`、`flash-xml`（CLI/MCP）以及 GUI 的刷写 / USB Update / 救援流程。确认之后
 没有 dry-run。`flash-xml` 跳过 loader 未暴露的标识符，`--strict-names` 则拒绝（exit 3）。
 
-**永不写设备：** `vcom-unlock`、`oeminfo`、`downgrade-enable` —— 只出计划，即便加了 `--yes` 也 exit 4。
+**只写内存、不碰分区：** `vcom-unlock` —— 经 VCOM BootROM（`12d1:3609`）装载 loader 链，与 GUI 的
+「Unlock Fastboot」同一实现。需要 `--yes`；`--dry-run` 保持旧的只出计划。hi9xx 在 `null` 与 `XLOADER`
+之间必须人工拔插：用 `--replug wait:<秒>`，或拆成 `--stage-only null` 再 `--stage-only rest`
+（`rest` 绝不重发 START）。
+
+**永不写设备：** `oeminfo`、`downgrade-enable` —— 只出计划，即便加了 `--yes` 也 exit 4。
+
+**会话日志（GUI 与 CLI 同一份）：** 每次 VCOM 尝试写
+`~/.local/state/kirin-tool/vcom-<UTC>-<cpu>.log`（可用 `KIRIN_LOG_DIR` 覆盖）：pid、端口、framing、
+逐帧一行（type/addr/len/seq/bytes）、ACK 原始字节或超时、每阶段起止、每条拔插提示与用户选择、
+最终结论——事后可对账。GUI 在进度对话框显示路径，CLI 打到 stderr。字段表见
+[docs/cli-vcom-unlock-parity.md §7](docs/cli-vcom-unlock-parity.md)。
 
 **红线分区** 必须由人显式覆盖：CLI 用 `--allow-redline`，GUI 弹窗列出具体分区，MCP 完全不接受。
 
@@ -170,6 +181,9 @@ kirin-tool-cli extract UPDATE.APP out/                  # 解出全部分区
 kirin-tool-cli flash-ota base.app --json                # 只打印计划，gate=plan-only，exit 4
 kirin-tool-cli flash-ota base.app --yes                 # 真写全部非红线分区
 kirin-tool-cli backup --json                            # 只读 dump 身份分区 + manifest
+kirin-tool-cli vcom-unlock --cpu hisi990 --json         # 只打印 loader 装载计划，exit 4
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes          # 真上传（设备需已在 VCOM 模式）
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes --stage-only rest   # 人工拔插之后续跑
 ```
 
 MCP server（换行分隔 JSON-RPC 2.0 over stdio）：

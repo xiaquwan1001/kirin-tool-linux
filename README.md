@@ -73,7 +73,7 @@ added or changed afterwards; the exhaustive per-release list is in
 | **Automatic pre-op backup** before every real write (redline partitions of the plan + `ptable`, timestamped dir, `manifest.json` with size/SHA256/status) | the write we can most easily regret is the one we cannot undo. Details and flags below. |
 | **Low-battery banner (warning only)** | see [why it is not a gate](#why-the-battery-is-a-warning-and-not-a-gate). |
 | **`flash-xml` skips identifiers the loader does not expose** (warning), `--strict-names` refuses with exit 3 | a human-authored XML may legitimately mention aliases; failing hard by default blocked nothing useful but confused everybody. |
-| **Plan-only commands really never write** (`vcom-unlock`, `oeminfo`, `downgrade-enable` → exit 4 always) | see the oeminfo field note: those writes are not offline-computable, so the honest product is a plan. |
+| **One VCOM implementation, GUI and CLI** (`vcom-unlock` now really uploads; `oeminfo`, `downgrade-enable` stay plan-only → exit 4) | the VCOM loader protocol had no CLI path, so the same unlock could only be done by hand in the GUI. The CLI/MCP now call `FirmwareUnlocker`/`VcomFlasher` themselves — same frames, same addresses, an injectable ACK policy and a session log ([parity table](docs/cli-vcom-unlock-parity.md)). oeminfo's HMAC still cannot be recomputed offline, so that one keeps its plan. |
 | **Own release pipeline** (deb / AppImage / tar.gz / single-file CLI from one commit) with a deb `Depends` policy and `apt-get -s` simulation on three Ubuntu generations | upstream releases never matched Linux runtime reality: ICU sonames move every release, `libssl3` became `libssl3t64` on 24.04+, and dpkg alternatives have no wildcards. [docs/fork-release.md](docs/fork-release.md). |
 | **Dual CI, single source of truth for tests** (`tests/suites.txt`, 17 hardware-free harnesses, GitHub Actions + GitLab CI) | a test that only one pipeline runs is a test that will rot. `FlashPolicy` now fails hard when the CLI binary is missing instead of skipping. |
 | **`StableParity` hash boundary** around `loaders/`, the fastboot payload, `SuperMerger`, `VcomFlasher`, USB Update | hardware blobs and serial protocol must not move by accident; only behaviour-preserving edits are allowed there. |
@@ -138,7 +138,19 @@ The one end-to-end result worth quoting: `flash-ota` through a temporary VCOM lo
 writes — there is no dry-run after confirmation. `flash-xml` skips identifiers the loader does not
 expose; `--strict-names` refuses instead (exit 3).
 
-**Never writes:** `vcom-unlock`, `oeminfo`, `downgrade-enable` — plan-only, exit 4, even with `--yes`.
+**Writes RAM only (no partition is touched):** `vcom-unlock` — uploads the loader chain over the VCOM
+BootROM (`12d1:3609`), exactly like the GUI's "Unlock Fastboot". Needs `--yes`; `--dry-run` keeps the
+old plan output. A cable replug is required between `null` and `XLOADER` on hi9xx: use `--replug wait:<s>`
+or split with `--stage-only null` then `--stage-only rest` (a `rest` run never re-sends START).
+
+**Never writes:** `oeminfo`, `downgrade-enable` — plan-only, exit 4, even with `--yes`.
+
+**Session log (GUI and CLI share it):** every VCOM attempt writes
+`~/.local/state/kirin-tool/vcom-<UTC>-<cpu>.log` (override with `KIRIN_LOG_DIR`): pid, port, framing,
+one line per frame (type/addr/len/seq/bytes), the raw ACK byte or timeout, every stage boundary, every
+cable prompt and its answer, and the final verdict — so a failed attempt can be reconciled later. The GUI
+shows the path in the progress dialog; the CLI prints it on stderr. Field table:
+[docs/cli-vcom-unlock-parity.md §7](docs/cli-vcom-unlock-parity.md).
 
 **Redline partitions** are refused unless a human overrides: `--allow-redline` in the CLI, a dialog
 listing the exact partitions in the GUI, and nothing at all over MCP.
@@ -189,7 +201,15 @@ kirin-tool-cli extract UPDATE.APP out/                  # extract all partitions
 kirin-tool-cli flash-ota base.app --json                # prints the write plan, gate=plan-only, exit 4
 kirin-tool-cli flash-ota base.app --yes                 # REAL WRITE of all non-redline partitions
 kirin-tool-cli backup --json                            # read-only dump of identity partitions + manifest
+kirin-tool-cli vcom-unlock --cpu hisi990 --json         # plan the VCOM loader upload, exit 4
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes          # real upload (device already in VCOM mode)
+kirin-tool-cli vcom-unlock --cpu hisi990 --yes --stage-only rest   # continue after a manual replug
 ```
+
+`vcom-unlock` is the CLI face of the GUI's "Unlock Fastboot": same `FirmwareUnlocker`/`VcomFlasher`,
+same frame order and address table. Useful flags: `--ack-mode strict|lenient|off` (lenient is the GUI
+default), `--replug skip|prompt|wait:<s>`, `--loader-dir <dir>`, `--port <tty>`. Exit codes: 0 ok,
+2 no VCOM device, 3 device rejected (strict ACK), 5 loader file/decrypt failure.
 
 MCP server (newline-delimited JSON-RPC 2.0 over stdio):
 

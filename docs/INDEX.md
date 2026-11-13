@@ -8,6 +8,7 @@ Fork-relevant guides first; inherited-baseline guides follow. Entry point: [READ
 | [refresh-changelog.md](refresh-changelog.md) | Per-release changes of the refresh line (with reasons) and known gaps. |
 | [cli-mcp.md](cli-mcp.md) | CLI commands, write kinds, redline gate, gate signals, exit codes, MCP stdio protocol. |
 | [fork-release.md](fork-release.md) | Fork release pipeline: deb / AppImage / tar.gz / CLI assets, deb layout, ICU/OpenSSL dependency policy, CI map. |
+| [cli-vcom-unlock-parity.md](cli-vcom-unlock-parity.md) | `vcom-unlock` GUI↔CLI↔MCP alignment (design, item-by-item table, ACK policies, stage split, session log fields, tests). |
 | [features.md](features.md) | Feature overview across GUI, CLI and MCP. |
 | [FORK-NOTICE.md](FORK-NOTICE.md) | Fork provenance, BSL 1.1 license position, compliance checklist. |
 | [screenshots.md](screenshots.md) | Screenshot set: file names, content and capture guidance (images under docs/images/). |
