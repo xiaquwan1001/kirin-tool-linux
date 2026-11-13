@@ -23,6 +23,7 @@ using System.IO;
 using System.Text;
 using System.Threading.Tasks;
 using Kirin_Tool.Services;
+using Kirin_Tool.Services.Diagnostics;
 
 namespace Kirin_Tool.Services.USBUpdate
 {
@@ -43,10 +44,9 @@ namespace Kirin_Tool.Services.USBUpdate
 
         public async Task EnterSoftwareTestpoint(string updateAppPath)
         {
-            if (Directory.Exists(_dloadDirectory))
-            {
-                try { Directory.Delete(_dloadDirectory, true); } catch { }
-            }
+            // Was an empty catch: the directory is removed exactly as before (the next line
+            // recreates it) but the pre-delete listing and any failure are now recorded.
+            OpLog.CleanDirectory(_dloadDirectory, OpNames.UsbUpdateCleanup);
             Directory.CreateDirectory(_dloadDirectory);
 
             var extractor = new USBUpdateApp(_log, _dloadDirectory);
@@ -118,10 +118,9 @@ namespace Kirin_Tool.Services.USBUpdate
 
         public async Task ExitSoftwareTestpoint(string updateAppPath)
         {
-            if (Directory.Exists(_dloadDirectory))
-            {
-                try { Directory.Delete(_dloadDirectory, true); } catch { }
-            }
+            // Was an empty catch: the directory is removed exactly as before (the next line
+            // recreates it) but the pre-delete listing and any failure are now recorded.
+            OpLog.CleanDirectory(_dloadDirectory, OpNames.UsbUpdateCleanup);
             Directory.CreateDirectory(_dloadDirectory);
 
             var extractor = new USBUpdateApp(_log, _dloadDirectory);

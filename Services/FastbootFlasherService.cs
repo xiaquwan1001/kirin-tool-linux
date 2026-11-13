@@ -19,6 +19,8 @@
  */
 
 using Kirin_Tool.Models;
+using Kirin_Tool.Services.Diagnostics;
+using Kirin_Tool.Utils;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -47,42 +49,75 @@ namespace Kirin_Tool.Services
                 .Select(name => new FastbootPartition(name)).ToList();
         }
 
-        public async Task<(bool IsSuccess, string Message)> DumpPartitionAsync(string partitionName, string savePath)
+        /// <summary>
+        /// Dump one partition. When <paramref name="scope"/> is supplied (the pre-op backup does
+        /// that) the steps land in the caller's op; otherwise this call opens its own
+        /// <c>backup.dump</c> op so a standalone dump is still in the audit trail.
+        /// Return values are unchanged: the op only records how the verdict was reached.
+        /// </summary>
+        public async Task<(bool IsSuccess, string Message)> DumpPartitionAsync(string partitionName, string savePath, OperationScope? scope = null)
         {
+            using var own = scope == null
+                ? OpLog.Begin(OpNames.BackupDump, new[] { partitionName, savePath }, "standalone partition dump")
+                : null;
+            OperationScope op = (scope ?? own)!;
+            op.Step("dump target: " + partitionName + " -> " + savePath);
             try
             {
                 // A stale file from an earlier run would otherwise make the
                 // file-exists success check pass without a real dump.
-                try { if (File.Exists(savePath)) File.Delete(savePath); } catch { }
+                try { if (File.Exists(savePath)) File.Delete(savePath); }
+                catch (Exception ex)
+                {
+                    op.Step(OpLog.DegradedPrefix + "stale dump file could not be deleted: " + savePath + " (" + ex.Message + ")");
+                }
 
                 var result = await _fastbootClient.OemCommandAsync($"dump-emmc {partitionName} \"{savePath}\"", timeoutMinutes: 300);
-                bool isSuccess = DumpFileWasWritten(savePath) &&
-                                !string.IsNullOrEmpty(result) &&
+                bool wroteFile = DumpFileWasWritten(savePath);
+                bool outputClean = !string.IsNullOrEmpty(result) &&
                                 !result.ToLower().Contains("fail") &&
                                 !result.ToLower().Contains("error");
+                bool isSuccess = wroteFile && outputClean;
+                op.Step("verb dump-emmc: " + (wroteFile ? "file written " + OpLog.FileStep(savePath) : "no file written")
+                    + ", output-clean=" + (outputClean ? "yes" : "no"));
 
                 if (isSuccess)
+                {
+                    op.Result(true, null, null, result, null, "file-written", "dump-emmc wrote a non-empty file");
                     return (true, result ?? "Dump completed");
+                }
 
                 var storageResult = await _fastbootClient.OemCommandAsync($"dump-storage {partitionName} \"{savePath}\"", timeoutMinutes: 300);
-                bool storageSuccess = DumpFileWasWritten(savePath) &&
-                                     !string.IsNullOrEmpty(storageResult) &&
+                bool storageWroteFile = DumpFileWasWritten(savePath);
+                bool storageClean = !string.IsNullOrEmpty(storageResult) &&
                                      !storageResult.ToLower().Contains("fail") &&
                                      !storageResult.ToLower().Contains("error");
+                bool storageSuccess = storageWroteFile && storageClean;
+                op.Step("verb dump-storage fallback: " + (storageWroteFile ? "file written " + OpLog.FileStep(savePath) : "no file written")
+                    + ", output-clean=" + (storageClean ? "yes" : "no"));
                 if (!storageSuccess)
                 {
+                    string verdict = storageWroteFile ? "loader-capability:dump-verb" : "file-missing";
+                    if (!string.IsNullOrEmpty(storageResult) &&
+                        (storageResult.ToLower().Contains("invalid command") || storageResult.ToLower().Contains("not support")))
+                        verdict = "loader-capability:invalid-command";
+                    op.Result(false, null, null, null, storageResult, verdict,
+                        "neither dump-emmc nor dump-storage produced a usable file; recorded as a loader capability gap");
                     return (false, string.IsNullOrEmpty(storageResult) || storageResult.ToLower().Contains("fail") || storageResult.ToLower().Contains("error")
                         ? $"Dump failed. The Huawei fastboot client normally writes '{savePath}' on the host; the system fastboot cannot save uploaded partition data."
                         : storageResult);
                 }
+                op.Result(true, null, null, storageResult, null, "file-written", "dump-storage wrote a non-empty file");
                 return (true, storageResult ?? "Dump completed");
             }
-            catch (TimeoutException)
+            catch (TimeoutException ex)
             {
+                op.Result(false, null, null, null, ex.Message, "timeout", "dump did not finish inside the client timeout");
                 return (false, "Dump operation timed out - partition may be too large");
             }
             catch (Exception ex)
             {
+                op.Result(false, null, null, null, ex.Message, OpLog.ExceptionVerdict(ex));
                 return (false, $"Dump failed: {ex.Message}");
             }
         }
@@ -103,11 +138,27 @@ namespace Kirin_Tool.Services
         }
 
 
-        public async Task<(bool IsSuccess, string Message)> FlashPartitionAsync(string partitionName, string imagePath)
+        /// <summary>
+        /// Write one image. With an enclosing plan scope the per-image line becomes a
+        /// <c>step</c> of that plan (CLI flash-xml); without one this call is its own
+        /// <c>flash.image</c> op (the GUI loops call the flasher image by image).
+        /// The verdict rule is the flasher's existing one: <see cref="ProcessResult.IsSuccess"/>.
+        /// </summary>
+        public async Task<(bool IsSuccess, string Message)> FlashPartitionAsync(string partitionName, string imagePath, OperationScope? scope = null)
         {
+            using var own = scope == null
+                ? OpLog.Begin(OpNames.FlashImage, OpLog.FlashTool, new[] { partitionName, imagePath }, "single image write")
+                : null;
+            OperationScope op = (scope ?? own)!;
+            op.Step("flash " + partitionName + " <- " + OpLog.FileStep(imagePath)
+                + (FlashPolicy.IsRedline(partitionName) ? " [redline partition]" : ""));
             try
             {
                 var result = await _fastbootClient.FlashPartition(partitionName, imagePath);
+                op.Step(OpLog.ResultStep(partitionName, result, result.IsSuccess));
+                if (own != null)
+                    op.Result(result.IsSuccess, result.ExitCode, null, result.Output, null,
+                        OpLog.ExitVerdict(result), "verdict rule: fastboot exit code (GUI per-image path)");
 
                 return (result.IsSuccess, result.Output);
             }
@@ -115,6 +166,9 @@ namespace Kirin_Tool.Services
             {
                 // Surface the real failure to the caller; swallowing it made every
                 // exception look like a generic "Failed" with no diagnostic value.
+                op.Step(OpLog.FailedPrefix + partitionName + ": " + OpLog.ExceptionVerdict(ex) + ": " + ex.Message);
+                if (own != null)
+                    op.Result(false, null, null, null, ex.Message, OpLog.ExceptionVerdict(ex));
                 return (false, $"Flash failed: {ex.Message}");
             }
         }

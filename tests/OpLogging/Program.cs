@@ -54,6 +54,48 @@ static string? FileOf(string dir, string op)
     return null;
 }
 
+// Newest op file wins: several checks below run the same op repeatedly and must read the
+// result of the run they just made, not whichever file the filesystem happens to list first.
+static List<JsonElement> LatestOp(string dir, string op)
+{
+    string? newest = null;
+    string stamp = "";
+    foreach (string file in Directory.EnumerateFiles(dir, "*.jsonl", SearchOption.AllDirectories))
+    {
+        string first = File.ReadLines(file).FirstOrDefault(line => !string.IsNullOrWhiteSpace(line)) ?? "";
+        if (first.Length == 0) continue;
+        string fileOp;
+        string started;
+        using (var document = JsonDocument.Parse(first))
+        {
+            fileOp = document.RootElement.GetProperty("op").GetString() ?? "";
+            started = document.RootElement.GetProperty("ts").GetString() ?? "";
+        }
+        if (fileOp != op) continue;
+        // Order by the op's own start stamp (millisecond) and break ties with the file name,
+        // which carries the -2/-3 suffix the logger appends inside the same millisecond.
+        string key = started + "|" + Path.GetFileName(file);
+        if (string.CompareOrdinal(key, stamp) <= 0) continue;
+        newest = file;
+        stamp = key;
+    }
+    if (newest == null) throw new Exception("no JSONL file for op " + op);
+
+    var parsed = new List<JsonElement>();
+    foreach (string raw in File.ReadAllLines(newest))
+    {
+        if (string.IsNullOrWhiteSpace(raw)) continue;
+        using var document = JsonDocument.Parse(raw);
+        parsed.Add(document.RootElement.Clone());
+    }
+    return parsed;
+}
+
+static List<string> StepNotes(IEnumerable<JsonElement> lines) =>
+    lines.Where(line => line.GetProperty("phase").GetString() == "step")
+         .Select(line => line.GetProperty("notes").GetString() ?? "")
+         .ToList();
+
 try
 {
     // ---- 1. JSONL field completeness: start / step / prompt / result ----
@@ -264,6 +306,170 @@ try
         }
         ProcessResult echo = await ProcessRunner.RunAsync("/bin/echo", new[] { "still", "works" }, timeoutSeconds: 30, op: "test.disabled");
         Check(echo.IsSuccess && echo.Output.Contains("still works"), "disabling the log does not touch the process result");
+    }
+
+    // ---- 8. backup.preop: dumps, degradations and the manifest are steps of one op ----
+    {
+        // Section 7 turned the logger off; the write-path checks below need it back on.
+        Environment.SetEnvironmentVariable(OperationLogger.DisableVariable, null);
+        string backupDir = Path.Combine(work, "backup");
+        var backup = new PreOpBackup((partition, savePath) =>
+        {
+            if (partition.Equals("nvm", StringComparison.OrdinalIgnoreCase))
+                return Task.FromResult((false, "invalid command"));
+            File.WriteAllText(savePath, "payload-" + partition);
+            return Task.FromResult((true, "OKAY"));
+        });
+
+        PreOpBackupResult result = await backup.RunAsync(new PreOpBackupOptions
+        {
+            Trigger = "test-preop",
+            WritePartitions = new[] { "oeminfo", "nvm", "boot" },
+            BackupDir = backupDir,
+            FastbootPath = "/bin/true",
+        });
+
+        List<JsonElement> lines = LatestOp(work, "backup.preop");
+        Check(lines.Count > 5, "backup.preop records the run as one op: " + lines.Count + " lines");
+        Check(lines[0].GetProperty("phase").GetString() == "start", "backup.preop opens with a start line");
+        Check(lines[0].GetProperty("argv")[0].GetString() == "test-preop", "backup.preop argv names the trigger");
+        Check(lines[0].GetProperty("op").GetString() == "backup.preop", "backup op name is the documented one");
+
+        JsonElement last = lines[^1];
+        Check(last.GetProperty("phase").GetString() == "result", "backup.preop ends with a result line");
+        Check(!last.GetProperty("ok").GetBoolean(), "an incomplete backup is not ok");
+        Check(last.GetProperty("verdictSource").GetString()!.StartsWith("partition-status:"),
+            "backup verdict names the per-partition statuses: " + last.GetProperty("verdictSource").GetString());
+        Check(last.GetProperty("notes").GetString()!.Contains("nvm=unsupported"),
+            "backup result names the unsupported partition and why: " + last.GetProperty("notes").GetString());
+
+        List<string> steps = StepNotes(lines);
+        Check(steps.Any(s => s.StartsWith("ok: oeminfo:") && s.Contains("sha256=")),
+            "a successful dump step carries size and sha256");
+        Check(steps.Any(s => s.StartsWith("degraded: nvm:") && s.Contains("invalid command")),
+            "an unsupported dump is an explicit degraded step, not a silent warning");
+        Check(steps.Any(s => s.Contains("manifest:")), "the manifest write is a step of the same op");
+        Check(result.Partitions.All(p => p.Status != null) && result.OkCount > 0, "the caller still gets the per-partition statuses");
+    }
+
+    // ---- 9. flash.image / backup.dump: a standalone flasher call is its own op ----
+    {
+        string image = Path.Combine(work, "boot.img");
+        await File.WriteAllTextAsync(image, "boot-payload");
+
+        var good = new FastbootFlasherService(new FastbootClient("/bin/true"));
+        (bool okFlash, _) = await good.FlashPartitionAsync("boot", image);
+        Check(okFlash, "/bin/true stub flash still reports exit-0 success");
+
+        List<JsonElement> flashLines = LatestOp(work, "flash.image");
+        Check(flashLines[0].GetProperty("phase").GetString() == "start", "flash.image starts with a start line");
+        JsonElement flashResult = flashLines[^1];
+        Check(flashResult.GetProperty("phase").GetString() == "result", "flash.image ends with a result line");
+        Check(flashResult.GetProperty("verdictSource").GetString() == "exit-code", "single-image verdict is the exit code");
+        Check(StepNotes(flashLines).Any(s => s.Contains("flash boot <- ") && s.Contains("boot.img")),
+            "the step names the partition and the image file");
+
+        var bad = new FastbootFlasherService(new FastbootClient("/bin/false"));
+        (bool okBad, _) = await bad.FlashPartitionAsync("recovery", image);
+        Check(!okBad, "/bin/false stub flash reports failure (control flow unchanged)");
+        JsonElement badResult = LatestOp(work, "flash.image")[^1];
+        Check(!badResult.GetProperty("ok").GetBoolean(), "a failed image write writes ok=false");
+        Check(badResult.GetProperty("verdictSource").GetString()!.StartsWith("exit-code:"),
+            "a failed image write names the exit code: " + badResult.GetProperty("verdictSource").GetString());
+
+        // A loader that answers the dump verbs but writes no file: the op must say which evidence
+        // decided the failure instead of looking like a generic exception.
+        (bool okDump, _) = await good.DumpPartitionAsync("oeminfo", Path.Combine(work, "oeminfo-dump.img"));
+        Check(!okDump, "a dump without a written file is still a failure");
+        List<JsonElement> dumpLines = LatestOp(work, "backup.dump");
+        Check(dumpLines[0].GetProperty("phase").GetString() == "start", "backup.dump starts with a start line");
+        Check(!dumpLines[^1].GetProperty("ok").GetBoolean(), "backup.dump writes ok=false");
+        Check(dumpLines[^1].GetProperty("verdictSource").GetString() == "file-missing",
+            "backup.dump names file-missing as the evidence: " + dumpLines[^1].GetProperty("verdictSource").GetString());
+        Check(StepNotes(dumpLines).Count(s => s.Contains("verb dump-")) == 2,
+            "both dump verbs are recorded as steps");
+    }
+
+    // ---- 10. oeminfo.convert / oeminfo.write ----
+    {
+        static byte[] OemInfoImage(int version, int entryId)
+        {
+            var data = new byte[0x400];
+            Encoding.ASCII.GetBytes("OEM_INFO").CopyTo(data, 0);
+            BitConverter.GetBytes(version).CopyTo(data, 8);
+            BitConverter.GetBytes(entryId).CopyTo(data, 12);
+            for (int i = 0x200; i < data.Length; i++) data[i] = 0xFF;
+            return data;
+        }
+
+        string oeminfo = Path.Combine(work, "oeminfo.img");
+        var service = new OemInfoService(new FastbootClient("/bin/true"));
+
+        await File.WriteAllBytesAsync(oeminfo, OemInfoImage(9, 0x301));
+        OemInfoConversionResult converted = await service.ConvertOemInfo(false, oeminfo, "MODEL-A", "hw/cn");
+        Check(converted.IsSuccess && converted.ConvertedData != null, "a supported oeminfo version still converts");
+        List<JsonElement> convertLines = LatestOp(work, "oeminfo.convert");
+        Check(convertLines[0].GetProperty("phase").GetString() == "start", "oeminfo.convert starts with a start line");
+        JsonElement convertResult = convertLines[^1];
+        Check(convertResult.GetProperty("phase").GetString() == "result" && convertResult.GetProperty("ok").GetBoolean(),
+            "oeminfo.convert ends ok on success");
+        Check(convertResult.GetProperty("verdictSource").GetString() == "conversion:success",
+            "conversion verdict names its rule: " + convertResult.GetProperty("verdictSource").GetString());
+        List<string> convertSteps = StepNotes(convertLines);
+        Check(convertSteps.Any(s => s.Contains("redline")), "conversion records the oeminfo redline judgement");
+        Check(convertSteps.Any(s => s.Contains("converted:")), "conversion records input and output sizes");
+
+        await File.WriteAllBytesAsync(oeminfo, OemInfoImage(7, 0x301));
+        OemInfoConversionResult unsupported = await service.ConvertOemInfo(false, oeminfo, "M", "R");
+        Check(!unsupported.IsSuccess, "an unsupported oeminfo version does not convert");
+        JsonElement unsupportedResult = LatestOp(work, "oeminfo.convert")[^1];
+        Check(!unsupportedResult.GetProperty("ok").GetBoolean(), "unsupported version writes ok=false");
+        Check(unsupportedResult.GetProperty("verdictSource").GetString() == "conversion:unsupported",
+            "unsupported version is a named verdict: " + unsupportedResult.GetProperty("verdictSource").GetString());
+        Check(unsupportedResult.GetProperty("stderrTail").GetString()!.Contains("not supported"),
+            "the unsupported verdict keeps the library message as evidence");
+
+        await File.WriteAllBytesAsync(oeminfo, new byte[0x400]);
+        OemInfoConversionResult refused = await service.ConvertOemInfo(false, oeminfo, "M", "R");
+        Check(!refused.IsSuccess, "an image without the OEM_INFO magic is refused");
+        Check(LatestOp(work, "oeminfo.convert")[^1].GetProperty("verdictSource").GetString() == "conversion:refused",
+            "an undetectable image is refused with a named verdict");
+
+        OemInfoConversionResult missing = await service.ConvertOemInfo(false, Path.Combine(work, "nope.img"), "M", "R");
+        Check(!missing.IsSuccess, "a missing input file is still an error");
+        Check(LatestOp(work, "oeminfo.convert")[^1].GetProperty("verdictSource").GetString() == "arg-validation",
+            "a missing input is arg-validation (nothing was read)");
+
+        ProcessResult write = await service.FlashConvertedOemInfo(oeminfo);
+        Check(write.IsSuccess, "/bin/true stub oeminfo write still reports success");
+        List<JsonElement> writeLines = LatestOp(work, "oeminfo.write");
+        Check(writeLines[0].GetProperty("phase").GetString() == "start", "oeminfo.write starts with a start line");
+        Check(writeLines[^1].GetProperty("phase").GetString() == "result"
+            && writeLines[^1].GetProperty("verdictSource").GetString() == "exit-code",
+            "oeminfo.write ends with an exit-code verdict");
+        Check(StepNotes(writeLines).Any(s => s.Contains("redline")), "oeminfo.write records the redline nature of the partition");
+    }
+
+    // ---- 11. dload cleanup: the listing is recorded before anything is deleted ----
+    {
+        string dload = Path.Combine(work, "dload");
+        Directory.CreateDirectory(Path.Combine(dload, "part0"));
+        await File.WriteAllTextAsync(Path.Combine(dload, "list.txt"), "oeminfo 1\n");
+        await File.WriteAllBytesAsync(Path.Combine(dload, "part0", "boot.img"), new byte[2048]);
+
+        OpLog.CleanDirectory(dload, OpNames.UsbUpdateCleanup);
+        Check(!Directory.Exists(dload), "cleanup still removes the dload directory");
+
+        List<JsonElement> lines = LatestOp(work, "usbupdate.dload-cleanup");
+        List<string> steps = StepNotes(lines);
+        Check(steps.Any(s => s.StartsWith("before delete:") && s.Contains("2 files")),
+            "cleanup records the file count and total bytes before deleting: " + string.Join(" | ", steps));
+        Check(steps.Any(s => s.StartsWith("deleting:") && s.Contains("list.txt") && s.Contains("boot.img")),
+            "cleanup records the path listing before deleting");
+        JsonElement last = lines[^1];
+        Check(last.GetProperty("phase").GetString() == "result" && last.GetProperty("ok").GetBoolean(),
+            "cleanup ends with an explicit ok result");
+        Check(last.GetProperty("verdictSource").GetString() == "directory-deleted", "cleanup verdict says the directory was deleted");
     }
 }
 finally

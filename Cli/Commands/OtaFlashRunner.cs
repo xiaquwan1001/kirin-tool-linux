@@ -5,6 +5,7 @@
 using System.IO.Compression;
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
+using Kirin_Tool.Services.Diagnostics;
 using Kirin_Tool.Utils;
 
 namespace Kirin_Tool.Cli.Commands;
@@ -225,6 +226,16 @@ internal static class OtaFlashRunner
         CancellationToken cancellationToken)
     {
         var outcomes = new List<OtaFlashOutcome>();
+        // Plan-level op (docs/op-scope-map.md row 3): one file per flash-ota run, one step per
+        // partition. Each write still has its own fastboot.flash op with the raw argv.
+        using var op = OpLog.Begin(OpNames.FlashOta, OpLog.FlashTool,
+            plan.Entries.Select(entry => entry.Partition).ToArray(), "flash-ota write plan");
+        op.Step("plan: " + plan.Entries.Count + " partition(s), " + TextFormat.Bytes(plan.TotalBytes)
+            + ", " + plan.Redlines.Count + " redline");
+        foreach (OtaPlanEntry skippedEntry in plan.Skipped)
+            op.Step(OpLog.SkippedPrefix + skippedEntry.Partition + ": not in the write plan (policy skip, --exclude or --partitions)");
+        foreach (string warning in plan.Warnings)
+            op.Step(OpLog.DegradedPrefix + "plan warning: " + warning);
         // A merged retail super image is ~6.5 GB; /tmp is tmpfs on many distros, so the
         // caller decides where the staging directory lives (default: next to the payload).
         string tempDirectory = Path.Combine(workDirectory, DateTime.Now.ToString("yyyyMMdd_HHmmss"));
@@ -294,6 +305,9 @@ internal static class OtaFlashRunner
                     bool ok = result.IsSuccess && (result.Output ?? string.Empty).Contains("OKAY", StringComparison.OrdinalIgnoreCase);
                     outcomes.Add(new OtaFlashOutcome(flashName, ok, ok ? null : Trim(result.Output)));
                     context.Diag(ok ? $"    OKAY {entry.Partition}" : $"    FAILED {entry.Partition}: {Trim(result.Output)}");
+                    op.Step((ok ? OpLog.OkPrefix : OpLog.FailedPrefix) + "flash " + flashName + " <- "
+                        + TextFormat.Bytes(bytes) + " (from " + entry.Partition + ", exit=" + result.ExitCode + ")"
+                        + (ok ? "" : ", loader said: " + OpLog.OneLine(result.Output)));
                 }
                 catch (OperationCanceledException)
                 {
@@ -303,6 +317,8 @@ internal static class OtaFlashRunner
                 {
                     outcomes.Add(new OtaFlashOutcome(entry.Partition.ToLowerInvariant(), false, ex.Message));
                     context.Diag($"    FAILED {entry.Partition.ToLowerInvariant()}: {ex.Message}");
+                    op.Step(OpLog.FailedPrefix + entry.Partition.ToLowerInvariant() + ": "
+                        + OpLog.ExceptionVerdict(ex) + ": " + ex.Message);
                 }
                 finally
                 {
@@ -315,9 +331,22 @@ internal static class OtaFlashRunner
         }
         finally
         {
-            try { Directory.Delete(tempDirectory, true); } catch { }
+            if (outcomes.Count != plan.Entries.Count)
+                op.Step(OpLog.DegradedPrefix + "plan stopped early: " + outcomes.Count + "/"
+                    + plan.Entries.Count + " partition(s) were attempted");
+            try { Directory.Delete(tempDirectory, true); }
+            catch (Exception ex)
+            {
+                // Staging leftovers were silent before; the partition images stay on disk.
+                op.Step(OpLog.DegradedPrefix + "staging directory left on disk: " + tempDirectory
+                    + " (" + ex.Message + ")");
+            }
         }
 
+        int okCount = outcomes.Count(outcome => outcome.Ok);
+        op.Result(outcomes.Count > 0 && okCount == outcomes.Count, null, null, null, null,
+            OpLog.OutcomeVerdict(okCount, outcomes.Count),
+            "verdict rule: exit code 0 AND the loader printed OKAY, per partition");
         return outcomes;
     }
 

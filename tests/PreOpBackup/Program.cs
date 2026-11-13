@@ -23,6 +23,7 @@ internal static class Program
             TestManifestStructureAndStatuses();
             TestAllUnsupportedStillContinues();
             TestAtomicManifestRename();
+            TestOperationLogCoverage(scratch);
         }
         finally
         {
@@ -37,6 +38,23 @@ internal static class Program
         }
         Console.WriteLine("BackupPlan: all checks passed");
         return 0;
+    }
+
+    /// <summary>Every JSONL run of one op, oldest first (one op = one file).</summary>
+    private static List<List<System.Text.Json.JsonElement>> OpRuns(string logRoot, string op)
+    {
+        var runs = new List<(string Started, List<System.Text.Json.JsonElement> Lines)>();
+        foreach (string file in Directory.EnumerateFiles(logRoot, "*.jsonl", SearchOption.AllDirectories))
+        {
+            var lines = File.ReadAllLines(file)
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .Select(line => System.Text.Json.JsonDocument.Parse(line).RootElement.Clone())
+                .ToList();
+            if (lines.Count == 0 || lines[0].GetProperty("op").GetString() != op) continue;
+            // The op's own start stamp orders the runs; the file name breaks same-ms ties.
+            runs.Add((lines[0].GetProperty("ts").GetString() + " " + Path.GetFileName(file), lines));
+        }
+        return runs.OrderBy(run => run.Started, StringComparer.Ordinal).Select(run => run.Lines).ToList();
     }
 
     private static void Check(bool condition, string message)
@@ -167,6 +185,92 @@ internal static class Program
         finally
         {
             try { Directory.Delete(baseDir, recursive: true); } catch { }
+        }
+    }
+
+    // (f) The backup run is one op: start + result, per-partition steps, explicit degradation.
+    private static void TestOperationLogCoverage(string scratch)
+    {
+        string logRoot = Path.Combine(scratch, "oplog");
+        string baseDir = Path.Combine(scratch, "backup-oplog");
+        string? previousRoot = Environment.GetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DirectoryVariable);
+        string? previousDisable = Environment.GetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DisableVariable);
+        Environment.SetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DirectoryVariable, logRoot);
+        Environment.SetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DisableVariable, null);
+        try
+        {
+            var backup = new PreOpBackup((partition, savePath) =>
+            {
+                if (partition.Equals("oeminfo", StringComparison.OrdinalIgnoreCase))
+                {
+                    File.WriteAllText(savePath, "payload-" + partition);
+                    return Task.FromResult((true, "OKAY"));
+                }
+                return Task.FromResult((false, "invalid command"));
+            });
+
+            // Run A: oeminfo dumps, nvm is a capability gap, the remaining partitions are then
+            // recorded as unsupported instead of silently vanishing.
+            var runA = backup.RunAsync(new PreOpBackupOptions
+            {
+                Trigger = "flash-ota",
+                WritePartitions = new[] { "oeminfo", "nvm", "fsg", "modemst1" },
+                KeepAllPartitions = true,
+                BackupDir = Path.Combine(baseDir, "a"),
+            }).GetAwaiter().GetResult();
+            Check(!runA.Complete, "oplog run is still incomplete (behaviour unchanged)");
+
+            // Run B: an exhausted budget must be an explicit skip, not an empty list.
+            var runB = backup.RunAsync(new PreOpBackupOptions
+            {
+                Trigger = "backup",
+                WritePartitions = new[] { "oeminfo", "nvm" },
+                KeepAllPartitions = true,
+                BackupDir = Path.Combine(baseDir, "b"),
+                Budget = TimeSpan.Zero,
+            }).GetAwaiter().GetResult();
+            Check(runB.Attempted && runB.OkCount == 0, "an exhausted budget still returns a result (behaviour unchanged)");
+
+            List<List<System.Text.Json.JsonElement>> runs = OpRuns(logRoot, "backup.preop");
+            Check(runs.Count == 2, "each backup run wrote exactly one JSONL op: " + runs.Count);
+
+            var lines = runs[0];
+            Check(lines[0].GetProperty("op").GetString() == "backup.preop", "backup run uses the documented op name");
+            Check(lines[0].GetProperty("phase").GetString() == "start", "backup op has a start line");
+            var last = lines[^1];
+            Check(last.GetProperty("phase").GetString() == "result", "backup op has a result line");
+            Check(!last.GetProperty("ok").GetBoolean(), "an incomplete backup records ok=false");
+            Check(last.GetProperty("verdictSource").GetString()!.StartsWith("partition-status:"),
+                "backup verdict names the per-partition statuses");
+            Check(last.GetProperty("notes").GetString()!.Contains("nvm=unsupported"),
+                "the result names the unsupported partition, not just a warning line");
+
+            var steps = lines.Where(line => line.GetProperty("phase").GetString() == "step")
+                .Select(line => line.GetProperty("notes").GetString() ?? "")
+                .ToList();
+            Check(steps.Any(note => note.StartsWith("ok: oeminfo:") && note.Contains("sha256=")),
+                "the successful dump step carries size and sha256");
+            Check(steps.Any(note => note.StartsWith("degraded: nvm:") && note.Contains("invalid command")),
+                "the loader capability gap is an explicit degraded step");
+            Check(steps.Any(note => note.StartsWith("degraded: modemst1:")),
+                "the partitions after the capability gap are recorded as unsupported, one by one");
+            Check(steps.Any(note => note.Contains("manifest")), "the manifest write is a step of the same op");
+
+            var runBSteps = runs[1].Where(line => line.GetProperty("phase").GetString() == "step")
+                .Select(line => line.GetProperty("notes").GetString() ?? "")
+                .ToList();
+            Check(runBSteps.Any(note => note.StartsWith("skipped: oeminfo:")), "an exhausted budget is an explicit skip");
+            Check(runs[1][^1].GetProperty("verdictSource").GetString()!.StartsWith("partition-status:0/"),
+                "the skipped run names its zero-ok verdict");
+
+            var manifest = System.Text.Json.JsonDocument.Parse(File.ReadAllText(runA.ManifestPath!));
+            Check(manifest.RootElement.GetProperty("partitions").GetArrayLength() == runA.TotalCount,
+                "the manifest still lists every attempted partition");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DirectoryVariable, previousRoot);
+            Environment.SetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DisableVariable, previousDisable);
         }
     }
 

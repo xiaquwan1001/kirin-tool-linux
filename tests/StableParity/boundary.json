@@ -16,8 +16,8 @@
     "sha256": "63cb0cc92e13914a66ab9140d7b419ee92b9b75dda38f9244292ebd3eaaefe6d"
   },
   "Services/USBUpdate/SoftwareTestpointService.cs": {
-    "reference": "45440d47296ef4c250fc03730259dbeebb245ebc + v2.4.8 reviewed diagnostics-only service logging and error preservation; wire commands, timing, retries and firmware patching unchanged",
-    "sha256": "bdf035d14b46f04d6f95ba655c730ea4ab61beb1f52604d300928c42ac09631f"
+    "reference": "45440d47296ef4c250fc03730259dbeebb245ebc + v2.4.8 reviewed diagnostics-only service logging and error preservation; wire commands, timing, retries and firmware patching unchanged + v2.4.15 op-scope lane: the two silent dload-directory deletes now go through OpLog.CleanDirectory (same control flow: delete if present, swallow the failure, caller recreates the directory; only the pre-delete listing and a failed delete are recorded). Behaviour, wire commands, timing, retries and firmware patching unchanged",
+    "sha256": "260f36fe287338d395af0bb9403c828f79f20f6920e3d9de0078e88bcb1602ac"
   },
   "Services/USBUpdate/USBUpdateApp.cs": {
     "reference": "8b8a2b46cd6b1cf455cb277ac55a42fc942eeb9b + audit-2026-11-12: two best-effort temp-file catches narrowed to IOException/UnauthorizedAccessException; control flow unchanged",
