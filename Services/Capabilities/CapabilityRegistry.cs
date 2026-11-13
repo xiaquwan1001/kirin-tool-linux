@@ -75,9 +75,14 @@ public static class CapabilityRegistry
             ["path", "partitions", "exclude", "allow-redline", "strict-names", "no-backup", "backup-dir", "require-backup", "yes", "json"],
             ["逐标识写设备（真实写入）", "红线段需 --allow-redline（MCP 不接受）", "写前自动 pre-op 备份"]),
 
-        new("vcom-unlock", "VCOM 引导链解锁规划", "vcom-unlock", "vcom_unlock", "HandleUnlockFastboot",
-            CapabilityWriteKind.PlanOnly, ["cpu"],
-            ["只生成引导链计划，不注入 BootROM", "真实注入在 GUI 走 FirmwareUnlocker（需 VCOM/工程线）"]),
+        new("vcom-unlock", "VCOM 引导链装载（BootROM 上传 loader）", "vcom-unlock", "vcom_unlock", "HandleUnlockFastboot",
+            CapabilityWriteKind.Write,
+            ["cpu", "yes", "dry-run", "ack-mode", "ack-timeout", "replug", "loader-dir", "stage-only", "port",
+             "use-fastflash-loader", "no-frame-log", "json"],
+            ["向 BootROM 上传 null/xloader+pwn/uce/fastboot/bl2 到 RAM（断电即失效）",
+             "真实注入走同一 FirmwareUnlocker + VcomFlasher（GUI 与 CLI 同源）",
+             "默认 --ack-mode lenient 等于 GUI 行为：ACK 只记录不校验，结论需看 verified/ack 统计",
+             "缺 --yes 时只打印计划（plan-only 门控）"]),
 
         new("oeminfo", "OEMINFO 型号/区域改写规划", "oeminfo", "oeminfo", "BtnConvertOem_Click",
             CapabilityWriteKind.PlanOnly, ["model", "region", "input", "pull"],
