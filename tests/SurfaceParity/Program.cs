@@ -335,6 +335,118 @@ else
               + "] generated-only: [" + string.Join(", ", mcpNames.Except(live).OrderBy(v => v, StringComparer.Ordinal)) + "]"));
 }
 
+// ---------------------------------------------------------------- H: approval gate coverage
+//
+// The gate is what the three faces share *after* parity: a write may exist on all three faces and
+// still be bypassable if one face never asks. These checks pin the wiring:
+//   H1 a Write capability has all three faces, a declared service method and an ApprovalKind
+//   H2 no Write capability may appear in gui-ui-only.txt (that file is for pure UI plumbing)
+//   H3 the GUI handler (or something it calls, up to 4 hops) asks IApprovalGate
+//   H4 the CLI command class asks IApprovalGate
+//   H5/H6 the CLI and MCP entry points install their own gate
+//   H7 every DeviceWriteOps write method demands a WriteTicket first
+string[] sourceFiles = Directory.GetFiles(root, "*.cs", SearchOption.AllDirectories)
+    .Where(path => !path.Contains("/obj/") && !path.Contains("/bin/") && !path.Contains("/tests/"))
+    .ToArray();
+string cliCommandsSource = string.Concat(sourceFiles.Where(path => path.Contains("/Cli/Commands/")).Select(File.ReadAllText));
+string mainWindowSource = string.Concat(mainWindowFiles.Select(File.ReadAllText));
+
+// --- method bodies (declaration + brace matching), used for the GUI reachability scan
+var methodBodies = new Dictionary<string, string>(StringComparer.Ordinal);
+var declarationScan = new Regex(@"(?:private|public|protected|internal)\s+(?:static\s+)?(?:async\s+)?[A-Za-z0-9_<>,?\[\]\. ]+?\s+(?<name>[A-Za-z0-9_]+)\s*\(", RegexOptions.CultureInvariant);
+foreach (Match match in declarationScan.Matches(mainWindowSource))
+{
+    int index = match.Index + match.Length;
+    int depthParen = 1;
+    while (index < mainWindowSource.Length && depthParen > 0)
+    {
+        if (mainWindowSource[index] == '(') depthParen++;
+        else if (mainWindowSource[index] == ')') depthParen--;
+        index++;
+    }
+    while (index < mainWindowSource.Length && char.IsWhiteSpace(mainWindowSource[index])) index++;
+    if (index >= mainWindowSource.Length || mainWindowSource[index] != '{') continue;
+    int start = index;
+    int depth = 0;
+    while (index < mainWindowSource.Length)
+    {
+        char current = mainWindowSource[index];
+        if (current == '{') depth++;
+        else if (current == '}')
+        {
+            depth--;
+            if (depth == 0) { index++; break; }
+        }
+        index++;
+    }
+    string name = match.Groups["name"].Value;
+    if (!methodBodies.ContainsKey(name)) methodBodies[name] = mainWindowSource[start..Math.Min(index, mainWindowSource.Length)];
+}
+
+var gateMarkers = new[] { "ApprovalGuard.AdmitAsync", "ApprovalGates.Current", "RequestGuiApprovalAsync", "ConfirmRedlineWriteAsync" };
+bool AsksGate(string body) => gateMarkers.Any(marker => body.Contains(marker, StringComparison.Ordinal));
+
+bool ReachesGate(string methodName, int depth, HashSet<string> visited)
+{
+    if (depth < 0 || !visited.Add(methodName)) return false;
+    if (!methodBodies.TryGetValue(methodName, out string? body)) return false;
+    if (AsksGate(body)) return true;
+    foreach (string candidate in methodBodies.Keys)
+    {
+        if (candidate == methodName) continue;
+        if (!body.Contains(candidate + "(", StringComparison.Ordinal)) continue;
+        if (ReachesGate(candidate, depth - 1, visited)) return true;
+    }
+    return false;
+}
+
+foreach (Capability capability in registry.Where(capability => capability.WriteKind == CapabilityWriteKind.Write))
+{
+    Check(capability.CliCommand is not null && capability.McpTool is not null && capability.GuiHandler is not null,
+        "H1 " + capability.Id + ": write capability has GUI + CLI + MCP faces"
+        + (capability.IsGuiOnly ? " <- still GUI-only; add the missing face (docs/approval-gate.md §3)" : ""));
+    Check(capability.NeedsApproval, "H1 " + capability.Id + ": declares an ApprovalKind"
+        + (capability.NeedsApproval ? "" : " <- ApprovalKind.None on a write capability means no gate"));
+    Check(!string.IsNullOrWhiteSpace(capability.ServiceMethod), "H1 " + capability.Id + ": names the service method all three faces share");
+
+    Check(!whitelist.ContainsKey(capability.GuiHandler ?? ""), "H2 " + capability.Id + ": GUI handler is not in gui-ui-only.txt"
+        + (whitelist.ContainsKey(capability.GuiHandler ?? "") ? " <- a write capability can never be UI-only plumbing" : ""));
+
+    Check(ReachesGate(capability.GuiHandler ?? "", 4, new HashSet<string>(StringComparer.Ordinal)),
+        "H3 " + capability.Id + ": GUI handler '" + capability.GuiHandler + "' asks the approval gate"
+        + " <- no ApprovalGuard call reachable from " + capability.GuiHandler + " (docs/approval-gate.md §3.1)");
+}
+
+foreach (Capability capability in registry.Where(capability => capability.WriteKind == CapabilityWriteKind.Write && capability.CliCommand is not null))
+{
+    int declared = cliCommandsSource.IndexOf("\"" + capability.CliCommand + "\"", StringComparison.Ordinal);
+    bool cliAsksGate = declared >= 0 && cliCommandsSource.Contains("ApprovalGuard.AdmitAsync", StringComparison.Ordinal);
+    Check(cliAsksGate, "H4 " + capability.Id + ": CLI command '" + capability.CliCommand + "' goes through the gate"
+        + (cliAsksGate ? "" : " <- the command table never calls ApprovalGuard.AdmitAsync"));
+}
+
+Check(cliCommandsSource.Contains("ApprovalGuard.AdmitAsync", StringComparison.Ordinal),
+    "H4 CLI commands call ApprovalGuard.AdmitAsync (single funnel)");
+Check(sourceFiles.Where(path => path.EndsWith("CliRunner.cs", StringComparison.Ordinal)).Select(File.ReadAllText)
+        .Any(text => text.Contains("CliApprovalGate", StringComparison.Ordinal)),
+    "H6 the CLI entry point installs CliApprovalGate");
+Check(sourceFiles.Where(path => path.Replace('\\', '/').EndsWith("Cli/Mcp/McpServer.cs", StringComparison.Ordinal)).Select(File.ReadAllText)
+        .Any(text => text.Contains("McpApprovalGate", StringComparison.Ordinal)),
+    "H5 the MCP entry point installs McpApprovalGate (confirm:true alone never passes)");
+
+Type? writeOps = assembly.GetType("Kirin_Tool.Services.WriteOperations.DeviceWriteOps");
+Check(writeOps != null, "H7 DeviceWriteOps exists (shared write service layer)");
+if (writeOps != null)
+{
+    foreach (MethodInfo method in writeOps.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+    {
+        ParameterInfo[] parameters = method.GetParameters();
+        bool ok = parameters.Length > 0 && parameters[0].ParameterType.Name == "WriteTicket";
+        Check(ok, "H7 DeviceWriteOps." + method.Name + " demands an approved WriteTicket"
+            + (ok ? "" : " <- a write service method without a ticket can be called without the gate"));
+    }
+}
+
 // ---------------------------------------------------------------- summary
 Console.WriteLine();
 Console.WriteLine("faces: " + registry.Count + " capabilities, " + cli.Count + " CLI commands, "

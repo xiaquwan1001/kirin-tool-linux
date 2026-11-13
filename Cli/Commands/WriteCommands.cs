@@ -1,6 +1,7 @@
 using System.Text;
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
+using Kirin_Tool.Services.Approval;
 using Kirin_Tool.Utils;
 
 namespace Kirin_Tool.Cli.Commands;
@@ -196,6 +197,18 @@ internal sealed class FlashOtaCommand : ICliCommand
             context.Diag("gate: plan only; re-run with --yes to flash");
             return ExitCodes.Gated;
         }
+
+        // Approval gate (docs/approval-gate.md): --yes acknowledged the plan, but the write still
+        // needs a gate decision. A plan that touches redline partitions makes the gate demand the
+        // typed confirm phrase, so a script cannot --yes --allow-redline its way through.
+        ApprovalAdmission admission = await ApprovalGuard.AdmitAsync(ApprovalRequests.For(
+            "flash-ota",
+            argv: new[] { "fastboot", "flash", "<plan>", string.Join(",", paths) },
+            targets: plan.Entries.Select(entry => entry.Partition).ToArray(),
+            acknowledged: confirmed,
+            redlineOverride: allowRedline));
+        if (!admission.IsApproved)
+            return ApprovalReport.Refuse(context, Name, admission.Decision);
 
         FastbootSession? session = await FastbootSession.TryOpenAsync();
         if (session == null)
@@ -514,6 +527,16 @@ internal sealed class FlashXmlCommand : ICliCommand
             context.Diag("gate: plan only; re-run with --yes to flash");
             return ExitCodes.Gated;
         }
+
+        // Approval gate: same funnel as flash-ota and as the GUI's ConfirmRedlineWriteAsync.
+        ApprovalAdmission admission = await ApprovalGuard.AdmitAsync(ApprovalRequests.For(
+            "flash-xml",
+            argv: new[] { "fastboot", "flash-xml", path },
+            targets: writeList.Select(partition => partition.Identifier ?? partition.Name ?? string.Empty).ToArray(),
+            acknowledged: confirmed,
+            redlineOverride: args.HasFlag("allow-redline")));
+        if (!admission.IsApproved)
+            return ApprovalReport.Refuse(context, Name, admission.Decision);
 
         // The plan phase opened the session best effort; a real write needs it now.
         if (session == null) { context.Diag("error: fastboot binary not found"); return ExitCodes.NoDevice; }

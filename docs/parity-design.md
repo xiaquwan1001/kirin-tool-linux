@@ -151,7 +151,42 @@ GUI 按钮 ──► service（Services/*.cs）           ◄── CLI 命令�
 
 ---
 
-## 6. 实测结果（本 lane 完成后，分支 `feat/mcp-parity`）
+
+## 7. 审批闸门把所有写能力收归三面（分支 `feat/approval-gate`）
+
+三面门禁回答的是「有没有这个入口」，不回答「谁能放行」。基线里 GUI 用逐处不同的确认框、CLI 用 `--yes`、MCP 用 `confirm:true`——**MCP 的 confirm 等于模型自己按确认键**，红线写入没有人工在场证据。审批闸门补上这一层（完整设计见 `docs/approval-gate.md`）。
+
+### 7.1 结构
+
+```
+GUI handler ─┐
+CLI command ─┼→ ApprovalGuard.AdmitAsync(ApprovalRequest) → IApprovalGate → ApprovalDecision
+MCP tool    ─┘        (fail-closed: 没装 gate = NotSupported)        ↓ 只有 Approved 才 mint WriteTicket
+                                                      同一个 service 方法（首参 WriteTicket）
+```
+
+- 三个入口各装一个 gate：`GuiApprovalGate`（模态弹窗 + 逐项 argv + 红字不可逆 + 手输 `I UNDERSTAND <capability-id>`）、`CliApprovalGate`（`--yes`，红线再加 `--allow-redline` + 交互式 stdin 确认串）、`McpApprovalGate`（`confirm:true` 之后仍要 GUI 带外人工批准，GUI 不在跑就返回 `approval_required_human`）。
+- `WriteTicket` 只能由闸门铸造，写 service 方法首参强制要求它 —— 绕过闸门是编译错误，不是 review 失误。
+- 每条决定写一行 JSONL 审计（`IApprovalAuditSink`，默认 `~/.local/state/kirin-tool/approvals.jsonl`），字段与 lane D 的 op-logging 对齐，接 lane D 只需换一个 sink 适配器。
+
+### 7.2 门禁扩展（`tests/SurfaceParity` H 段）
+
+| 检查 | 内容 |
+|---|---|
+| H1 | 每个 `Write` 能力必须有 GUI + CLI + MCP 三面、声明 `ApprovalKind` 与 `ServiceMethod` |
+| H2 | `gui-ui-only.txt` 里不允许出现 `Write` 能力的 handler |
+| H3 | GUI handler（或它 4 跳内调用到的方法）必须出现 `ApprovalGuard` |
+| H4 | 写命令的 CLI 命令表必须出现 `ApprovalGuard.AdmitAsync` |
+| H5/H6 | MCP/CLI 入口分别安装 `McpApprovalGate` / `CliApprovalGate` |
+| H7 | `DeviceWriteOps` 每个写方法首参必须是 `WriteTicket` |
+
+### 7.3 结果
+
+- 能力矩阵：22 能力 / 21 CLI 命令 / 21 MCP 工具；**GUI-only 从 6 条写能力降到 0**。
+- 门禁：268 → 363 项检查；新增 `tests/ApprovalGate`（68 checks，覆盖批准/拒绝/超时、红线确认串、CLI 非交互拒绝、MCP 无 GUI 拒绝、审计行、重复请求幂等）。
+- `gui-ui-only.txt` 剩下的 17 条全是纯 UI 动作（文件选择、勾选状态、导航、复制、外链、关闭弹窗），逐条带理由。
+
+## 6. 实测结果（`feat/mcp-parity` lane 完成后）
 
 `dotnet run --project tests/SurfaceParity -c Release` 输出（同样的数字在 CI 里复现）：
 

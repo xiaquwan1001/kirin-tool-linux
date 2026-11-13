@@ -1,5 +1,7 @@
 // Licensed under the repository's Business Source License 1.1. See LICENSE.
 
+using Kirin_Tool.Services.Approval;
+
 namespace Kirin_Tool.Services.Capabilities;
 
 /// <summary>
@@ -28,10 +30,17 @@ public sealed record Capability(
     CapabilityWriteKind WriteKind,
     IReadOnlyList<string> Params,
     IReadOnlyList<string> SideEffects,
-    string? GuiOnlyReason = null)
+    string? GuiOnlyReason = null,
+    CapabilityApprovalKind Approval = CapabilityApprovalKind.None,
+    ApprovalReversibility Reversibility = ApprovalReversibility.Reversible,
+    string? ServiceMethod = null,
+    string Tool = "fastboot")
 {
     /// <summary>True when the capability has no CLI/MCP surface (declared debt).</summary>
     public bool IsGuiOnly => CliCommand is null || McpTool is null;
+
+    /// <summary>True when this capability must pass the approval gate before it may run.</summary>
+    public bool NeedsApproval => Approval != CapabilityApprovalKind.None;
 }
 
 /// <summary>
@@ -41,7 +50,8 @@ public sealed record Capability(
 ///   * register a capability BEFORE adding a CLI command or a GUI handler;
 ///   * every CLI command must be referenced by at least one capability;
 ///   * a read-only capability may not stay GUI-only;
-///   * a write capability that stays GUI-only must carry a non-empty <see cref="Capability.GuiOnlyReason"/>.
+///   * a write capability must have all three faces, must name the service method all three share,
+///     and must be reachable through <c>IApprovalGate</c> from every face (docs/approval-gate.md).
 /// </summary>
 public static class CapabilityRegistry
 {
@@ -64,20 +74,25 @@ public static class CapabilityRegistry
         Read("dump", "单分区 dump 到宿主机", "dump", "DumpPartitions_Click", "partition", "output"),
         Read("backup", "身份分区备份 + manifest", "backup", null, "partition", "partitions", "backup-dir"),
 
-        // ---------- 写：CLI + MCP（有 --yes / confirm:true 门控） ----------
+        // ---------- 写：CLI + MCP + GUI，执行前一律过审批闸门 ----------
         new("flash-ota", "整包刷写（Full OTA）", "flash-ota", "flash_ota", "StartFullOtaButton_Click",
             CapabilityWriteKind.Write,
             ["file", "files", "partitions", "exclude", "allow-redline", "work-dir", "strict-names", "no-backup", "backup-dir", "require-backup", "yes", "json"],
-            ["逐分区写设备（真实写入）", "红线段 oeminfo/nvme/persist/modem_secure/certification/hisee_encos/veritykey 需 --allow-redline（MCP 不接受）", "写前自动 pre-op 备份"]),
+            ["逐分区写设备（真实写入）", "红线段 oeminfo/nvme/persist/modem_secure/certification/hisee_encos/veritykey 需 --allow-redline（MCP 不接受）", "写前自动 pre-op 备份"],
+            Approval: CapabilityApprovalKind.Once,
+            ServiceMethod: "FastbootClient.FlashPartition"),
 
         new("flash-xml", "按华为刷机 XML 刷写", "flash-xml", "flash_xml", "FlashFromXml_Click",
             CapabilityWriteKind.Write,
             ["path", "partitions", "exclude", "allow-redline", "strict-names", "no-backup", "backup-dir", "require-backup", "yes", "json"],
-            ["逐标识写设备（真实写入）", "红线段需 --allow-redline（MCP 不接受）", "写前自动 pre-op 备份"]),
+            ["逐标识写设备（真实写入）", "红线段需 --allow-redline（MCP 不接受）", "写前自动 pre-op 备份"],
+            Approval: CapabilityApprovalKind.Once,
+            ServiceMethod: "FastbootClient.FlashPartition"),
 
         new("vcom-unlock", "VCOM 引导链解锁规划", "vcom-unlock", "vcom_unlock", "HandleUnlockFastboot",
             CapabilityWriteKind.PlanOnly, ["cpu"],
-            ["只生成引导链计划，不注入 BootROM", "真实注入在 GUI 走 FirmwareUnlocker（需 VCOM/工程线）"]),
+            ["只生成引导链计划，不注入 BootROM", "真实注入在 GUI 走 FirmwareUnlocker（需 VCOM/工程线）"],
+            Tool: "vcom"),
 
         new("oeminfo", "OEMINFO 型号/区域改写规划", "oeminfo", "oeminfo", "BtnConvertOem_Click",
             CapabilityWriteKind.PlanOnly, ["model", "region", "input", "pull"],
@@ -87,36 +102,54 @@ public static class CapabilityRegistry
             CapabilityWriteKind.PlanOnly, [],
             ["只打印 4 条 oem oeminfoerase-* 计划，不擦除", "版本字段擦除不可逆"]),
 
-        // ---------- 仅 GUI：写能力（红线段 / 需人工与硬件交互），声明债务 ----------
-        new("write-sn", "永久改写 NVE 序列号", null, null, "HandleWriteSerialNumber",
-            CapabilityWriteKind.Write, [],
-            ["getvar nve:SN@<value>，永久且不可逆"],
-            "身份级永久写入（NVE SN）：MCP 结构性拒绝 allow-redline，无法自授权；CLI 侧开 nve 写命令要单独的契约设计（见 docs/parity-design.md §4.5）"),
+        // ---------- 红线 / 不可逆写：三面齐备，必须手输确认串 ----------
+        new("write-sn", "永久改写 NVE 序列号", "write-sn", "write_sn", "HandleWriteSerialNumber",
+            CapabilityWriteKind.Write,
+            ["value", "allow-redline", "yes", "json"],
+            ["getvar nve:SN@<value>，永久且不可逆", "序列号是身份字段，写前先备份原值"],
+            Approval: CapabilityApprovalKind.RedlineTypedConfirm,
+            Reversibility: ApprovalReversibility.Irreversible,
+            ServiceMethod: "DeviceWriteOps.WriteSerialNumberAsync"),
 
-        new("frp-remove", "清除 FRP 锁", null, null, "HandleFrpRemove",
-            CapabilityWriteKind.Write, [],
+        new("frp-remove", "清除 FRP 锁", "frp-remove", "frp_remove", "HandleFrpRemove",
+            CapabilityWriteKind.Write,
+            ["allow-redline", "yes", "json"],
             ["erase frp", "erase config", "oem frp-erase（三步不可逆擦除）"],
-            "不可逆擦除且必须逐条人工确认，未纳入 CLI 契约"),
+            Approval: CapabilityApprovalKind.RedlineTypedConfirm,
+            Reversibility: ApprovalReversibility.Irreversible,
+            ServiceMethod: "DeviceWriteOps.FrpEraseAsync"),
 
-        new("unlock-bootloader", "解锁 bootloader（oem unlock）", null, null, "HandleUnlockBootloader",
-            CapabilityWriteKind.Write, [],
-            ["oem unlock UUUU…，需在设备上按电源键，ARB 计数不可逆"],
-            "需要人工在设备上按键 + 输出流式分类，自动化会假装成功（GUI 有 AlreadyUnlocked/未确认分支）"),
+        new("unlock-bootloader", "解锁 bootloader（oem unlock）", "unlock-bootloader", "unlock_bootloader", "HandleUnlockBootloader",
+            CapabilityWriteKind.Write,
+            ["allow-redline", "yes", "json"],
+            ["oem unlock UUUU…，需在设备上按电源键，ARB 计数不可逆", "解锁后设备状态不可回退到锁定前的 ARB"],
+            Approval: CapabilityApprovalKind.RedlineTypedConfirm,
+            Reversibility: ApprovalReversibility.Irreversible,
+            ServiceMethod: "DeviceWriteOps.UnlockBootloaderAsync"),
 
-        new("usb-testpoint", "软测试点进入/退出 USB Update", null, null, "HandleSoftwareTestpoint",
-            CapabilityWriteKind.Write, [],
-            ["patch XLOADER 并经 VCOM 传输到设备"],
-            "依赖真实 VCOM/工程线枚举（12d1:3609），硬件不可自动化；VCOM/传输层由另一 lane 重建中"),
+        new("usb-testpoint", "软测试点进入/退出 USB Update", "usb-testpoint", "usb_testpoint", "HandleSoftwareTestpoint",
+            CapabilityWriteKind.Write,
+            ["enter", "exit", "file", "allow-redline", "yes", "json"],
+            ["patch XLOADER 并经 VCOM 传输到设备", "退出时把 XLOADER 刷回，写错会导致设备不枚举"],
+            Approval: CapabilityApprovalKind.RedlineTypedConfirm,
+            Reversibility: ApprovalReversibility.Irreversible,
+            ServiceMethod: "DeviceWriteOps.SoftwareTestpointAsync",
+            Tool: "vcom"),
 
-        new("reboot-usb-update", "重启到 USB Update（含救援分区刷写）", null, null, "HandleRebootToUsbUpdate",
-            CapabilityWriteKind.Write, [],
-            ["刷救援分区 ERECOVERY*（红线段）", "oem reboot-usb-update"],
-            "救援刷写走红线段 + 需要锁状态判定，先由 GUI 人工确认路径承载"),
+        new("reboot-usb-update", "重启到 USB Update（含救援分区刷写）", "reboot-usb-update", "reboot_usb_update", "HandleRebootToUsbUpdate",
+            CapabilityWriteKind.Write,
+            ["file", "allow-redline", "yes", "json"],
+            ["刷救援分区 ERECOVERY*（红线段）", "getvar rescue_ugs_port / rescue_enter_recovery 进入 USB Update 模式"],
+            Approval: CapabilityApprovalKind.RedlineTypedConfirm,
+            Reversibility: ApprovalReversibility.Irreversible,
+            ServiceMethod: "DeviceWriteOps.EnterUsbUpdateModeAsync"),
 
-        new("reboot", "重启设备", null, null, "RebootDevice_Click",
-            CapabilityWriteKind.Write, [],
+        new("reboot", "重启设备", "reboot", "reboot", "RebootDevice_Click",
+            CapabilityWriteKind.Write, ["yes", "json"],
             ["fastboot reboot"],
-            "尚未纳入 CLI 契约；非破坏性，是下一步最容易消掉的 GUI-only 债务（docs/parity-design.md §4.4）"),
+            Approval: CapabilityApprovalKind.Once,
+            Reversibility: ApprovalReversibility.Reversible,
+            ServiceMethod: "DeviceWriteOps.RebootAsync"),
     };
 
     /// <summary>Stable lookup for GUI/tests/docs; null when the id is not registered.</summary>

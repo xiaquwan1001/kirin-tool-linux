@@ -20,6 +20,10 @@ internal static class McpServer
 
     public static async Task<int> RunAsync(TextReader input, TextWriter output, TextWriter log, CancellationToken cancellationToken = default)
     {
+        // MCP entry point: confirm:true is never enough, a human has to approve out of band through
+        // the running GUI (docs/approval-gate.md §3.3). Fail-closed when no GUI is listening.
+        Services.Approval.ApprovalGates.Install(new Services.Approval.McpApprovalGate(new Services.Approval.SocketGuiApprovalBridge()));
+
         log.WriteLine($"[mcp] {ToolInfo.Name} {ToolInfo.Version} stdio JSON-RPC (newline-delimited); protocol {ProtocolVersion}");
         log.WriteLine("[mcp] tools: " + string.Join(", ", CliRunner.Commands.Select(command => command.McpName)));
 

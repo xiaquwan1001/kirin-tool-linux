@@ -24,6 +24,12 @@ public static class CliRunner
         new VcomUnlockCommand(),
         new OemInfoCommand(),
         new DowngradeEnableCommand(),
+        new RebootCommand(),
+        new WriteSnCommand(),
+        new FrpRemoveCommand(),
+        new UnlockBootloaderCommand(),
+        new UsbTestpointCommand(),
+        new RebootUsbUpdateCommand(),
     };
 
     public static async Task<int> RunAsync(string[] args, TextWriter? stdout = null, TextWriter? stderr = null)
@@ -38,6 +44,10 @@ public static class CliRunner
                 WriteUsage(error);
                 return ExitCodes.Usage;
             }
+
+            // One gate per entry point: anything this process writes goes through the CLI gate
+            // (--yes plus, for redline writes, --allow-redline and a typed confirm phrase).
+            Services.Approval.ApprovalGates.Install(new Services.Approval.CliApprovalGate());
 
             string first = args[0];
             string normalized = first.TrimStart('-').ToLowerInvariant();
