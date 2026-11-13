@@ -1,0 +1,6 @@
+FASTBOOT  0x1A400000  fastboot.ktl  present
+BL2       0x1E400000  bl2.ktl       present
+
+gate: plan-only (exit 4)
+re-run with --yes (CLI) or confirm:true (MCP) to really upload the loaders.
+gate: --dry-run; nothing was sent

@@ -1,0 +1,8 @@
+capability matrix (chip hisi9000 is the restricted model: Unsupported for kirin 9000)
+  hisi620    loaders=2   all operations allowed
+       rescue: ERECOVERY_KERNEL -> rescue_recovery_kernel
+       rescue: ERECOVERY_RAMDISK -> rescue_recovery_ramdisk
+       rescue: ERECOVERY_VENDOR -> rescue_recovery_vendor
+  hisi620c   loaders=2   all operations allowed
+       rescue: ERECOVERY_KERNEL -> rescue_recovery_kernel
+       rescue: ERECOVERY_RAMDISK -> rescue_recovery_ramdisk

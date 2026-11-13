@@ -8,9 +8,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Platforms>x64</Platforms>
     <Product>Kirin Tool for Linux</Product>
-    <Version>2.4.15</Version>
-    <FileVersion>2.4.13.0</FileVersion>
-    <InformationalVersion>2.4.13</InformationalVersion>
+    <!-- Version is the single source of truth. Do not pin FileVersion/InformationalVersion:
+         they were pinned at 2.4.13 and every later release reported 2.4.13 to users
+         (found by the 2.4.15 real-device smoke test). tests/VersionMetadata guards this. -->
+    <Version>2.4.16</Version>
     <ApplicationIcon>logo.ico</ApplicationIcon>
   </PropertyGroup>
 

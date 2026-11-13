@@ -16,6 +16,7 @@ not pulled from upstream.
 | v2.4.12 | redline policy pushed down to services, GUI false-success removal | device refusal can no longer render as success |
 | v2.4.13 | audit + fix batch | MCP contract matches reality; pre-op backup; honest gates |
 | v2.4.14 | three-surface parity, approval gate, honest verdicts | GUI, CLI and MCP share one registry, one service call and one approval gate; nothing writable is GUI-only |
+| v2.4.16 | version metadata fix | `doctor`/`info` report the real version again (2.4.13–2.4.15 all claimed 2.4.13); `tests/VersionMetadata` guards it |
 | v2.4.15 | log merge, per-entry ACK policy, device-taken verdicts | one operation = one session directory = one `session.jsonl` (VCOM frames, approval decisions and fastboot commands on one timeline, `logs` reads new sessions and old files); CLI/MCP fail on silence; every write reports what the device actually said |
 
 ---

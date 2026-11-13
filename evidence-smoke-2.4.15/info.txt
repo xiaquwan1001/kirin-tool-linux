@@ -1,0 +1,23 @@
+{
+  "tool": {
+    "name": "KirinTool.Cli",
+    "version": "2.4.13+4cdfd09c2bcff4a2f5c769b3b0a01e0dd7591cbb",
+    "framework": ".NET 10.0.15"
+  },
+  "fastboot": {
+    "found": true,
+    "path": "/home/xuqianhui/.local/opt/platform-tools/fastboot"
+  },
+  "device": {
+    "connected": false,
+    "chip": "unknown",
+    "psidReadable": false,
+    "variables": {}
+  },
+  "capabilities": {
+    "kirin9000": false,
+    "readOnly": true,
+    "rescuePlan": [
+      {
+        "image": "ERECOVERY_KERNEL",
+     
