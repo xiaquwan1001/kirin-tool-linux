@@ -130,7 +130,9 @@ XML 计划是人写的，可能合法使用了只在部分 loader 上成立的�
 之间必须人工拔插：用 `--replug wait:<秒>`，或拆成 `--stage-only null` 再 `--stage-only rest`
 （`rest` 绝不重发 START）。
 
-**永不写设备：** `oeminfo`、`downgrade-enable` —— 只出计划，即便加了 `--yes` 也 exit 4。
+**CLI/MCP 永不写设备：** `oeminfo`、`downgrade-enable` —— 只出计划，即便加了 `--yes` 也 exit 4。
+（GUI 的 OEMInfo「Convert」按钮仍直接写 `oeminfoerase-disablewp` + `oeminfowrite-*`；这个不对称是
+[docs/debt-register.md](docs/debt-register.md) 里的最高危未修项。）
 
 **会话日志（GUI 与 CLI 同一份）：** 每次 VCOM 尝试写
 `~/.local/state/kirin-tool/vcom-<UTC>-<cpu>.log`（可用 `KIRIN_LOG_DIR` 覆盖）：pid、端口、framing、
@@ -233,10 +235,10 @@ MCP server（换行分隔 JSON-RPC 2.0 over stdio）：
 | 类型 | 工具名 |
 | :--- | :--- |
 | 只读（10） | `info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`partitions`、`psid`、`capabilities`、`udev` |
-| 真实写入（8） | `flash_ota`、`flash_xml`、`reboot`、`write_sn`、`frp_remove`、`unlock_bootloader`、`usb_testpoint`、`reboot_usb_update`（要求 `confirm: true` **且**在运行中的 GUI 里由人再批一次；没有 dry-run） |
-| 仅规划（3） | `vcom_unlock`、`oeminfo`、`downgrade_enable`（`confirm: true` 也只确认计划，exit 4） |
+| 真实写入（9） | `flash_ota`、`flash_xml`、`vcom_unlock`、`reboot`、`write_sn`、`frp_remove`、`unlock_bootloader`、`usb_testpoint`、`reboot_usb_update`（要求 `confirm: true` **且**在运行中的 GUI 里由人再批一次；没有 dry-run。`vcom_unlock` 不给 `confirm` 时只出计划） |
+| 仅规划（2） | `oeminfo`、`downgrade_enable`（`confirm: true` 也只确认计划，exit 4） |
 
-只读工具共 10 个（`info`…`udev`）、写工具共 11 个（8 真实写入 + 3 仅规划）；写工具一律要求
+只读工具共 10 个（`info`…`udev`）、写工具共 11 个（9 真实写入 + 2 仅规划，`oeminfo` 的 GUI「Convert」按钮仍直写设备，列为已知债务）；写工具一律要求
 `confirm: true`，永不接受 `allow-redline`，且 `confirm` 之后仍要人工带外批准（见[安全模型](#安全模型)）。GUI/CLI/MCP 三面的一致性与漂移门禁见
 [docs/parity-design.md](docs/parity-design.md)，完整命令表与闸门语义见 [docs/cli-mcp.md](docs/cli-mcp.md)。
 

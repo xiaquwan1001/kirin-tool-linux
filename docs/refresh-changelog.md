@@ -83,9 +83,24 @@ Full notes: [release-notes/v2.4.13.md](release-notes/v2.4.13.md). Summary of int
 - **Docs:** screenshots captured from the real v2.4.13 controls (headless), README restructured,
   Chinese README added.
 
+## v2.4.14 — three-surface parity, approval gate, honest verdicts
+
+Full notes: [release-notes/v2.4.14.md](release-notes/v2.4.14.md). One paragraph of intent:
+GUI, CLI and MCP now share one capability registry (22 capabilities, 21 CLI commands, 21 MCP tools)
+and one approval gate; the six former GUI-only writes gained CLI/MCP faces; `vcom-unlock` really
+uploads loaders instead of printing a plan; every operation writes a JSONL log; and the verdicts that
+used to say "success" off a bare exit code (loader upload, SN write, `--require-backup`, unknown CLI
+options) now say what was actually verified.
+
+**债务登记见 [debt-register.md](debt-register.md)。** That file is the status side of the two audit
+reports: which finding this release closed (with `file:line` / gate evidence) and which is still open,
+sorted by "can it make a user or an AI believe a write succeeded".
+
 ---
 
-## Known gaps (as of v2.4.13)
+## Known gaps (as of v2.4.14)
+
+Status of every audit item, including the ones below: [debt-register.md](debt-register.md).
 
 - GUI-side gzip SUPER handling is missing (the CLI detects the `0x1f8b` magic in
   `Cli/Commands/OtaFlashRunner.cs`); BD packages can therefore end in a 45/46 half-flash from the GUI.
