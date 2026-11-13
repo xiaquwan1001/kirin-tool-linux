@@ -53,7 +53,7 @@ Directory.CreateDirectory(fixtureDir);
 try {
  string fake=Path.Combine(fixtureDir,"fake-fastboot"), calls=Path.Combine(fixtureDir,"calls");
  File.WriteAllText(fake,"#!/usr/bin/python3\nimport sys,json\nwith open("+System.Text.Json.JsonSerializer.Serialize(calls)+",'a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\nif sys.argv[1:]==['devices']: print('TEST fastboot')\nelif sys.argv[1:]==['oem','lock-state','info']: print('(bootloader) FB LockState: LOCKED')\nelif 'flash' in sys.argv: print('FAILED (remote: partition length get error)'); sys.exit(1)\nelse: print('OKAY')\n");
- File.SetUnixFileMode(fake,UnixFileMode.UserRead|UnixFileMode.UserWrite|UnixFileMode.UserExecute);
+ if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(fake,UnixFileMode.UserRead|UnixFileMode.UserWrite|UnixFileMode.UserExecute);
  typeof(MainWindow).GetField("_fastbootClient",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(owner,new FastbootClient(fake));
  void Fixture(string path,params string[] names) {
   using var w=new BinaryWriter(File.Create(path)); w.Write(new byte[12]);
