@@ -1,0 +1,31 @@
+# GUI handlers that are pure UI plumbing: they open a file dialog, toggle a selection,
+# switch a page or copy text. They never touch the device and therefore cannot be a
+# capability of the CLI/MCP surface.
+#
+# Format:  <method name in MainWindow*.cs>   # <reason>
+# Rules (enforced by tests/SurfaceParity, gates E/E3):
+#   * the method must still exist in MainWindow*.cs (stale lines fail);
+#   * the line must carry a reason;
+#   * a handler that IS registered in CapabilityRegistry must not appear here.
+#
+# Anything that reaches fastboot/adb/USB does NOT belong in this file: register it in
+# Services/Capabilities/CapabilityRegistry.cs instead (with a GuiOnlyReason if it has no
+# CLI/MCP face yet).
+
+HandleNavigation                                  # 左侧导航切页，只改可见性
+BrowseExtractionSource_Click                      # 解包源文件选择对话框
+BrowseExtractionDestination_Click                 # 解包目标目录选择对话框
+BrowseOtaFile_Click                               # Full OTA 文件选择对话框
+EditOtaFile_Click                                 # 把 OTA 路径贴进文本框
+ClearOtaFile_Click                                # 清空 OTA 输入框
+BrowseOemInfoFile_Click                           # oeminfo.img 文件选择对话框
+SelectExtractionAll_Click                         # 解包列表全选（本地勾选状态）
+SelectExtractionNone_Click                        # 解包列表全不选（本地勾选状态）
+CancelExtraction_Click                            # 取消本地解包（不触设备，只是 CTS）
+CopyUdevCommands_Click                            # 把 udev 命令复制到剪贴板
+OperationButton_Click                             # 通用分发表：转发到 Handle*，自身不含设备逻辑
+GlobalInteractionDone_Click                       # 关闭全局交互弹窗（等 VCOM 短接用）
+GlobalInteractionCancel_Click                     # 关闭全局交互弹窗
+HelpButton_Click                                  # 打开帮助弹窗
+TelegramButton_Click                              # 打开外部链接
+GithubButton_Click                                # 打开外部链接
