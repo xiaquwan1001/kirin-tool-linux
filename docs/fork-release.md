@@ -75,8 +75,8 @@ Guards against regression:
 ```bash
 cd ~/src/kirin-tool-linux
 git switch main && git pull
-git tag -a v2.4.14 -m "Kirin Tool for Linux 2.4.14 (fork build)"
-git push origin v2.4.14       # release-linux.yml builds + attaches the assets
+git tag -a v2.4.15 -m "Kirin Tool for Linux 2.4.15 (fork build)"
+git push origin v2.4.15       # release-linux.yml builds + attaches the assets
 gh run watch                  # optional
 ```
 
@@ -90,8 +90,8 @@ pipeline is validated before tagging.
 DOTNET_ROLL_FORWARD=Major dotnet publish KirinTool.Cli/KirinTool.Cli.csproj -c Release -r linux-x64 \
   --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true \
   -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o cli-out
-./packaging/build-deb.sh publish-out 2.4.14 cli-out/KirinTool.Cli dist # deb (needs dpkg-deb)
-./packaging/check-depends.sh dist/kirin-tool-linux_2.4.14_amd64.deb      # apt simulation, no root
+./packaging/build-deb.sh publish-out 2.4.15 cli-out/KirinTool.Cli dist # deb (needs dpkg-deb)
+./packaging/check-depends.sh dist/kirin-tool-linux_2.4.15_amd64.deb      # apt simulation, no root
 ./packaging/build-appimage.sh publish-appimage 2.4.14                 # needs glibc <= 2.31 + gcc-10
 ```
 

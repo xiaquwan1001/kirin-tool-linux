@@ -16,7 +16,7 @@ not pulled from upstream.
 | v2.4.12 | redline policy pushed down to services, GUI false-success removal | device refusal can no longer render as success |
 | v2.4.13 | audit + fix batch | MCP contract matches reality; pre-op backup; honest gates |
 | v2.4.14 | three-surface parity, approval gate, honest verdicts | GUI, CLI and MCP share one registry, one service call and one approval gate; nothing writable is GUI-only |
-| v2.4.15 | log merge | one operation = one session directory = one `session.jsonl`: VCOM frames, approval decisions and fastboot commands interleave on one timeline; `logs` (CLI + MCP) reads both new sessions and old files |
+| v2.4.15 | log merge, per-entry ACK policy, device-taken verdicts | one operation = one session directory = one `session.jsonl` (VCOM frames, approval decisions and fastboot commands on one timeline, `logs` reads new sessions and old files); CLI/MCP fail on silence; every write reports what the device actually said |
 
 ---
 
@@ -83,6 +83,26 @@ Full notes: [release-notes/v2.4.13.md](release-notes/v2.4.13.md). Summary of int
   CLI binary is missing, USTC GitLab pipeline added next to GitHub Actions.
 - **Docs:** screenshots captured from the real v2.4.13 controls (headless), README restructured,
   Chinese README added.
+
+## v2.4.15 — log merge, per-entry ACK policy, device-taken verdicts
+
+- **Why:** v2.4.14 made the three surfaces agree, but left three holes the debt register named: two
+  logs that had to be stitched by hand, an ACK default that let a silent device exit 0, and write
+  paths that could still speak success without device evidence (USB Update, `applied: true`,
+  CLI `write-sn`, GUI OEMINFO/downgrade writes bypassing the approval gate).
+- **Log merge:** one operation owns one session directory (`session.jsonl`, optional
+  `vcom-trace.txt`, `summary.json`), with `sessionId`/`seq`/`parentId`/`capabilityId`/`approvalId`
+  correlating frames, approvals and commands. `logs list|show|path` reads it back; every remaining
+  write path logs `ok:`/`failed:`/`degraded:`/`skipped:` steps.
+- **ACK policy:** CLI and MCP default to `strict` (silent device → exit 3, `verified=false`,
+  `failureKind=device-rejected`); the GUI keeps `lenient` with an amber unverified verdict.
+- **Verdicts:** `WriteReport` replaces the unconditional `applied: true`; `write-sn` reads the value
+  back; `oeminfo-flash` and `downgrade-erase` split the redline writes out of their plan-only
+  siblings and pass the shared approval gate; USB Update returns verified/partial/failed with
+  explicit events instead of silent `continue`s.
+- **Numbers at release time:** 24 hardware-free suites, 413 surface-parity checks, 25 capabilities
+  (24 CLI, 24 MCP, 35 GUI handlers, 0 GUI-only), mutation-checked in three directions.
+- **Debt:** D-01/02/03/04/13 fixed; see [debt-register.md](debt-register.md) for what stays open.
 
 ## v2.4.14 — three-surface parity, approval gate, honest verdicts
 
