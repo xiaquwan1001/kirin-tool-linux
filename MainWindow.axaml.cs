@@ -21,6 +21,7 @@
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
 using Kirin_Tool.Services.Approval;
+using Kirin_Tool.Services.Diagnostics;
 using Kirin_Tool.Services.USBUpdate;
 using Kirin_Tool.Services.WriteOperations;
 using Kirin_Tool.Services.Verdict;
@@ -1514,11 +1515,19 @@ namespace Kirin_Tool
 
             // VCOM loader injection writes BootROM RAM through the same service the CLI/MCP
             // face uses, so it must pass the shared approval gate first (docs/approval-gate.md).
+            // The operation session opens *before* the gate, so the approval decision, the frames
+            // and the fastboot command that follows all land on one timeline (docs/log-merge.md).
+            using var capability = OperationLogger.CapabilityScope("vcom-unlock");
+            OperationLogger.BeginSession(VcomSessionLogger.SessionOp, "vcom", new[] { "--cpu", cpu }, "gui unlock-fastboot");
+
             ApprovalAdmission? admission = await RequestGuiApprovalAsync(ApprovalRequests.For(
                 "vcom-unlock",
                 argv: new[] { "vcom-unlock", "--cpu", cpu },
                 targets: FirmwareUnlocker.CpuAddresses[cpu].Select(static p => p.Name)));
             if (admission == null) return;
+
+            // approvalId ties every following line back to the human answer in approvals.jsonl.
+            using var approvalContext = OperationLogger.CapabilityScope("vcom-unlock", admission.Request.Fingerprint);
 
             if (cpu == "hisi820" || cpu == "hisi985")
             {
@@ -1551,6 +1560,9 @@ namespace Kirin_Tool
             // frame repeated). The path stays visible in the dialog after it closes.
             using var sessionLog = VcomSessionLogger.Create(cpu);
             dialog.ShowLogPath(sessionLog.FilePath ?? "(disabled)");
+            // The session directory (not just one file) is what a later reader needs: it holds the
+            // JSONL timeline, the human transcript and summary.json.
+            dialog.ShowSessionDirectory(sessionLog.SessionDirectory ?? "(no session directory)");
             // ACK ledger: every frame the flasher writes is counted here, so the dialog can state
             // whether the device answered instead of inferring "success" from "no exception".
             var ledger = new VcomAckLedger();
@@ -1570,7 +1582,7 @@ namespace Kirin_Tool
             var unlockResult = await _firmwareUnlocker.UnlockFastboot(cpu, progressItems, overallProgress, interactionHandler, useFastFlashLoader, unlockOptions);
 
             if (!unlockResult.IsSuccess && sessionLog.FilePath != null)
-                dialog.UpdateOverallStatus($"{unlockResult.Message} (log: {sessionLog.FilePath})");
+                dialog.UpdateOverallStatus($"{unlockResult.Message} (session: {sessionLog.SessionDirectory ?? "(none)"}, log: {sessionLog.FilePath})");
 
             // Two independent facts: the frames went out (applied) and the device answered (verified).
             var verdict = unlockResult.IsSuccess

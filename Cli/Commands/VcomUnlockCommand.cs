@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using Kirin_Tool.Models;
 using Kirin_Tool.Services;
+using Kirin_Tool.Services.Diagnostics;
 using Kirin_Tool.Services.Verdict;
 using Kirin_Tool.Utils;
 
@@ -62,20 +63,41 @@ internal sealed class VcomUnlockCommand : ICliCommand
         if (!FirmwareUnlocker.CpuAddresses.ContainsKey(cpu))
             throw new CliUsageException($"unsupported chip '{cpu}' (supported: {string.Join(", ", BundledLoaders.SupportedChips())})");
 
-        // One audit file per invocation, even for a dry run: the header alone tells a later
-        // reader which process/parameters would have touched the tty.
-        using var logger = VcomSessionLogger.Create(cpu);
-        if (logger.FilePath != null) context.Diag($"log: {logger.FilePath}");
-        else context.Diag($"log: disabled (cannot create {VcomSessionLogger.DefaultDirectory}; set {VcomSessionLogger.DirectoryEnvironmentVariable})");
+        // One session per invocation, even for a dry run: the header alone tells a later reader
+        // which process/parameters would have touched the tty. The session stays open across the
+        // approval decision and the frames, so the JSONL shows them on ONE timeline
+        // (docs/log-merge.md); the fastboot step that follows a cable replug joins the same file
+        // when it runs in this process.
+        using var capability = OperationLogger.CapabilityScope("vcom-unlock");
+        OperationLogger.BeginSession(VcomSessionLogger.SessionOp, "vcom", new[] { "--cpu", cpu }, "cli vcom-unlock");
+        var logger = VcomSessionLogger.Create(cpu);
+        if (logger.FilePath != null)
+        {
+            context.Diag($"log: {logger.FilePath}");
+            if (logger.SessionDirectory != null) context.Diag($"session: {logger.SessionDirectory}");
+        }
+        else
+        {
+            context.Diag($"log: disabled (cannot create {OperationLogger.SessionsRoot}; set {VcomSessionLogger.DirectoryEnvironmentVariable})");
+        }
         logger.Event("command.start", ("command", Name), ("cpu", cpu), ("json", context.Json), ("yes", context.Yes));
 
+        int exitCode = ExitCodes.FileOrVerify;
         try
         {
-            return await ExecuteCoreAsync(args, context, cpu, logger, cancellationToken);
+            exitCode = await ExecuteCoreAsync(args, context, cpu, logger, cancellationToken);
+            return exitCode;
         }
         finally
         {
             logger.Event("command.end");
+            // The transcript must be closed (session.close) BEFORE the session itself ends,
+            // otherwise the last human line would be written into a closed file.
+            logger.Dispose();
+            // The command owns the session verdict: one result line + summary.json, on the
+            // failure path as well (exception => the default exit code stays non-ok).
+            OperationLogger.EndSession(exitCode == ExitCodes.Ok, "vcom-unlock:exit-" + exitCode,
+                exitCode == ExitCodes.Ok ? "command completed" : "command ended with exit " + exitCode);
         }
     }
 

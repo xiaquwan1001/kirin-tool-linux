@@ -31,6 +31,7 @@ public static class CliRunner
         new UsbTestpointCommand(),
         new RebootUsbUpdateCommand(),
         new OemInfoFlashCommand(),
+        new LogsCommand(),
     };
 
     public static async Task<int> RunAsync(string[] args, TextWriter? stdout = null, TextWriter? stderr = null)

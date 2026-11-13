@@ -40,19 +40,36 @@ internal static class Program
         return 0;
     }
 
-    /// <summary>Every JSONL run of one op, oldest first (one op = one file).</summary>
+    /// <summary>Every run of one op, oldest first. v2.4.15: one session file holds many ops,
+    /// so runs are split at each phase=start line of that op rather than one file per run.</summary>
     private static List<List<System.Text.Json.JsonElement>> OpRuns(string logRoot, string op)
     {
         var runs = new List<(string Started, List<System.Text.Json.JsonElement> Lines)>();
+        if (!Directory.Exists(logRoot)) return runs.Select(run => run.Lines).ToList();
         foreach (string file in Directory.EnumerateFiles(logRoot, "*.jsonl", SearchOption.AllDirectories))
         {
-            var lines = File.ReadAllLines(file)
-                .Where(line => !string.IsNullOrWhiteSpace(line))
-                .Select(line => System.Text.Json.JsonDocument.Parse(line).RootElement.Clone())
-                .ToList();
-            if (lines.Count == 0 || lines[0].GetProperty("op").GetString() != op) continue;
-            // The op's own start stamp orders the runs; the file name breaks same-ms ties.
-            runs.Add((lines[0].GetProperty("ts").GetString() + " " + Path.GetFileName(file), lines));
+            List<System.Text.Json.JsonElement>? current = null;
+            foreach (string raw in File.ReadAllLines(file))
+            {
+                if (string.IsNullOrWhiteSpace(raw)) continue;
+                System.Text.Json.JsonElement element = System.Text.Json.JsonDocument.Parse(raw).RootElement.Clone();
+                if (!element.TryGetProperty("op", out System.Text.Json.JsonElement name) || name.GetString() != op) continue;
+                // The session's own start line repeats the first op name but carries no scopeId;
+                // it is not a run of that op (v2.4.15 log merge).
+                if (!element.TryGetProperty("scopeId", out _)) continue;
+                string phase = element.TryGetProperty("phase", out System.Text.Json.JsonElement phaseElement)
+                    ? (phaseElement.GetString() ?? string.Empty)
+                    : string.Empty;
+                if (phase == "start" || current == null)
+                {
+                    if (current is { Count: > 0 })
+                        runs.Add((current[0].GetProperty("ts").GetString() + " " + Path.GetFileName(file), current));
+                    current = new List<System.Text.Json.JsonElement>();
+                }
+                current.Add(element);
+            }
+            if (current is { Count: > 0 })
+                runs.Add((current[0].GetProperty("ts").GetString() + " " + Path.GetFileName(file), current));
         }
         return runs.OrderBy(run => run.Started, StringComparer.Ordinal).Select(run => run.Lines).ToList();
     }
@@ -195,6 +212,10 @@ internal static class Program
         string baseDir = Path.Combine(scratch, "backup-oplog");
         string? previousRoot = Environment.GetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DirectoryVariable);
         string? previousDisable = Environment.GetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DisableVariable);
+        // v2.4.15 (log merge): events join the process-wide session, so a different log root only
+        // takes effect after the current session is closed. Without this the op lands in the
+        // session opened earlier with the previous root and this check reads an empty directory.
+        Kirin_Tool.Services.Diagnostics.OperationLogger.ResetSessionForTests();
         Environment.SetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DirectoryVariable, logRoot);
         Environment.SetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DisableVariable, null);
         try
@@ -269,6 +290,7 @@ internal static class Program
         }
         finally
         {
+            Kirin_Tool.Services.Diagnostics.OperationLogger.ResetSessionForTests();
             Environment.SetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DirectoryVariable, previousRoot);
             Environment.SetEnvironmentVariable(Kirin_Tool.Services.Diagnostics.OperationLogger.DisableVariable, previousDisable);
         }

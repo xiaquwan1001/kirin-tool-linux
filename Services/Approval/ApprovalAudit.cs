@@ -134,9 +134,14 @@ public static class ApprovalAudit
     private static IApprovalAuditSink? _sink;
 
     /// <summary>Test/seam override; `KIRIN_APPROVAL_AUDIT` redirects the default file.</summary>
+    /// Every decision is written twice: the long-standing approvals.jsonl and the current
+    /// operation session timeline (v2.4.15 log merge), so a fastboot command can be joined back
+    /// to the human answer that allowed it via capabilityId/approvalId.
     public static IApprovalAuditSink Sink
     {
-        get => _sink ??= new JsonlApprovalAuditSink(DefaultPath);
+        get => _sink ??= new global::Kirin_Tool.Services.Diagnostics.TeeApprovalAuditSink(
+            new JsonlApprovalAuditSink(DefaultPath),
+            new global::Kirin_Tool.Services.Diagnostics.OperationSessionApprovalSink());
         set => _sink = value ?? throw new ArgumentNullException(nameof(value));
     }
 

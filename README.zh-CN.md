@@ -135,8 +135,9 @@ XML 计划是人写的，可能合法使用了只在部分 loader 上成立的�
 `--yes` 也 exit 4。把转换结果真正写进设备是**另一条能力** `oeminfo-flash`（红线、不可逆、手输确认串；
 MCP 需在运行中的 GUI 里带外批准）。
 
-**会话日志（GUI 与 CLI 同一份）：** 每次 VCOM 尝试写
-`~/.local/state/kirin-tool/vcom-<UTC>-<cpu>.log`（可用 `KIRIN_LOG_DIR` 覆盖）：pid、端口、framing、
+**会话日志（GUI 与 CLI 同一份）：** 每次 VCOM 尝试写进本次操作的会话目录
+`~/.local/state/kirin-tool/sessions/<时间戳>-<pid>-<op>/`（可用 `KIRIN_LOG_DIR` 覆盖）：`vcom-trace.txt` 是人读转录，
+`session.jsonl` 是同一时间线上的机器读数（v2.4.15 起日志已合流，见 [docs/log-merge.md](docs/log-merge.md)）。转录含 pid、端口、framing、
 逐帧一行（type/addr/len/seq/bytes）、ACK 原始字节或超时、每阶段起止、每条拔插提示与用户选择、
 最终结论——事后可对账。GUI 在进度对话框显示路径，CLI 打到 stderr。字段表见
 [docs/cli-vcom-unlock-parity.md §7](docs/cli-vcom-unlock-parity.md)。
@@ -238,11 +239,11 @@ MCP server（换行分隔 JSON-RPC 2.0 over stdio）：
 
 | 类型 | 工具名 |
 | :--- | :--- |
-| 只读（10） | `info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`partitions`、`psid`、`capabilities`、`udev` |
+| 只读（11） | `info`、`doctor`、`getvar`、`extract`、`dump`、`backup`、`partitions`、`psid`、`capabilities`、`udev`、`logs`（合流后的操作日志查询） |
 | 真实写入（9） | `flash_ota`、`flash_xml`、`reboot`、`write_sn`、`frp_remove`、`unlock_bootloader`、`usb_testpoint`、`reboot_usb_update`、`oeminfo_flash`（要求 `confirm: true` **且**在运行中的 GUI 里由人再批一次；没有 dry-run） |
 | 仅规划（3） | `vcom_unlock`、`oeminfo`、`downgrade_enable`（`confirm: true` 也只确认计划，exit 4） |
 
-只读工具共 10 个（`info`…`udev`）、写工具共 12 个（9 真实写入 + 3 仅规划）；写工具一律要求
+只读工具共 11 个（`info`…`logs`）、写工具共 12 个（9 真实写入 + 3 仅规划）；写工具一律要求
 `confirm: true`，永不接受 `allow-redline`，且 `confirm` 之后仍要人工带外批准（见[安全模型](#安全模型)）。GUI/CLI/MCP 三面的一致性与漂移门禁见
 [docs/parity-design.md](docs/parity-design.md)，完整命令表与闸门语义见 [docs/cli-mcp.md](docs/cli-mcp.md)。
 
@@ -300,25 +301,31 @@ v2.4.13 界面的 headless 渲染（commit `47fb3da`，来自真实 Avalonia 控
 
 ## 日志在哪、怎么读
 
-每次设备操作写两份日志，互不替代：
+**一次操作 = 一个会话 = 一个目录 + 一份主日志**（v2.4.15 起日志已合流）：
 
 | 类型 | 位置 | 内容 |
 | :--- | :--- | :--- |
-| 结构化（新） | `${KIRIN_LOG_DIR:-~/.local/state/kirin-tool}/{vcom,fastboot,flash}/` 下 `<UTC时间戳>-<pid>.jsonl`，**一个操作一个文件**，目录 `0700`、文件 `0600` | 每行一个 JSON：`ts/pid/op/phase/tool/argv/exitCode/durationMs/stdoutTail/stderrTail/ok/verdictSource/notes` |
+| 主日志（JSONL） | `${KIRIN_LOG_DIR:-~/.local/state/kirin-tool}/sessions/<时间戳>-<pid>-<op>/session.jsonl`，目录 `0700`、文件 `0600` | 每行一个 JSON，按 `seq` 单调：`ts/pid/sessionId/seq/phase/step/op/tool/scopeId/parentId/capabilityId/approvalId/argv/exitCode/durationMs/stdoutTail/stderrTail/ok/verdictSource/notes`。**VCOM 帧、审批决定、fastboot 命令写在同一个文件里** |
+| 人读转录（可选） | 同一目录的 `vcom-trace.txt` | VCOM 逐帧转录（type/addr/len/seq/bytes、ACK 原始字节或超时、拔插提示与选择），格式与旧 `vcom-*.log` 一致 |
+| 结论 | 同一目录的 `summary.json` | 会话结束时的 `ok`/`verdictSource`/计数（帧、ACK、子操作），**失败路径也写** |
 | 人读文本（原有） | `<安装目录>/log/kirintool_log_*.log`，不可写时 `${XDG_STATE_HOME:-~/.local/state}/Kirin-Tool/log/` | 与以前一致，只有 fastboot 命令才写 |
+
+旧的 `{vcom,fastboot,flash}/<时间戳>-<pid>.jsonl` 与 `vcom-<UTC>-<cpu>.log` 不再新增，但 `logs` 仍能读（标 `legacy: true`）。
 
 常用读法：
 
 ```bash
-# 最近一次 fastboot 操作到底怎么判的
-ls -t ~/.local/state/kirin-tool/fastboot/*.jsonl | head -1 | xargs cat | jq -c '{op,phase,ok,verdictSource,exitCode}'
+# 最近一次操作：目录、主日志、转录、结论
+kirintool logs path latest | jq
 
-# 所有失败操作，只看证据尾部和判据
-jq -c 'select(.phase=="result" and .ok==false) | {op,verdictSource,stderrTail}' \
-  ~/.local/state/kirin-tool/*/*.jsonl | head -20
+# 一张时间线：VCOM 帧、审批决定、fastboot 命令按 seq 交错
+kirintool logs show latest --json | jq -r '.events[] | [.seq,.phase,(.step//"-"),.op,(.ok//"-"),(.verdictSource//"-")]|@tsv' | head -30
 
-# 某个分区最近有没有真写成功
-grep -l '"op":"fastboot.flash"' ~/.local/state/kirin-tool/fastboot/*.jsonl | tail -3
+# 所有失败的会话
+kirintool logs list --json | jq -r '.items[] | select(.ok==false) | [.sessionId,.op,.verdictSource]|@tsv'
+
+# 直接 jq 会话文件也行
+jq -c 'select(.phase=="result" and .ok==false) | {op,verdictSource,stderrTail}' ~/.local/state/kirin-tool/sessions/*/session.jsonl | head -20
 ```
 
 要点：
@@ -326,20 +333,21 @@ grep -l '"op":"fastboot.flash"' ~/.local/state/kirin-tool/fastboot/*.jsonl | tai
 - `ok` 旁边永远有 `verdictSource`（`exit-code` / `arg-validation` / `timeout` / `output-contains:OKAY` …）——失败能被追溯到具体一行输出，而不是只有一个布尔值。
 - argv 已脱敏：`--password xxx` 记成 `--password ***`，调用方自定义的解锁码记成 `***(16)`；厂商固定口令 `UUUU…` 仍是公开常量，照原样记录。
 - 想换目录：`KIRIN_LOG_DIR=/tmp/ktl-logs`；想彻底关掉：`KIRIN_LOG_DISABLE=1`（不影响任何返回值）。
-- 分享日志前先抹掉序列号等私有标识：两条日志都会记录设备标识。
+- 会话窗口：`KIRIN_LOG_SESSION_IDLE_SECONDS`（默认 1800 秒）。同一进程内后续操作继续写同一会话；空闲超过窗口则自动新开目录，GUI 不会一整天写一个文件。
+- 分享日志前先抹掉序列号等私有标识：所有日志都会记录设备标识。
 
 ## 文档
 
 | 指南 | 内容 |
 | :--- | :--- |
 | [文档索引](docs/INDEX.md) | 一张表看全。 |
-| [统一操作日志](docs/op-logging.md) | JSONL 字段表、日志在哪怎么读、VCOM 会话日志对接、迁移顺序。 |
+| [统一操作日志](docs/op-logging.md) · [日志合流](docs/log-merge.md) | JSONL 字段表；会话目录布局、VCOM 帧→phase 映射、`logs` 命令、迁移与保留策略。 |
 | [Refresh 变更记录](docs/refresh-changelog.md) | 本线逐版本改动与原因。 |
 | [CLI 与 MCP](docs/cli-mcp.md) | 命令、写类型、闸门、退出码、MCP 协议。 |
 | [Fork 发布流水线](docs/fork-release.md) | 资产、deb 布局、ICU/OpenSSL 依赖策略、CI 地图。 |
 | [Fork 来源与许可](docs/FORK-NOTICE.md) | 许可立场与上游关系。 |
 | [UPDATE.APP 提取](docs/partition-extractor.md) · [AppImage 与 udev](docs/portable-appimage.md) · [原生 fastboot 同构](docs/native-fastboot-parity-v2.4.5.md) | 继承基线的指南。 |
-| [v2.4.13 发行说明](docs/release-notes/v2.4.13.md) · [截图](docs/screenshots.md) | 本次发布，以及截图怎么拍的。 |
+| [v2.4.15 发行说明](docs/release-notes/v2.4.15.md) · [v2.4.13](docs/release-notes/v2.4.13.md) · [截图](docs/screenshots.md) | 本次发布（日志合流），以及历史发行说明与截图怎么拍的。 |
 | [社区帖（酷安）](https://www.coolapk.com/feed/75025716) | refresh 版的实用向介绍，正文存档 [docs/coolapk/refresh-post.md](docs/coolapk/refresh-post.md)；技术记录只在本仓库。 |
 
 ### 从源码构建

@@ -30,15 +30,20 @@ using System.Threading;
 namespace Kirin_Tool.Services.Diagnostics
 {
     /// <summary>
-    /// Structured, machine-readable companion to the human diagnostics log.
-    /// One JSONL file per device operation: `$KIRIN_LOG_DIR/&lt;category&gt;/&lt;utc-ts&gt;-&lt;pid&gt;.jsonl`.
-    /// Every line is a phase of that operation (start / step / prompt / result) and the
-    /// `result` line carries `ok` plus `verdictSource` so a failure can always be traced
-    /// back to the exit code, the argument check or the exact output keyword that decided it.
+    /// The single writer for everything a device operation leaves on disk.
+    ///
+    /// Since v2.4.15 there is exactly one log per operation: a *session* directory
+    /// (KIRIN_LOG_DIR/sessions/&lt;stamp&gt;-&lt;pid&gt;-&lt;op&gt;/) holding session.jsonl (machine timeline),
+    /// an optional vcom-trace.txt (human VCOM transcript) and summary.json (the verdict).
+    /// VCOM frames, approval decisions and fastboot commands all interleave in the one JSONL,
+    /// sharing sessionId and a monotonically increasing seq. See docs/log-merge.md.
+    ///
+    /// Compatibility: the pre-2.4.15 layout (&lt;root&gt;/{vcom,fastboot,flash}/&lt;stamp&gt;-&lt;pid&gt;.jsonl
+    /// and the flat vcom-*.log transcripts) is still *readable* by `logs show`, but nothing
+    /// writes there any more.
     ///
     /// The logger never throws: a broken log directory must not break flashing. The first
-    /// failure is reported once on stderr (see <see cref="ReportFailure"/>), then silence.
-    /// See docs/op-logging.md for the field table and the migration order.
+    /// failure is reported once on stderr (see ReportFailure), then silence.
     /// </summary>
     public static class OperationLogger
     {
@@ -47,6 +52,12 @@ namespace Kirin_Tool.Services.Diagnostics
 
         /// <summary>Set to "1" to turn the structured log off entirely (tests/CI).</summary>
         public const string DisableVariable = "KIRIN_LOG_DISABLE";
+
+        /// <summary>Seconds of inactivity after which the next operation starts a new session (0 = never).</summary>
+        public const string SessionIdleVariable = "KIRIN_LOG_SESSION_IDLE_SECONDS";
+
+        /// <summary>Default idle window: a GUI left open does not write one endless session.</summary>
+        public const int DefaultSessionIdleSeconds = 1800;
 
         /// <summary>Default root, honouring XDG_STATE_HOME.</summary>
         public static string DefaultRootDirectory
@@ -71,12 +82,34 @@ namespace Kirin_Tool.Services.Diagnostics
             }
         }
 
+        /// <summary>Where new sessions live: &lt;root&gt;/sessions.</summary>
+        public static string SessionsRoot => Path.Combine(RootDirectory, OperationSession.SessionsDirectoryName);
+
         public static bool Enabled =>
             !string.Equals(Environment.GetEnvironmentVariable(DisableVariable), "1", StringComparison.Ordinal);
+
+        /// <summary>Idle window in seconds (0 or a negative value disables rotation).</summary>
+        public static int SessionIdleSeconds
+        {
+            get
+            {
+                string? raw = Environment.GetEnvironmentVariable(SessionIdleVariable);
+                if (string.IsNullOrWhiteSpace(raw)) return DefaultSessionIdleSeconds;
+                return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int seconds)
+                    ? Math.Max(0, seconds)
+                    : DefaultSessionIdleSeconds;
+            }
+        }
 
         private static readonly object SecretGate = new object();
         private static readonly HashSet<string> Secrets = new HashSet<string>(StringComparer.Ordinal);
         private static int _failureReported;
+
+        private static readonly object SessionGate = new object();
+        private static OperationSession? _current;
+        private static DateTime _lastActivityUtc = DateTime.UtcNow;
+        private static string? _capabilityId;
+        private static string? _approvalId;
 
         /// <summary>Options whose following argument is a credential and must be masked.</summary>
         private static readonly HashSet<string> SecretOptions = new(StringComparer.OrdinalIgnoreCase)
@@ -87,7 +120,7 @@ namespace Kirin_Tool.Services.Diagnostics
 
         /// <summary>
         /// Register a literal that must never be written verbatim (e.g. the vendor unlock
-        /// magic). Masked as `***(&lt;len&gt;)` so the field still shows it was present.
+        /// magic). Masked as ***(len) so the field still shows it was present.
         /// </summary>
         public static void RegisterSecret(string? secret)
         {
@@ -120,7 +153,7 @@ namespace Kirin_Tool.Services.Diagnostics
                     int equals = arg.IndexOf('=');
                     if (equals >= 0)
                     {
-                        // Inline form (`--token=abc`): mask the value, keep the option name.
+                        // Inline form (--token=abc): mask the value, keep the option name.
                         result[i] = arg.Substring(0, equals + 1) + "***";
                         continue;
                     }
@@ -206,19 +239,163 @@ namespace Kirin_Tool.Services.Diagnostics
             return tokens;
         }
 
+        // ------------------------------------------------------------------ session lifecycle
+
+        /// <summary>The operation session the rest of this process writes into (null = none yet).</summary>
+        public static OperationSession? CurrentSession
+        {
+            get
+            {
+                lock (SessionGate)
+                {
+                    return _current is { IsEnabled: true } session ? session : null;
+                }
+            }
+        }
+
+        /// <summary>The capability id every line currently carries (set by CapabilityScope).</summary>
+        public static string? CurrentCapabilityId
+        {
+            get { lock (SessionGate) return _capabilityId; }
+        }
+
+        /// <summary>The approval fingerprint every line currently carries (if any).</summary>
+        public static string? CurrentApprovalId
+        {
+            get { lock (SessionGate) return _approvalId; }
+        }
+
         /// <summary>
-        /// Start a new operation scope. The returned scope owns one JSONL file and is safe to
-        /// use from multiple threads; dispose it (or call <see cref="OperationScope.Result"/>)
-        /// once per operation.
+        /// Begins (or joins) the operation session: the directory and session.jsonl are created on
+        /// first use, and every later scope in this process writes into the same file with the same
+        /// sessionId. An idle window (SessionIdleVariable) rotates the session so a long-lived GUI
+        /// does not accumulate one endless directory.
         /// </summary>
-        public static OperationScope Begin(string op, string tool, IReadOnlyList<string>? argv = null, string? notes = null)
+        public static OperationSession BeginSession(string op, string tool, IReadOnlyList<string>? argv = null, string? notes = null, string? rootOverride = null) =>
+            EnsureSession(op, tool, argv, notes, rootOverride);
+
+        /// <summary>Same as BeginSession; kept for call sites that read better as "ensure".</summary>
+        public static OperationSession EnsureSession(string op, string tool, IReadOnlyList<string>? argv = null, string? notes = null, string? rootOverride = null)
         {
             string safeOp = string.IsNullOrWhiteSpace(op) ? "unknown" : op!;
             string safeTool = string.IsNullOrWhiteSpace(tool) ? "internal" : tool!.ToLowerInvariant();
-            return new OperationScope(safeOp, safeTool, Redact(argv), notes);
+
+            if (!Enabled) return new OperationSession(safeOp, safeTool, Array.Empty<string>(), notes, rootOverride);
+            if (!string.IsNullOrWhiteSpace(rootOverride)) return new OperationSession(safeOp, safeTool, Redact(argv), notes, rootOverride);
+
+            OperationSession? expired;
+            lock (SessionGate)
+            {
+                int idle = SessionIdleSeconds;
+                expired = _current != null && idle > 0 && (DateTime.UtcNow - _lastActivityUtc).TotalSeconds > idle
+                    ? _current
+                    : null;
+                if (expired != null) _current = null;
+                else if (_current is { IsEnabled: true }) return _current;
+                else if (_current != null) { expired = _current; _current = null; }
+            }
+
+            expired?.End(null, "session:idle-rotate", "rotated after " + SessionIdleSeconds + "s without activity");
+
+            var created = new OperationSession(safeOp, safeTool, Redact(argv), notes, null);
+            lock (SessionGate)
+            {
+                _current = created.IsEnabled ? created : null;
+                _lastActivityUtc = DateTime.UtcNow;
+            }
+            return created;
         }
 
-        /// <summary>vcom/fastboot/flash keep their own directory; other tools get their own named directory.</summary>
+        /// <summary>Ends the current session (writes its result line and summary.json).</summary>
+        public static void EndSession(bool? ok = null, string? verdictSource = null, string? note = null)
+        {
+            OperationSession? session;
+            lock (SessionGate)
+            {
+                session = _current;
+                _current = null;
+            }
+            session?.End(ok, verdictSource, note);
+        }
+
+        /// <summary>Starts a new scope inside the current (or a freshly created) session.</summary>
+        public static OperationScope Begin(string op, string tool, IReadOnlyList<string>? argv = null, string? notes = null, string? parentId = null)
+        {
+            OperationSession session = EnsureSession(op, tool, argv, notes);
+            return new OperationScope(session, op, tool, Redact(argv), notes, parentId);
+        }
+
+        /// <summary>
+        /// Attaches capabilityId/approvalId to everything logged until disposed, so frames and
+        /// child commands can be joined back to the registry row and the approval decision that
+        /// allowed them.
+        /// </summary>
+        public static IDisposable CapabilityScope(string? capabilityId, string? approvalId = null)
+        {
+            lock (SessionGate)
+            {
+                string? previousCapability = _capabilityId;
+                string? previousApproval = _approvalId;
+                _capabilityId = string.IsNullOrWhiteSpace(capabilityId) ? previousCapability : capabilityId;
+                _approvalId = string.IsNullOrWhiteSpace(approvalId) ? previousApproval : approvalId;
+                return new CapabilityRestore(previousCapability, previousApproval);
+            }
+        }
+
+        private sealed class CapabilityRestore : IDisposable
+        {
+            private readonly string? _capability;
+            private readonly string? _approval;
+            private bool _disposed;
+
+            public CapabilityRestore(string? capability, string? approval)
+            {
+                _capability = capability;
+                _approval = approval;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed) return;
+                _disposed = true;
+                lock (SessionGate)
+                {
+                    _capabilityId = _capability;
+                    _approvalId = _approval;
+                }
+            }
+        }
+
+        internal static void TouchSession(OperationSession session)
+        {
+            lock (SessionGate)
+            {
+                if (ReferenceEquals(_current, session)) _lastActivityUtc = DateTime.UtcNow;
+            }
+        }
+
+        internal static void ReleaseSession(OperationSession session)
+        {
+            lock (SessionGate)
+            {
+                if (ReferenceEquals(_current, session)) _current = null;
+            }
+        }
+
+        /// <summary>For tests: forget the ambient session without ending it.</summary>
+        public static void ResetSessionForTests()
+        {
+            lock (SessionGate)
+            {
+                _current = null;
+                _capabilityId = null;
+                _approvalId = null;
+            }
+        }
+
+        // ------------------------------------------------------------------ io helpers
+
+        /// <summary>Legacy category directory name (kept so old readers keep working).</summary>
         internal static string CategoryDirectory(string tool) => tool.ToLowerInvariant();
 
         /// <summary>UTC file-name stamp: sortable, no colons (Windows/FAT safe).</summary>
@@ -229,6 +406,60 @@ namespace Kirin_Tool.Services.Diagnostics
             utc.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
 
         internal static DateTime UtcNow() => DateTime.UtcNow;
+
+        internal static void MakeOwnerOnlyDirectory(string directory)
+        {
+            if (OperatingSystem.IsWindows() || string.IsNullOrEmpty(directory)) return;
+            try
+            {
+                File.SetUnixFileMode(directory,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+            catch
+            {
+                // Best effort: an existing directory owned by someone else stays as it is.
+            }
+        }
+
+        /// <summary>Creates a brand-new 0600 file (or appends), or null when it cannot.</summary>
+        internal static FileStream? TryOpenOwnerOnly(string path, bool append = false)
+        {
+            try
+            {
+                var options = new FileStreamOptions
+                {
+                    Mode = append ? FileMode.Append : FileMode.CreateNew,
+                    Access = FileAccess.Write,
+                    Share = FileShare.Read,
+                    Options = FileOptions.None,
+                };
+                var stream = new FileStream(path, options);
+                if (!OperatingSystem.IsWindows())
+                {
+                    File.SetUnixFileMode(stream.SafeFileHandle, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                }
+                return stream;
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Truncates/creates a 0600 file for the summary write.</summary>
+        internal static FileStream OpenOwnerOnlyForWrite(string path)
+        {
+            var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(stream.SafeFileHandle, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            return stream;
+        }
 
         /// <summary>UTF-8-safe tail truncation (byte budget, never splits a code point).</summary>
         internal static string? Tail(string? text, int maxBytes = 2048)
@@ -262,139 +493,132 @@ namespace Kirin_Tool.Services.Diagnostics
             }
         }
     }
-}
 
-namespace Kirin_Tool.Services.Diagnostics
-{
     /// <summary>
-    /// One operation = one JSONL file. Thread-safe; <see cref="Dispose"/> writes a terminal
-    /// `result` line if the caller did not (an operation must never end without a verdict).
+    /// One operation scope inside a session. Several scopes share one session.jsonl (that is the
+    /// point of the merge): each gets its own scopeId, and lines are ordered by the session-wide
+    /// seq. Thread-safe; Dispose writes a terminal result line if the caller did not (an
+    /// operation must never end without a verdict).
     /// </summary>
     public sealed class OperationScope : IDisposable
     {
         private const int TailBytes = 2048;
 
-        private readonly object _gate = new object();
+        private readonly OperationSession _session;
         private readonly string _op;
         private readonly string _tool;
         private readonly IReadOnlyList<string> _argv;
-        private readonly DateTime _startedUtc;
+        private readonly string _scopeId;
+        private readonly string? _parentId;
         private readonly System.Diagnostics.Stopwatch _stopwatch;
+        private readonly string? _capabilityId;
+        private readonly string? _approvalId;
 
-        private FileStream? _stream;
-        private string? _filePath;
         private bool _resultWritten;
         private bool _disposed;
 
-        internal OperationScope(string op, string tool, IReadOnlyList<string> argv, string? notes)
+        internal OperationScope(OperationSession session, string op, string tool, IReadOnlyList<string> argv, string? notes, string? parentId)
         {
-            _op = op;
-            _tool = tool;
-            _argv = argv;
-            _startedUtc = OperationLogger.UtcNow();
+            _session = session;
+            _op = string.IsNullOrWhiteSpace(op) ? "unknown" : op;
+            _tool = string.IsNullOrWhiteSpace(tool) ? "internal" : tool.ToLowerInvariant();
+            _argv = argv ?? Array.Empty<string>();
+            _scopeId = "scope-" + Guid.NewGuid().ToString("N").Substring(0, 12);
+            _parentId = string.IsNullOrEmpty(parentId) ? session.SessionId : parentId;
+            _capabilityId = OperationLogger.CurrentCapabilityId;
+            _approvalId = OperationLogger.CurrentApprovalId;
             _stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-            if (!OperationLogger.Enabled) return;
-
-            try
-            {
-                string directory = Path.Combine(OperationLogger.RootDirectory, OperationLogger.CategoryDirectory(tool));
-                Directory.CreateDirectory(directory);
-                if (!OperatingSystem.IsWindows())
-                {
-                    File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-                }
-
-                string stem = OperationLogger.Timestamp(_startedUtc) + "-" + Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                for (int attempt = 1; attempt <= 50; attempt++)
-                {
-                    string candidate = Path.Combine(directory, attempt == 1 ? stem + ".jsonl" : stem + "-" + attempt.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".jsonl");
-                    FileStream? stream = TryOpen(candidate);
-                    if (stream == null) continue;
-                    _stream = stream;
-                    _filePath = candidate;
-                    break;
-                }
-
-                if (_stream == null) return;
-                WriteLine(builder =>
-                {
-                    builder.WriteString("phase", "start");
-                    builder.WriteString("op", _op);
-                    builder.WriteString("tool", _tool);
-                    WriteArgv(builder);
-                    if (!string.IsNullOrEmpty(notes)) builder.WriteString("notes", notes);
-                });
-            }
-            catch (Exception ex)
-            {
-                OperationLogger.ReportFailure(ex);
-                CloseQuietly();
-            }
-        }
-
-        private static FileStream? TryOpen(string path)
-        {
-            try
-            {
-                var options = new FileStreamOptions
-                {
-                    Mode = FileMode.CreateNew,
-                    Access = FileAccess.Write,
-                    Share = FileShare.Read,
-                    Options = FileOptions.None,
-                };
-                var stream = new FileStream(path, options);
-                if (!OperatingSystem.IsWindows())
-                {
-                    File.SetUnixFileMode(stream.SafeFileHandle, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-                }
-                return stream;
-            }
-            catch (IOException)
-            {
-                return null; // name collision in the same millisecond: try the next suffix
-            }
+            session.CountScopeOpen();
+            session.Event(
+                "start",
+                step: null,
+                note: notes,
+                argv: _argv,
+                scopeId: _scopeId,
+                parentId: _parentId,
+                capabilityId: _capabilityId,
+                approvalId: _approvalId,
+                op: _op,
+                tool: _tool);
         }
 
         public string Op => _op;
 
         public string Tool => _tool;
 
-        /// <summary>Absolute path of this operation's JSONL file (null when logging is off/failed).</summary>
-        public string? FilePath => _filePath;
+        /// <summary>This scope's id (referenced by parentId of its children).</summary>
+        public string Id => _scopeId;
+
+        public string SessionId => _session.SessionId;
+
+        /// <summary>Absolute path of the session's main JSONL (null when logging is off/failed).</summary>
+        public string? FilePath => _session.MainLogPath;
+
+        /// <summary>Absolute session directory (sessions/&lt;sessionId&gt;/), null when logging is off.</summary>
+        public string? SessionDirectory => string.IsNullOrEmpty(_session.Directory) ? null : _session.Directory;
 
         /// <summary>A step inside the operation (human-readable note, no verdict).</summary>
-        public void Step(string note) => WritePhase("step", note, null);
+        public void Step(string note) => Step(note, (string?)null);
+
+        /// <summary>A structured step: step names the event (frame.write, exec, ...).</summary>
+        public void Step(string? note, string? step, IEnumerable<KeyValuePair<string, object?>>? fields = null, bool? ok = null, string? verdictSource = null, string? parentId = null)
+        {
+            _session.Event(
+                "step",
+                step: step,
+                note: note,
+                fields: fields,
+                parentId: parentId ?? _parentId,
+                scopeId: _scopeId,
+                ok: ok,
+                verdictSource: verdictSource,
+                capabilityId: _capabilityId,
+                approvalId: _approvalId,
+                op: _op,
+                tool: _tool);
+        }
 
         /// <summary>A question put to the user and the answer that was accepted.</summary>
-        public void Prompt(string question, string? answer = null) =>
-            WritePhase("prompt", question, answer == null ? null : "answer=" + answer);
+        public void Prompt(string question, string? answer = null) => Prompt(question, answer, null, null);
 
-        private void WritePhase(string phase, string note, string? extraNotes)
+        public void Prompt(string question, string? answer, IEnumerable<KeyValuePair<string, object?>>? fields, string? parentId = null)
         {
-            if (_stream == null) return;
-            try
-            {
-                WriteLine(builder =>
-                {
-                    builder.WriteString("phase", phase);
-                    builder.WriteString("op", _op);
-                    builder.WriteString("tool", _tool);
-                    if (!string.IsNullOrEmpty(note)) builder.WriteString("notes", note);
-                    if (!string.IsNullOrEmpty(extraNotes)) builder.WriteString("answer", extraNotes);
-                });
-            }
-            catch (Exception ex)
-            {
-                OperationLogger.ReportFailure(ex);
-                CloseQuietly();
-            }
+            _session.Event(
+                "prompt",
+                step: "prompt",
+                note: question,
+                fields: fields,
+                parentId: parentId ?? _parentId,
+                scopeId: _scopeId,
+                answer: answer == null ? null : "answer=" + answer,
+                capabilityId: _capabilityId,
+                approvalId: _approvalId,
+                op: _op,
+                tool: _tool);
+        }
+
+        /// <summary>Free-form event (used by adapters that already own a phase/step name).</summary>
+        public void Event(string phase, string? step, string? note = null, IEnumerable<KeyValuePair<string, object?>>? fields = null, bool? ok = null, string? verdictSource = null, string? parentId = null)
+        {
+            _session.Event(
+                phase,
+                step: step,
+                note: note,
+                fields: fields,
+                parentId: parentId ?? _parentId,
+                scopeId: _scopeId,
+                ok: ok,
+                verdictSource: verdictSource,
+                capabilityId: _capabilityId,
+                approvalId: _approvalId,
+                op: _op,
+                tool: _tool);
         }
 
         /// <summary>
-        /// Terminal line. `verdictSource` is mandatory in spirit: it names the evidence that
-        /// decided `ok` (exit-code, arg-validation, timeout, output-contains:OKAY, …).
+        /// Terminal line. verdictSource is mandatory in spirit: it names the evidence that decided
+        /// ok (exit-code, arg-validation, timeout, output-contains:OKAY, ...).
         /// </summary>
         public void Result(
             bool ok,
@@ -405,89 +629,27 @@ namespace Kirin_Tool.Services.Diagnostics
             string? verdictSource = null,
             string? notes = null)
         {
-            if (_resultWritten || _stream == null)
-            {
-                _resultWritten = true;
+            if (_resultWritten)
                 return;
-            }
 
-            try
-            {
-                long elapsed = durationMs ?? _stopwatch.ElapsedMilliseconds;
-                WriteLine(builder =>
-                {
-                    builder.WriteString("phase", "result");
-                    builder.WriteString("op", _op);
-                    builder.WriteString("tool", _tool);
-                    if (exitCode.HasValue) builder.WriteNumber("exitCode", exitCode.Value);
-                    builder.WriteNumber("durationMs", elapsed);
-                    string? outTail = OperationLogger.Tail(stdout, TailBytes);
-                    string? errTail = OperationLogger.Tail(stderr, TailBytes);
-                    if (outTail != null) builder.WriteString("stdoutTail", outTail);
-                    if (errTail != null) builder.WriteString("stderrTail", errTail);
-                    builder.WriteBoolean("ok", ok);
-                    if (!string.IsNullOrEmpty(verdictSource)) builder.WriteString("verdictSource", verdictSource);
-                    if (!string.IsNullOrEmpty(notes)) builder.WriteString("notes", notes);
-                });
-                _resultWritten = true;
-            }
-            catch (Exception ex)
-            {
-                OperationLogger.ReportFailure(ex);
-            }
-            finally
-            {
-                CloseQuietly();
-            }
-        }
-
-        private void WriteLine(Action<Utf8JsonWriter> writeFields)
-        {
-            if (_stream == null) return;
-            lock (_gate)
-            {
-                if (_stream == null) return;
-
-                using var buffer = new MemoryStream(512);
-                using (var writer = new Utf8JsonWriter(buffer, new JsonWriterOptions { Indented = false, SkipValidation = true }))
-                {
-                    writer.WriteStartObject();
-                    writer.WriteString("ts", OperationLogger.IsoTimestamp(OperationLogger.UtcNow()));
-                    writer.WriteNumber("pid", Environment.ProcessId);
-                    writeFields(writer);
-                    writer.WriteEndObject();
-                }
-                buffer.WriteByte((byte)'\n');
-                _stream.Write(buffer.GetBuffer(), 0, (int)buffer.Length);
-                _stream.Flush();
-            }
-        }
-
-        private void WriteArgv(Utf8JsonWriter writer)
-        {
-            writer.WriteStartArray("argv");
-            foreach (string arg in _argv) writer.WriteStringValue(arg);
-            writer.WriteEndArray();
-        }
-
-        private void CloseQuietly()
-        {
-            lock (_gate)
-            {
-                try
-                {
-                    _stream?.Flush();
-                    _stream?.Dispose();
-                }
-                catch
-                {
-                    // Nothing to do: the log is best-effort by design.
-                }
-                finally
-                {
-                    _stream = null;
-                }
-            }
+            _resultWritten = true;
+            _session.NoteChildResult(ok, verdictSource, exitCode);
+            _session.Event(
+                "result",
+                step: null,
+                note: notes,
+                parentId: _parentId,
+                scopeId: _scopeId,
+                ok: ok,
+                verdictSource: verdictSource,
+                exitCode: exitCode,
+                durationMs: durationMs ?? _stopwatch.ElapsedMilliseconds,
+                stdoutTail: OperationLogger.Tail(stdout, TailBytes),
+                stderrTail: OperationLogger.Tail(stderr, TailBytes),
+                capabilityId: _capabilityId,
+                approvalId: _approvalId,
+                op: _op,
+                tool: _tool);
         }
 
         public void Dispose()
@@ -497,12 +659,10 @@ namespace Kirin_Tool.Services.Diagnostics
 
             // A scope that ends without a verdict is itself a finding: record it as
             // not-ok so no operation quietly disappears from the audit trail.
-            if (!_resultWritten && _stream != null)
+            if (!_resultWritten)
             {
                 Result(false, null, null, null, null, "unknown:no-result", "scope disposed without an explicit result");
-                return;
             }
-            CloseQuietly();
         }
     }
 }

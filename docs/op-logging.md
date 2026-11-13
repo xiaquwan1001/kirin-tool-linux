@@ -28,9 +28,16 @@
 
 不做：不改设备侧协议、不改现有 console/GUI 输出文案、不引入第三方日志库。
 
+> **v2.4.15 起日志已合流**：本文件描述的字段表仍然有效，但「一个操作一个文件」
+> 变成了「一次操作一个会话目录」——`sessions/<stamp>-<pid>-<op>/session.jsonl`，
+> VCOM 帧、审批决定与 fastboot 命令按 `seq` 交错在同一份 JSONL，另有 `vcom-trace.txt`
+> 与 `summary.json`。目录布局、新字段（`sessionId/seq/parentId/capabilityId/approvalId`）、
+> `logs` 命令与旧路径兼容见 **[log-merge.md](log-merge.md)**。旧的 `vcom/`、`fastboot/`、
+> `flash/` 目录不再新增文件，但 `logs show` 仍能读。
+
 ## 2. 日志字段表
 
-**位置**：`${KIRIN_LOG_DIR:-~/.local/state/kirin-tool}/<category>/<UTC时间戳>-<pid>.jsonl`
+**位置**（v2.4.14 及以前，v2.4.15 起改为 `sessions/<stamp>-<pid>-<op>/session.jsonl`，见 [log-merge.md](log-merge.md)）：`${KIRIN_LOG_DIR:-~/.local/state/kirin-tool}/<category>/<UTC时间戳>-<pid>.jsonl`
 
 - 目录 `0700`，文件 `0600`（`FileStream` 以 `UnixFileMode` 创建；Windows 走 ACL 默认）。
 - `category`：`vcom` | `fastboot` | `flash`；其它工具（`adb`/`internal`）按工具名建同级子目录。

@@ -21,36 +21,48 @@ string work = Path.Combine(Path.GetTempPath(), "kirin-oplog-" + Guid.NewGuid().T
 Directory.CreateDirectory(work);
 string? previousLogDir = Environment.GetEnvironmentVariable(OperationLogger.DirectoryVariable);
 string? previousDisable = Environment.GetEnvironmentVariable(OperationLogger.DisableVariable);
+string? previousIdle = Environment.GetEnvironmentVariable(OperationLogger.SessionIdleVariable);
 Environment.SetEnvironmentVariable(OperationLogger.DirectoryVariable, work);
 Environment.SetEnvironmentVariable(OperationLogger.DisableVariable, null);
+// No idle rotation inside one test run: every op below joins the same session unless the test
+// explicitly ends it, which is what makes "one session = one file" checkable.
+Environment.SetEnvironmentVariable(OperationLogger.SessionIdleVariable, "0");
 
-// Whole-file argument check from a JSON snapshots of one op: returns every JSONL line of the
-// op named <op>, read from whichever file in <dir> claims it. One op = one file by design.
+// Every JSONL line of the op named <op>, from any session file under <dir>. One session holds
+// many ops now (that is the merge), so matching is per line, never per file.
 static List<JsonElement> LinesOf(string dir, string op)
 {
     var lines = new List<JsonElement>();
     foreach (string file in Directory.EnumerateFiles(dir, "*.jsonl", SearchOption.AllDirectories))
     {
-        var parsed = new List<JsonElement>();
         foreach (string raw in File.ReadAllLines(file))
         {
             if (string.IsNullOrWhiteSpace(raw)) continue;
             using var document = JsonDocument.Parse(raw);
-            parsed.Add(document.RootElement.Clone());
+            if (document.RootElement.TryGetProperty("op", out JsonElement name) && name.GetString() == op)
+                lines.Add(document.RootElement.Clone());
         }
-        if (parsed.Count > 0 && parsed[0].GetProperty("op").GetString() == op) lines.AddRange(parsed);
     }
     return lines;
 }
+
+// One session = one session.jsonl: the session's own start line has no scopeId, every scope
+// line does. These two helpers keep "the timeline" and "one operation's lines" apart.
+static bool HasScope(JsonElement line) => line.TryGetProperty("scopeId", out _);
+static List<JsonElement> ScopeLines(string dir, string op) => LinesOf(dir, op).Where(HasScope).ToList();
+static List<JsonElement> SessionStartLines(string dir, string op) =>
+    LinesOf(dir, op).Where(line => !HasScope(line) && line.GetProperty("phase").GetString() == "start").ToList();
 
 static string? FileOf(string dir, string op)
 {
     foreach (string file in Directory.EnumerateFiles(dir, "*.jsonl", SearchOption.AllDirectories))
     {
-        string first = File.ReadLines(file).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? "";
-        if (first.Length == 0) continue;
-        using var document = JsonDocument.Parse(first);
-        if (document.RootElement.GetProperty("op").GetString() == op) return file;
+        foreach (string raw in File.ReadLines(file))
+        {
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            using var document = JsonDocument.Parse(raw);
+            if (document.RootElement.TryGetProperty("op", out JsonElement name) && name.GetString() == op) return file;
+        }
     }
     return null;
 }
@@ -59,37 +71,17 @@ static string? FileOf(string dir, string op)
 // result of the run they just made, not whichever file the filesystem happens to list first.
 static List<JsonElement> LatestOp(string dir, string op)
 {
-    string? newest = null;
-    string stamp = "";
-    foreach (string file in Directory.EnumerateFiles(dir, "*.jsonl", SearchOption.AllDirectories))
+    // v2.4.15 (log merge): a session file interleaves many ops, so the lines are filtered per
+    // line (LinesOf) and the newest run is the tail that starts at the last phase=start line.
+    // The session's own start line repeats the first op name without a scopeId; drop it.
+    List<JsonElement> all = LinesOf(dir, op).Where(line => line.TryGetProperty("scopeId", out _)).ToList();
+    if (all.Count == 0) throw new Exception("no JSONL lines for op " + op);
+    int startIndex = -1;
+    for (int i = 0; i < all.Count; i++)
     {
-        string first = File.ReadLines(file).FirstOrDefault(line => !string.IsNullOrWhiteSpace(line)) ?? "";
-        if (first.Length == 0) continue;
-        string fileOp;
-        string started;
-        using (var document = JsonDocument.Parse(first))
-        {
-            fileOp = document.RootElement.GetProperty("op").GetString() ?? "";
-            started = document.RootElement.GetProperty("ts").GetString() ?? "";
-        }
-        if (fileOp != op) continue;
-        // Order by the op's own start stamp (millisecond) and break ties with the file name,
-        // which carries the -2/-3 suffix the logger appends inside the same millisecond.
-        string key = started + "|" + Path.GetFileName(file);
-        if (string.CompareOrdinal(key, stamp) <= 0) continue;
-        newest = file;
-        stamp = key;
+        if (all[i].TryGetProperty("phase", out JsonElement phase) && phase.GetString() == "start") startIndex = i;
     }
-    if (newest == null) throw new Exception("no JSONL file for op " + op);
-
-    var parsed = new List<JsonElement>();
-    foreach (string raw in File.ReadAllLines(newest))
-    {
-        if (string.IsNullOrWhiteSpace(raw)) continue;
-        using var document = JsonDocument.Parse(raw);
-        parsed.Add(document.RootElement.Clone());
-    }
-    return parsed;
+    return startIndex >= 0 ? all.GetRange(startIndex, all.Count - startIndex) : all;
 }
 
 static List<string> StepNotes(IEnumerable<JsonElement> lines) =>
@@ -103,22 +95,36 @@ try
     {
         using (var scope = OperationLogger.Begin("test.fields", "fastboot", new[] { "flash", "boot", "/tmp/boot.img" }, "unit"))
         {
-            Check(scope.FilePath != null && File.Exists(scope.FilePath!), "scope opens exactly one JSONL file");
-            Check(scope.FilePath!.EndsWith(".jsonl", StringComparison.Ordinal) && Path.GetFileName(scope.FilePath!).Contains("-" + Environment.ProcessId), "file name is <utc-ts>-<pid>.jsonl");
-            Check(Path.GetFileName(Path.GetDirectoryName(scope.FilePath)!) == "fastboot", "fastboot op lands under <root>/fastboot");
+            Check(scope.FilePath != null && File.Exists(scope.FilePath!), "scope opens the session's main JSONL");
+            Check(Path.GetFileName(scope.FilePath!) == OperationSession.MainLogFileName, "the main log is session.jsonl inside a session directory");
+            string sessionDirectory = Path.GetDirectoryName(scope.FilePath!)!;
+            Check(Path.GetFileName(Path.GetDirectoryName(sessionDirectory)!) == OperationSession.SessionsDirectoryName, "sessions live under <root>/sessions");
+            Check(Path.GetFileName(sessionDirectory).Contains("-" + Environment.ProcessId), "session directory is <yyyyMMdd-HHMMSS>-<pid>-<op>");
+            Check(scope.SessionId == Path.GetFileName(sessionDirectory), "OperationScope.SessionId == session directory name");
+            Check(scope.SessionDirectory == sessionDirectory, "OperationScope.SessionDirectory exposes the directory for the GUI");
             scope.Step("issuing flash");
             scope.Prompt("Press POWER on the device", "yes");
             scope.Result(true, 0, 12, "OKAY [ 0.010s]", "", "exit-code", "tail-note");
         }
 
-        List<JsonElement> lines = LinesOf(work, "test.fields");
+        List<JsonElement> lines = ScopeLines(work, "test.fields");
         Check(lines.Count == 4, "one line per phase (start/step/prompt/result): " + lines.Count);
         Check(lines.Select(l => l.GetProperty("phase").GetString()).SequenceEqual(new[] { "start", "step", "prompt", "result" }), "phases are ordered start, step, prompt, result");
+
+        List<JsonElement> sessionOpen = SessionStartLines(work, "test.fields");
+        Check(sessionOpen.Count == 1, "the session writes exactly one session-level start line");
+        Check(sessionOpen[0].GetProperty("step").GetString() == "session.open", "the session start line is step=session.open");
+        Check(sessionOpen[0].GetProperty("sessionId").GetString() == lines[0].GetProperty("sessionId").GetString(), "session and scope share the sessionId");
+        Check(sessionOpen[0].GetProperty("seq").GetInt32() < lines[0].GetProperty("seq").GetInt32(), "the session start line precedes the first scope line");
+        Check(lines.All(l => l.GetProperty("sessionId").GetString() == sessionOpen[0].GetProperty("sessionId").GetString()), "every scope line carries the sessionId");
 
         JsonElement start = lines[0];
         Check(start.GetProperty("ts").GetString()!.EndsWith("Z") && start.GetProperty("ts").GetString()!.Contains('.'), "ts is ISO8601 UTC with milliseconds");
         Check(start.GetProperty("pid").GetInt32() == Environment.ProcessId, "pid is the writing process");
         Check(start.GetProperty("tool").GetString() == "fastboot", "tool is recorded");
+        Check(start.GetProperty("scopeId").GetString()!.StartsWith("scope-", StringComparison.Ordinal), "start line carries a scopeId");
+        Check(start.GetProperty("parentId").GetString() == start.GetProperty("sessionId").GetString(), "start line points at its session via parentId");
+        Check(start.GetProperty("seq").GetInt32() > 0, "every line carries a monotonic seq");
         Check(start.GetProperty("argv").GetArrayLength() == 3 && start.GetProperty("argv")[2].GetString() == "/tmp/boot.img", "argv is a JSON array of the real arguments");
         Check(start.GetProperty("notes").GetString() == "unit", "notes from Begin is kept");
 
@@ -154,7 +160,9 @@ try
     {
         using var a = OperationLogger.Begin("test.interleave.A", "vcom", new[] { "/dev/ttyUSB0" });
         using var b = OperationLogger.Begin("test.interleave.B", "vcom", new[] { "/dev/ttyUSB1" });
-        Check(a.FilePath != b.FilePath, "concurrent scopes get distinct files even in the same millisecond");
+        Check(a.FilePath == b.FilePath, "concurrent scopes write into the SAME session.jsonl (that is the merge)");
+        Check(a.SessionId == b.SessionId, "concurrent scopes share one sessionId");
+        Check(a.Id != b.Id, "each scope still has its own scopeId");
         for (int i = 0; i < 5; i++)
         {
             a.Step("a" + i);
@@ -163,14 +171,31 @@ try
         a.Result(true, null, null, null, null, "vcom:ack");
         b.Result(false, null, null, null, "b failed", "vcom:no-ack");
 
-        List<JsonElement> linesA = LinesOf(work, "test.interleave.A");
-        List<JsonElement> linesB = LinesOf(work, "test.interleave.B");
-        Check(linesA.All(l => l.GetProperty("op").GetString() == "test.interleave.A"), "scope A file only holds A ops");
-        Check(linesB.All(l => l.GetProperty("op").GetString() == "test.interleave.B"), "scope B file only holds B ops");
+        List<JsonElement> linesA = ScopeLines(work, "test.interleave.A");
+        List<JsonElement> linesB = ScopeLines(work, "test.interleave.B");
+        Check(linesA.All(l => l.GetProperty("op").GetString() == "test.interleave.A"), "every A line keeps op=A");
+        Check(linesB.All(l => l.GetProperty("op").GetString() == "test.interleave.B"), "every B line keeps op=B");
         Check(linesA.Count == 7 && linesB.Count == 7, "both scopes wrote start + 5 steps + result (" + linesA.Count + "/" + linesB.Count + ")");
         Check(linesA.Where(l => l.GetProperty("phase").GetString() == "step").All(l => l.GetProperty("notes").GetString()!.StartsWith("a")), "A steps are not polluted by B");
         Check(linesA[^1].GetProperty("ok").GetBoolean() && !linesB[^1].GetProperty("ok").GetBoolean(), "each scope keeps its own verdict");
-        Check(Path.GetFileName(Path.GetDirectoryName(a.FilePath!)!) == "vcom", "vcom ops land under <root>/vcom");
+        Check(linesA.Select(l => l.GetProperty("scopeId").GetString()).Distinct().Count() == 1, "A lines share one scopeId");
+
+        // One timeline: seq is unique and strictly increasing in file order across both scopes.
+        List<int> seqs = File.ReadAllLines(a.FilePath!)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => JsonDocument.Parse(line).RootElement.GetProperty("seq").GetInt32())
+            .ToList();
+        Check(seqs.SequenceEqual(seqs.OrderBy(value => value).Distinct()), "seq is unique and strictly increasing in file order");
+        Check(seqs.Count >= linesA.Count + linesB.Count + 1, "the session file holds the session start line plus both scopes (" + seqs.Count + " lines)");
+
+        // Ending a session starts a new directory: the timeline is bounded by the session, not by the process.
+        OperationLogger.EndSession(true, "test:interleave");
+        using var c = OperationLogger.Begin("test.interleave.C", "vcom");
+        Check(c.FilePath != a.FilePath, "after EndSession the next scope opens a new session directory");
+        Check(File.Exists(Path.Combine(Path.GetDirectoryName(a.FilePath!)!, OperationSession.SummaryFileName)),
+            "the ended session wrote summary.json");
+        OperationLogger.EndSession(true, "test:interleave-c");
+        Check(!Directory.Exists(Path.Combine(work, "vcom")), "new writes no longer create the legacy <root>/vcom directory");
     }
 
     // ---- 3. Failure path: ok=false, exitCode, stderrTail and a named verdict ----
@@ -478,11 +503,103 @@ try
             "cleanup ends with an explicit ok result");
         Check(last.GetProperty("verdictSource").GetString() == "directory-deleted", "cleanup verdict says the directory was deleted");
     }
+
+    // ---- 12. Session summary on every path + capability/approval correlation ----
+    {
+        Environment.SetEnvironmentVariable(OperationLogger.DisableVariable, null);
+        OperationLogger.ResetSessionForTests();
+
+        // 8a. A failing child still leaves a summary.json behind (the audit trail never ends
+        //     in a half-written directory).
+        string failedSession;
+        using (OperationLogger.BeginSession("test.summary.fail", "fastboot", new[] { "flash", "boot" }))
+        {
+            using (var scope = OperationLogger.Begin("test.summary.fail.child", "fastboot", new[] { "oem", "unlock" }))
+            {
+                scope.Step("device answered FAILED");
+                scope.Result(false, 1, 5, "", "FAILED (remote: 'Command not allowed')", "exit-code:1");
+            }
+            failedSession = OperationLogger.CurrentSession!.Directory;
+            OperationLogger.EndSession();
+            using var _ = OperationLogger.Begin("test.noop", "internal");
+        }
+
+        string summaryPath = Path.Combine(failedSession, OperationSession.SummaryFileName);
+        Check(File.Exists(summaryPath), "summary.json is written even when the child operation failed");
+        using (JsonDocument document = JsonDocument.Parse(File.ReadAllText(summaryPath)))
+        {
+            JsonElement summary = document.RootElement;
+            Check(!summary.GetProperty("ok").GetBoolean(), "summary.json says ok=false for a failed child");
+            Check(summary.GetProperty("verdictSource").GetString()!.Length > 0, "summary.json names the verdict source");
+            Check(summary.GetProperty("counts").GetProperty("childrenFailed").GetInt32() == 1, "summary.json counts the failed children");
+            Check(summary.GetProperty("paths").GetProperty("mainLog").GetString()!.EndsWith(OperationSession.MainLogFileName), "summary.json points at the main log");
+            Check(summary.GetProperty("sessionId").GetString() == Path.GetFileName(failedSession), "summary.json sessionId matches the directory");
+        }
+        Check(!File.ReadAllLines(Path.Combine(failedSession, OperationSession.MainLogFileName)).Any(line => line.Contains("\"stdoutTail\":null")), "no null tails are written");
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var summaryMode = File.GetUnixFileMode(summaryPath);
+            var sessionMode = File.GetUnixFileMode(failedSession);
+            Check((summaryMode & (UnixFileMode.GroupRead | UnixFileMode.OtherRead)) == 0, "summary.json is 0600");
+            Check((sessionMode & (UnixFileMode.GroupRead | UnixFileMode.OtherRead | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) == 0, "session directory is 0700");
+        }
+
+        // 8b. capabilityId / approvalId ride along every line written inside the context: this is
+        //     how a fastboot command is joined back to the registry row and the approval decision.
+        OperationLogger.ResetSessionForTests();
+        using (OperationLogger.CapabilityScope("unlock-bootloader", "fingerprint-abc123"))
+        {
+            using var scope = OperationLogger.Begin("test.capability", "fastboot", new[] { "oem", "unlock" });
+            scope.Result(true, 0, 3, "OKAY", "", "exit-code");
+            List<JsonElement> contextLines = ScopeLines(work, "test.capability");
+            Check(contextLines.Count == 2, "capability scope writes start + result");
+            Check(contextLines.All(l => l.GetProperty("capabilityId").GetString() == "unlock-bootloader"), "lines carry capabilityId inside CapabilityScope");
+            Check(contextLines.All(l => l.GetProperty("approvalId").GetString() == "fingerprint-abc123"), "lines carry approvalId inside CapabilityScope");
+        }
+        using (var plain = OperationLogger.Begin("test.capability.outside", "fastboot"))
+        {
+            plain.Result(true, 0, 1, "", "", "exit-code");
+            Check(!ScopeLines(work, "test.capability.outside")[0].TryGetProperty("capabilityId", out _),
+                "no capabilityId leaks outside the context");
+        }
+        OperationLogger.EndSession(true, "test:capability");
+    }
+
+    // ---- 13. Approval decisions land on the same timeline (via the shared audit sink) ----
+    {
+        OperationLogger.ResetSessionForTests();
+        var session = OperationLogger.BeginSession("test.approval", "fastboot", new[] { "oem", "unlock" });
+        var sink = new OperationSessionApprovalSink();
+        sink.Record(new Kirin_Tool.Services.Approval.ApprovalAuditEntry
+        {
+            Event = "approval.decision",
+            CapabilityId = "unlock-bootloader",
+            TitleZh = "解锁 bootloader",
+            Origin = "cli",
+            Decision = "denied",
+            TouchesRedline = true,
+            Reversibility = "irreversible",
+            Fingerprint = "fingerprint-xyz",
+            DecisionId = "fingerprint-xyz",
+            Argv = new[] { "oem", "unlock" },
+        });
+        var approvalLines = LinesOf(work, "test.approval").Where(l => l.GetProperty("phase").GetString() == "step").ToList();
+        Check(approvalLines.Any(l => l.GetProperty("step").GetString() == "approval.decision"), "the approval decision is a step on the session timeline");
+        JsonElement decision = approvalLines.First(l => l.GetProperty("step").GetString() == "approval.decision");
+        Check(decision.GetProperty("capabilityId").GetString() == "unlock-bootloader", "the approval line carries capabilityId");
+        Check(decision.GetProperty("approvalId").GetString() == "fingerprint-xyz", "the approval line carries the approval fingerprint");
+        Check(decision.GetProperty("approval").GetProperty("decision").GetString() == "denied", "the approval payload keeps the decision");
+        Check(session.SessionId == decision.GetProperty("sessionId").GetString(), "the approval joined the open session instead of opening a new one");
+        OperationLogger.EndSession(true, "test:approval");
+    }
 }
 finally
 {
     Environment.SetEnvironmentVariable(OperationLogger.DirectoryVariable, previousLogDir);
     Environment.SetEnvironmentVariable(OperationLogger.DisableVariable, previousDisable);
+    Environment.SetEnvironmentVariable(OperationLogger.SessionIdleVariable, previousIdle);
+    OperationLogger.EndSession(true, "test:cleanup");
     try { Directory.Delete(work, true); } catch { }
 }
 

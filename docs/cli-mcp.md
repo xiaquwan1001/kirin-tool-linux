@@ -34,6 +34,7 @@ kirin-tool-cli flash-ota base.app --yes    # real write of all non-redline parti
 | `psid` | 设备标识 `oem get-psid`（GUI「Read identifiers」按钮） | `FastbootClient.ReadPsidAsync` |
 | `capabilities` | 逐芯片能力矩阵 + 内置 loader 清单 + rescue 分区计划（不需设备） | `ChipCapabilities.Allows`、`RescuePartitionPlan`、`FirmwareUnlocker.CpuAddresses` |
 | `udev` | 宿主机 udev 规则覆盖检查（GUI「Check again」按钮）；覆盖则 exit 0，否则 exit 5 并打印修复命令 | `Services.UdevRuleNotice.Inspect` |
+| `logs list` / `logs show <session|latest>` / `logs path <session>` | 只读查看合流后的操作日志（会话目录 / `session.jsonl` / `summary.json`）；旧 `vcom-*.log` 与 `<category>/*.jsonl` 也能读，标 `legacy: true` | `Services/Diagnostics/LogSessionStore`（写入器与 GUI/CLI 共用 `OperationLogger`） |
 
 写操作分两类（`CliWriteKind`，`Cli/Commands/ICliCommand.cs`）：
 

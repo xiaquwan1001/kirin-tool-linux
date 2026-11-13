@@ -73,6 +73,7 @@ public static class CapabilityRegistry
         Read("extract", "解包 UPDATE.APP", "extract", "StartExtraction_Click", "file", "outdir"),
         Read("dump", "单分区 dump 到宿主机", "dump", "DumpPartitions_Click", "partition", "output"),
         Read("backup", "身份分区备份 + manifest", "backup", null, "partition", "partitions", "backup-dir"),
+        Read("logs", "统一操作日志查询（会话目录 / 主日志 / 旧日志）", "logs", null, "verb", "session", "trace", "root"),
 
         // ---------- 写：CLI + MCP + GUI，执行前一律过审批闸门 ----------
         new("flash-ota", "整包刷写（Full OTA）", "flash-ota", "flash_ota", "StartFullOtaButton_Click",

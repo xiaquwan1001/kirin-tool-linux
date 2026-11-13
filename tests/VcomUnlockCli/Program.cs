@@ -12,6 +12,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using Kirin_Tool.Services.Diagnostics;
 
 string root = Path.GetFullPath(args.Length == 0 ? "." : args[0]);
 int checks = 0;
@@ -292,7 +293,11 @@ try
 
     // ---------- 6. session log format (dry-run writes the same header) ----------
     {
-        string[] logs = Directory.Exists(logDir) ? Directory.GetFiles(logDir, "vcom-*.log") : Array.Empty<string>();
+        // v2.4.15 log merge: the human transcript lives inside the operation session directory
+        // ($KIRIN_LOG_DIR/sessions/<stamp>-<pid>-<op>/vcom-trace.txt), next to session.jsonl.
+        string[] logs = Directory.Exists(logDir)
+            ? Directory.GetFiles(logDir, OperationSession.TraceFileName, SearchOption.AllDirectories)
+            : Array.Empty<string>();
         Check(logs.Length > 0, "vcom session log files were created");
         string[] dryRunLogs = logs.Where(path => File.ReadAllLines(path).Any(line => line.Contains("event=plan"))).ToArray();
         Check(dryRunLogs.Length > 0, "a dry run still writes a log header (event=plan)");
@@ -326,6 +331,15 @@ try
             string mode = File.GetUnixFileMode(logDir).ToString();
             Check(!File.GetUnixFileMode(logDir).HasFlag(UnixFileMode.GroupRead | UnixFileMode.OtherRead),
                 $"log directory is owner-only ({mode})");
+            string sessionDirectory = Path.GetDirectoryName(logs[0])!;
+            Check(!File.GetUnixFileMode(sessionDirectory).HasFlag(UnixFileMode.GroupRead | UnixFileMode.OtherRead | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute),
+                "session directory is owner-only (0700)");
+            Check(!File.GetUnixFileMode(logs[0]).HasFlag(UnixFileMode.GroupRead | UnixFileMode.OtherRead),
+                "vcom-trace.txt is owner-only (0600)");
+            Check(File.Exists(Path.Combine(sessionDirectory, OperationSession.MainLogFileName)),
+                "the same session directory holds session.jsonl (the merged timeline)");
+            Check(File.Exists(Path.Combine(sessionDirectory, OperationSession.SummaryFileName)),
+                "the CLI wrote summary.json for the session");
         }
     }
 
