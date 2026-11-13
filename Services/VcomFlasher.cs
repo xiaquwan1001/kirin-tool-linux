@@ -265,7 +265,7 @@ namespace Kirin_Tool.Services
                 using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
                 try
                 {
-                    await _serialPort.BaseStream.ReadAsync(rsp, 0, rsp.Length, cts.Token);
+                    _ = await _serialPort.BaseStream.ReadAsync(rsp.AsMemory(), cts.Token);
                 }
                 catch (OperationCanceledException) { }
             }

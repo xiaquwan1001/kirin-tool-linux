@@ -238,7 +238,7 @@ namespace Kirin_Tool.UI
             TimeElapsed = _stopwatch?.Elapsed.ToString(@"mm\:ss") ?? "";
         }
 
-        public event PropertyChangedEventHandler PropertyChanged;
+        public event PropertyChangedEventHandler? PropertyChanged;
         protected virtual void OnPropertyChanged(string propertyName)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
