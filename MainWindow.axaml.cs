@@ -1100,9 +1100,24 @@ namespace Kirin_Tool
                 // Pre-op backup before the USB Update flash; best effort, never aborts.
                 await RunPreOpBackupAsync(allPartitions.Select(p => p.Partition.Name), "gui-usb-update", flashDialog);
 
-                await Task.Run(() => _usbUpdateFlasherService.FlashPartitions(filesData, cancellationTokenSource.Token, allowRedline: allowRedline));
+                UsbUpdateVerdict verdict = await Task.Run(() => _usbUpdateFlasherService.FlashPartitions(filesData, cancellationTokenSource.Token, allowRedline: allowRedline));
 
-                flashDialog.SetOverallComplete(true, "USB Update flash completed successfully!");
+                // Three states straight from the transfer verdict (D-04, docs/usb-update-verdict.md):
+                // "completed successfully" is reserved for a verified transfer. A partial transfer
+                // (some selected partition was skipped, missing, cut short or unhandshaken) and a
+                // failed one (nothing written) are both failures of the operation's goal.
+                if (verdict.Verified)
+                {
+                    flashDialog.SetOverallComplete(true, "USB Update flash verified — " + verdict.Describe());
+                }
+                else if (verdict.Outcome == UsbUpdateOutcome.Partial)
+                {
+                    flashDialog.SetOverallComplete(false, "USB Update flash PARTIAL — " + verdict.Describe());
+                }
+                else
+                {
+                    flashDialog.SetOverallComplete(false, "USB Update flash FAILED — " + verdict.Describe());
+                }
             }
             catch (OperationCanceledException)
             {

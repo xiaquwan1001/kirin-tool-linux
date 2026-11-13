@@ -432,6 +432,34 @@ internal sealed class UsbTestpointCommand : GatedDeviceWriteCommand
             targets: new[] { "XLOADER" });
     }
 
+    /// <summary>
+    /// Map a USB-update verdict onto the shared write report (D-04, docs/usb-update-verdict.md):
+    /// verified -> applied (exit 0), partial -> partial (exit 3), failed -> failed (exit 3).
+    /// </summary>
+    private static WriteReport MapVerdict(UsbUpdateVerdict verdict, object details, string what) => verdict.Outcome switch
+    {
+        UsbUpdateOutcome.Verified => WriteReports.Applied(details),
+        UsbUpdateOutcome.Partial => WriteReports.Partial(details, ExitCodes.DeviceRejected, what + " partial: " + verdict.Describe()),
+        _ => WriteReports.Failed(details, ExitCodes.DeviceRejected, what + " failed: " + verdict.Describe()),
+    };
+
+    /// <summary>The structured side of the report: every verdict field, never a bare bool.</summary>
+    private static object TransferDetails(bool enter, string file, UsbUpdateVerdict verdict, string? error) => new
+    {
+        enter,
+        file,
+        transferred = verdict.Outcome != UsbUpdateOutcome.Failed,
+        verdict = verdict.Token,
+        required = verdict.RequiredPartitions,
+        written = verdict.Written,
+        skipped = verdict.Skipped.Select(skip => skip.Partition).ToArray(),
+        missing = verdict.Missing,
+        handshakeEstablished = verdict.HandshakeEstablished,
+        reason = verdict.Reason,
+        deviceStateVerified = false,
+        error,
+    };
+
     protected override async Task<int> RunAsync(ParsedArgs args, CliContext context, ApprovalAdmission admission, CancellationToken cancellationToken)
     {
         bool enter = args.HasFlag("enter");
@@ -459,21 +487,35 @@ internal sealed class UsbTestpointCommand : GatedDeviceWriteCommand
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // The service throws on every failure path; "no exception" is its only evidence, so
-            // an exception is the only thing that can turn this into a failure.
+            // The service throws unless the channel verified the write, but the verdict says which
+            // of the three states the transfer reached — a partial transfer is not a failure of the
+            // bytes that did land (D-04).
+            UsbUpdateVerdict? reached = testpoint.LastVerdict;
+            if (reached != null)
+            {
+                return WriteResult(context, Name, CapabilityId,
+                    MapVerdict(reached, TransferDetails(enter, resolved, reached, ex.Message), "testpoint transfer"),
+                    "testpoint transfer " + reached.Token.ToUpperInvariant() + ": " + reached.Describe() + " (" + ex.Message + ")");
+            }
+
             var failure = new { enter, file = resolved, transferred = false, error = ex.Message };
             return WriteResult(context, Name, CapabilityId,
                 WriteReports.Failed(failure, ExitCodes.DeviceRejected, "testpoint transfer failed: " + ex.Message),
                 "testpoint transfer FAILED: " + ex.Message);
         }
 
-        // No exception means the frames were sent; it is not evidence about the device state, so
-        // the gate stays "applied" only for the transfer itself and the human line says so.
+        // No exception means the channel verified the write: the verdict, not the absence of an
+        // error, is what allows this line. Whether the device really is in VCOM mode is still not
+        // proven by the CLI.
+        UsbUpdateVerdict? confirmed = testpoint.LastVerdict;
         return WriteResult(context, Name, CapabilityId,
-            WriteReports.Applied(new { enter, file = resolved, transferred = true, deviceStateVerified = false }),
-            enter
-                ? "testpoint transfer returned without an error report; whether the device really is in VCOM mode is NOT confirmed by this command"
-                : "XLOADER was flashed back; confirm the device answers 'fastboot getvar product' again");
+            confirmed != null
+                ? MapVerdict(confirmed, TransferDetails(enter, resolved, confirmed, null), "testpoint transfer")
+                : WriteReports.Applied(new { enter, file = resolved, transferred = true, deviceStateVerified = false }),
+            (confirmed != null ? "testpoint transfer " + confirmed.Token.ToUpperInvariant() + ": " + confirmed.Describe() : "testpoint transfer returned without a verdict")
+                + (enter
+                    ? "; whether the device really is in VCOM mode is NOT confirmed by this command"
+                    : "; confirm the device answers 'fastboot getvar product' again"));
     }
 }
 

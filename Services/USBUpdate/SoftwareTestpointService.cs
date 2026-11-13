@@ -42,6 +42,12 @@ namespace Kirin_Tool.Services.USBUpdate
             _onRetryRequired = onRetryRequired;
         }
 
+        /// <summary>
+        /// The verdict of the last USB-update transfer of this service (null before the first one).
+        /// Exposed so the CLI can report `verified`/`partial`/`failed` instead of a bool (D-04).
+        /// </summary>
+        public UsbUpdateVerdict? LastVerdict { get; private set; }
+
         public async Task EnterSoftwareTestpoint(string updateAppPath)
         {
             // Was an empty catch: the directory is removed exactly as before (the next line
@@ -93,10 +99,12 @@ namespace Kirin_Tool.Services.USBUpdate
                 _log("XLOADER patch verified; starting USB Update transfer.");
 
 
-                bool success = await Task.Run(() => usbService.FlashImages());
-                if (!success)
+                // Only a verified transfer counts as success (D-04): the XLOADER is the whole
+                // point of this operation, so a skipped/missing/unhandshaken transfer must throw.
+                LastVerdict = await Task.Run(() => usbService.FlashImagesWithVerdict(new[] { "XLOADER" }));
+                if (!LastVerdict.Verified)
                 {
-                    throw new IOException($"Software Testpoint transfer failed.\n\n{usbService.LastError ?? "No transfer details were returned."}\n\nSee the application log for details. Firmware compatibility has not been determined by this error.");
+                    throw new IOException($"Software Testpoint transfer {LastVerdict.Token}.\n\n{LastVerdict.Describe()}\n\n{usbService.LastError ?? "No transfer details were returned."}\n\nSee the application log for details. Firmware compatibility has not been determined by this error.");
                 }
 
 

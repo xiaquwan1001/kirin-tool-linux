@@ -12,6 +12,7 @@ UsbDiagnostics
 UsbRedlineGate
 UsbTransport
 UsbUpdateUi
+UsbUpdateVerdict
 OemInfoUi
 UdevNotice
 Kirin9000

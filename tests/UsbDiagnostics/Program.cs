@@ -18,7 +18,9 @@ try {
         service.OnPartitionCompleted=(_,_,ok,details)=>{if(!ok)callback=details;};
         using var port=new Fake(scenario.fail,scenario.mode);
         bool success=false;Exception? error=null;
-        try {success=(bool)flash.Invoke(service,new object[]{port})!;}
+        // D-04: FlashPartitions now takes the verdict builder and returns a verdict, not a bare bool.
+        var verdict=new UsbUpdateVerdictBuilder(new[]{"XLOADER"},lines.Add);
+        try {success=(bool)flash.Invoke(service,new object[]{port,verdict})!;}
         catch(TargetInvocationException ex){error=ex.InnerException;}
         if(scenario.fail==0) {
             Check(success && error==null && service.LastError==null,"ACK sequence still succeeds");
@@ -32,7 +34,10 @@ try {
         string reason=scenario.mode switch {"timeout"=>"No response within 1000ms","partial"=>"7E 03","io"=>"USB receive failed (-4)",_=>"7E 03 11 22 7E"};
         Check(details.Contains(reason),"original response/transport reason retained: "+scenario);
         Check(lines.Any(s=>s.Contains(details)),"full reason reaches diagnostic callback: "+scenario);
-        if(scenario.fail==1)Check(error?.Message.Contains(reason)==true,"header exception preserves device response");
+        // D-04: a rejected head command now stops the transfer with a verdict instead of throwing out
+        // of the transfer (older behaviour left the caller without a conclusion). Same facts, same reason.
+        if(scenario.fail==1)Check(error==null && verdict.Build().Written.Count==0,
+            "header rejection stops the transfer with the device response and no exception");
         else Check(callback==details,"progress failure receives complete reason: "+scenario);
         if(scenario.fail==2)Check(details.Contains("offset 0x0"),"data failure includes block offset: "+scenario);
         Check(port.ReadTimeout==5000,"read timeout restored: "+scenario);
@@ -40,14 +45,14 @@ try {
     File.WriteAllBytes(Path.Combine(dir,"XLOADER.img"),new byte[0x20000+64]);
     var secondBlock=new UsbDownloadService(_=>{},dir);
     using(var port=new Fake(3,"nack")) {
-        Check(!(bool)flash.Invoke(secondBlock,new object[]{port})!,"later data block failure propagates");
+        Check(!(bool)flash.Invoke(secondBlock,new object[]{port,new UsbUpdateVerdictBuilder(new[]{"XLOADER"},_=>{})})!,"later data block failure propagates");
         Check(secondBlock.LastError!.Contains("offset 0x20000") && secondBlock.LastError.Contains("data transfer"),"later block reports its actual offset and stage");
         Check(port.Writes==3,"later block failure does not send the tail or replay data");
     }
     File.Delete(Path.Combine(dir,"list.txt"));
     var missingList=new UsbDownloadService(_=>{},dir);
     using(var port=new Fake(0,"success")) {
-        Check(!(bool)flash.Invoke(missingList,new object[]{port})! && missingList.LastError!.Contains("list.txt"),"missing transfer list has a concrete failure reason");
+        Check(!(bool)flash.Invoke(missingList,new object[]{port,new UsbUpdateVerdictBuilder(new[]{"XLOADER"},_=>{})})! && missingList.LastError!.Contains("list.txt"),"missing transfer list has a concrete failure reason");
         Check(port.Writes==0,"missing list sends no partition commands");
     }
     if(args.Length>0) {
