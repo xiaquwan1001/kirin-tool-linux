@@ -233,11 +233,42 @@ v2.4.13 界面的 headless 渲染（commit `47fb3da`，来自真实 Avalonia 控
 - `VcomOpenProbe` / `UsbUpdateProbe` 因需要真实 USB 硬件而不进 CI；`VisualParity` 因依赖字体像素差也不进。
 - 只有一个机型跑过完整 OTA。
 
+## 日志在哪、怎么读
+
+每次设备操作写两份日志，互不替代：
+
+| 类型 | 位置 | 内容 |
+| :--- | :--- | :--- |
+| 结构化（新） | `${KIRIN_LOG_DIR:-~/.local/state/kirin-tool}/{vcom,fastboot,flash}/` 下 `<UTC时间戳>-<pid>.jsonl`，**一个操作一个文件**，目录 `0700`、文件 `0600` | 每行一个 JSON：`ts/pid/op/phase/tool/argv/exitCode/durationMs/stdoutTail/stderrTail/ok/verdictSource/notes` |
+| 人读文本（原有） | `<安装目录>/log/kirintool_log_*.log`，不可写时 `${XDG_STATE_HOME:-~/.local/state}/Kirin-Tool/log/` | 与以前一致，只有 fastboot 命令才写 |
+
+常用读法：
+
+```bash
+# 最近一次 fastboot 操作到底怎么判的
+ls -t ~/.local/state/kirin-tool/fastboot/*.jsonl | head -1 | xargs cat | jq -c '{op,phase,ok,verdictSource,exitCode}'
+
+# 所有失败操作，只看证据尾部和判据
+jq -c 'select(.phase=="result" and .ok==false) | {op,verdictSource,stderrTail}' \
+  ~/.local/state/kirin-tool/*/*.jsonl | head -20
+
+# 某个分区最近有没有真写成功
+grep -l '"op":"fastboot.flash"' ~/.local/state/kirin-tool/fastboot/*.jsonl | tail -3
+```
+
+要点：
+
+- `ok` 旁边永远有 `verdictSource`（`exit-code` / `arg-validation` / `timeout` / `output-contains:OKAY` …）——失败能被追溯到具体一行输出，而不是只有一个布尔值。
+- argv 已脱敏：`--password xxx` 记成 `--password ***`，调用方自定义的解锁码记成 `***(16)`；厂商固定口令 `UUUU…` 仍是公开常量，照原样记录。
+- 想换目录：`KIRIN_LOG_DIR=/tmp/ktl-logs`；想彻底关掉：`KIRIN_LOG_DISABLE=1`（不影响任何返回值）。
+- 分享日志前先抹掉序列号等私有标识：两条日志都会记录设备标识。
+
 ## 文档
 
 | 指南 | 内容 |
 | :--- | :--- |
 | [文档索引](docs/INDEX.md) | 一张表看全。 |
+| [统一操作日志](docs/op-logging.md) | JSONL 字段表、日志在哪怎么读、VCOM 会话日志对接、迁移顺序。 |
 | [Refresh 变更记录](docs/refresh-changelog.md) | 本线逐版本改动与原因。 |
 | [CLI 与 MCP](docs/cli-mcp.md) | 命令、写类型、闸门、退出码、MCP 协议。 |
 | [Fork 发布流水线](docs/fork-release.md) | 资产、deb 布局、ICU/OpenSSL 依赖策略、CI 地图。 |

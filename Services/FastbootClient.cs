@@ -19,6 +19,7 @@
  */
 
 using Kirin_Tool.Models;
+using Kirin_Tool.Services.Diagnostics;
 using Kirin_Tool.Utils;
 using System;
 using System.Diagnostics;
@@ -36,6 +37,16 @@ namespace Kirin_Tool.Services
 
         private const int UnlockTimeoutMinutes = 300;
 
+        /// <summary>
+        /// Vendor-fixed `oem unlock` magic (audit H39): a public constant, not a credential, so
+        /// it stays readable in the JSONL log. Callers may override it, and a caller-supplied
+        /// code is registered as a secret and masked instead.
+        /// </summary>
+        public const string DefaultUnlockCode = "UUUUUUUUUUUUUUUU";
+
+        /// <summary>\`oem unlock\` rejects anything that is not exactly this long.</summary>
+        public const int UnlockCodeLength = 16;
+
         public FastbootClient(string executablePath = null)
         {
             _fastbootPath = !string.IsNullOrWhiteSpace(executablePath)
@@ -47,7 +58,7 @@ namespace Kirin_Tool.Services
         {
             try
             {
-                var result = await ProcessRunner.RunAsync(_fastbootPath, "devices");
+                var result = await ProcessRunner.RunAsync(_fastbootPath, "devices", op: "fastboot.devices");
                 return result.IsSuccess && result.Output
                     .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                     .Select(line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
@@ -94,36 +105,37 @@ namespace Kirin_Tool.Services
 
         public async Task<IReadOnlyDictionary<string, string>> ReadPsidAsync()
         {
-            var result = await ProcessRunner.RunAsync(_fastbootPath, new[] { "oem", "get-psid" }, timeoutSeconds: 10);
+            var result = await ProcessRunner.RunAsync(_fastbootPath, new[] { "oem", "get-psid" }, timeoutSeconds: 10, op: "fastboot.get-psid");
             return FastbootReadResponses.Psid(result);
         }
 
         public Task<ProcessResult> QueryVariableAsync(string variable) =>
-            ProcessRunner.RunAsync(_fastbootPath, new[] { "getvar", variable }, timeoutSeconds: 10);
+            ProcessRunner.RunAsync(_fastbootPath, new[] { "getvar", variable }, timeoutSeconds: 10, op: "fastboot.getvar");
 
         public async Task<ProcessResult> WriteNveVariable(string variable, string value)
         {
-            return await ProcessRunner.RunAsync(_fastbootPath, $"getvar nve:{variable}@{value}");
+            // A write disguised as getvar (audit H34): the op name says "set", the argv says why.
+            return await ProcessRunner.RunAsync(_fastbootPath, $"getvar nve:{variable}@{value}", op: "fastboot.setvar.nve");
         }
 
         public async Task<ProcessResult> FlashPartition(string partitionName, string filePath)
         {
-            return await ProcessRunner.RunAsync(_fastbootPath, new[] { "flash", partitionName, filePath });
+            return await ProcessRunner.RunAsync(_fastbootPath, new[] { "flash", partitionName, filePath }, op: "fastboot.flash");
         }
 
         public async Task<FrpBypassResult> EraseFrpWithSteps()
         {
             var result = new FrpBypassResult();
 
-            var step1Result = await ProcessRunner.RunAsync(_fastbootPath, "erase frp");
+            var step1Result = await ProcessRunner.RunAsync(_fastbootPath, "erase frp", op: "fastboot.erase-frp.step1");
             result.Step1Success = step1Result.IsSuccess && step1Result.Output.ToUpper().Contains("OKAY");
             result.Step1Output = step1Result.Output;
 
-            var step2Result = await ProcessRunner.RunAsync(_fastbootPath, "erase config");
+            var step2Result = await ProcessRunner.RunAsync(_fastbootPath, "erase config", op: "fastboot.erase-frp.step2");
             result.Step2Success = step2Result.IsSuccess && step2Result.Output.ToUpper().Contains("OKAY");
             result.Step2Output = step2Result.Output;
 
-            var step3Result = await ProcessRunner.RunAsync(_fastbootPath, "oem frp-erase");
+            var step3Result = await ProcessRunner.RunAsync(_fastbootPath, "oem frp-erase", op: "fastboot.erase-frp.step3");
             result.Step3Success = step3Result.IsSuccess && step3Result.Output.ToUpper().Contains("OKAY");
             result.Step3Output = step3Result.Output;
 
@@ -135,19 +147,19 @@ namespace Kirin_Tool.Services
         {
             var result = new EnableDowngradeResult();
 
-            var step1Result = await ProcessRunner.RunAsync(_fastbootPath, "oem oeminfoerase-amssver");
+            var step1Result = await ProcessRunner.RunAsync(_fastbootPath, "oem oeminfoerase-amssver", op: "fastboot.enable-downgrade.step1");
             result.Step1Success = step1Result.IsSuccess && step1Result.Output.ToUpper().Contains("OKAY");
             result.Step1Output = step1Result.Output;
 
-            var step2Result = await ProcessRunner.RunAsync(_fastbootPath, "oem oeminfoerase-basever");
+            var step2Result = await ProcessRunner.RunAsync(_fastbootPath, "oem oeminfoerase-basever", op: "fastboot.enable-downgrade.step2");
             result.Step2Success = step2Result.IsSuccess && step2Result.Output.ToUpper().Contains("OKAY");
             result.Step2Output = step2Result.Output;
 
-            var step3Result = await ProcessRunner.RunAsync(_fastbootPath, "oem oeminfoerase-custver");
+            var step3Result = await ProcessRunner.RunAsync(_fastbootPath, "oem oeminfoerase-custver", op: "fastboot.enable-downgrade.step3");
             result.Step3Success = step3Result.IsSuccess && step3Result.Output.ToUpper().Contains("OKAY");
             result.Step3Output = step3Result.Output;
 
-            var step4Result = await ProcessRunner.RunAsync(_fastbootPath, "oem oeminfoerase-preloadver");
+            var step4Result = await ProcessRunner.RunAsync(_fastbootPath, "oem oeminfoerase-preloadver", op: "fastboot.enable-downgrade.step4");
             result.Step4Success = step4Result.IsSuccess && step4Result.Output.ToUpper().Contains("OKAY");
             result.Step4Output = step4Result.Output;
 
@@ -156,29 +168,29 @@ namespace Kirin_Tool.Services
 
         public async Task<ProcessResult> PullOemInfo(string outputPath)
         {
-            return await ProcessRunner.RunAsync(_fastbootPath, $"oem dump-emmc oeminfo \"{outputPath}\"");
+            return await ProcessRunner.RunAsync(_fastbootPath, $"oem dump-emmc oeminfo \"{outputPath}\"", op: "fastboot.dump-oeminfo");
         }
 
         public async Task<ProcessResult> FlashOemInfo(string filePath)
         {
-            return await ProcessRunner.RunAsync(_fastbootPath, $"flash oeminfo \"{filePath}\"");
+            return await ProcessRunner.RunAsync(_fastbootPath, $"flash oeminfo \"{filePath}\"", op: "fastboot.flash-oeminfo");
         }
 
         public async Task<string> GetVarAsync(string variable)
         {
-            var result = await ProcessRunner.RunAsync(_fastbootPath, $"getvar {variable}", timeoutSeconds: 10);
+            var result = await ProcessRunner.RunAsync(_fastbootPath, $"getvar {variable}", timeoutSeconds: 10, op: "fastboot.getvar");
             return result.Output;
         }
 
         public async Task<string> OemCommandAsync(string command, int timeoutMinutes = 300)
         {
-            var result = await ProcessRunner.RunAsync(_fastbootPath, $"oem {command}", timeoutMinutes: timeoutMinutes);
+            var result = await ProcessRunner.RunAsync(_fastbootPath, $"oem {command}", timeoutMinutes: timeoutMinutes, op: "fastboot.oem." + FirstWord(command));
             return result.Output;
         }
 
         public async Task<string> CommandAsync(string arguments, int timeoutMinutes = 300)
         {
-            var result = await ProcessRunner.RunAsync(_fastbootPath, arguments, timeoutMinutes: timeoutMinutes);
+            var result = await ProcessRunner.RunAsync(_fastbootPath, arguments, timeoutMinutes: timeoutMinutes, op: "fastboot." + FirstWord(arguments));
             return result.Output;
         }
 
@@ -187,111 +199,65 @@ namespace Kirin_Tool.Services
             return await CommandAsync("reboot-bootloader");
         }
 
-        public async Task<(bool IsSuccess, string Output)> UnlockBootloaderAsync(IProgress<string> progress = null)
+        /// <summary>First token of a command line, for op naming (`oem frp-erase` → `frp-erase`).</summary>
+        private static string FirstWord(string commandLine)
         {
-            var processStartInfo = new ProcessStartInfo
+            IReadOnlyList<string> tokens = OperationLogger.ParseArgv(commandLine);
+            foreach (string token in tokens)
             {
-                FileName = _fastbootPath,
-                Arguments = "oem unlock UUUUUUUUUUUUUUUU",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
+                if (!token.StartsWith("-", StringComparison.Ordinal)) return token;
+            }
+            return "run";
+        }
 
-            using var process = new Process { StartInfo = processStartInfo };
-            
-            var outputBuilder = new StringBuilder();
-            var errorBuilder = new StringBuilder();
-            var combinedBuilder = new StringBuilder();
-            var outputLock = new object();
+        /// <summary>
+        /// `oem unlock &lt;code&gt;`. Streams stdout/stderr through <see cref="ProcessRunner.RunStreamingAsync"/>
+        /// (the only permitted child-process entry point since lane D) so the operation gets the same
+        /// timeout, kill-tree and JSONL logging as every other command instead of the previous
+        /// unlogged bare <see cref="Process"/> (audit BB-34) that hard-coded the unlock magic (H39).
+        ///
+        /// `unlockCode` defaults to the vendor magic; the length is validated before anything is
+        /// sent to the device and a rejection is recorded with `verdictSource=arg-validation`.
+        /// </summary>
+        public async Task<(bool IsSuccess, string Output)> UnlockBootloaderAsync(IProgress<string> progress = null, string? unlockCode = null)
+        {
+            string code = string.IsNullOrEmpty(unlockCode) ? DefaultUnlockCode : unlockCode!;
 
-            process.Start();
-
-            var outputTask = Task.Run(async () =>
+            if (code.Length != UnlockCodeLength)
             {
-                try
-                {
-                    using var reader = process.StandardOutput;
-                    char[] chunk = new char[256];
-                    while (true)
-                    {
-                        int read = await reader.ReadAsync(chunk, 0, chunk.Length);
-                        if (read == 0)
-                        {
-                            break;
-                        }
+                string message =
+                    $"Unlock code must be exactly {UnlockCodeLength} characters long (got {code.Length}); nothing was sent to the device.";
+                using var rejected = OperationLogger.Begin("fastboot.unlock", "fastboot", new[] { "oem", "unlock", code });
+                rejected.Result(false, null, null, null, message, "arg-validation", "unlock code rejected before fastboot was started");
+                return (false, message);
+            }
 
-                        lock (outputLock)
-                        {
-                            outputBuilder.Append(chunk, 0, read);
-                            combinedBuilder.Append(chunk, 0, read);
-                            progress?.Report(combinedBuilder.ToString());
-                        }
-                    }
-                }
-                catch (Exception)
-                {
-                    // Reader failed (stream closed / process killed); the exit
-                    // status below still determines the result, so just stop.
-                }
-            });
-
-            var errorTask = Task.Run(async () =>
+            if (!string.Equals(code, DefaultUnlockCode, StringComparison.Ordinal))
             {
-                try
-                {
-                    using var reader = process.StandardError;
-                    char[] chunk = new char[256];
-                    while (true)
-                    {
-                        int read = await reader.ReadAsync(chunk, 0, chunk.Length);
-                        if (read == 0)
-                        {
-                            break;
-                        }
+                // A caller-supplied code is treated as a credential: masked as ***(<len>) in the log.
+                OperationLogger.RegisterSecret(code);
+            }
 
-                        lock (outputLock)
-                        {
-                            errorBuilder.Append(chunk, 0, read);
-                            combinedBuilder.Append(chunk, 0, read);
-                            progress?.Report(combinedBuilder.ToString());
-                        }
-                    }
-                }
-                catch (Exception)
-                {
-                    // See stdout reader: swallowing is intentional, exit status rules.
-                }
-            });
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(UnlockTimeoutMinutes));
             try
             {
-                await process.WaitForExitAsync(cts.Token);
+                ProcessResult result = await ProcessRunner.RunStreamingAsync(
+                    _fastbootPath,
+                    new[] { "oem", "unlock", code },
+                    progress,
+                    timeoutMinutes: UnlockTimeoutMinutes,
+                    op: "fastboot.unlock");
+
+                return (result.IsSuccess, result.Output);
             }
-            catch (OperationCanceledException)
+            catch (TimeoutException)
             {
-                process.Kill();
-                try { process.WaitForExit(2000); } catch (InvalidOperationException) { }
                 return (false, $"Process timed out after {UnlockTimeoutMinutes} minutes");
             }
-
-            // The process has exited, so both pipes will reach EOF; drain them
-            // fully instead of guessing a delay. Readers append under outputLock.
-            await Task.WhenAll(outputTask, errorTask);
-
-            string output;
-            lock (outputLock)
-            {
-                output = combinedBuilder.ToString();
-            }
-            return (process.ExitCode == 0, output);
         }
 
         public async Task<ProcessResult> RebootAsync()
         {
-            return await ProcessRunner.RunAsync(_fastbootPath, "reboot");
+            return await ProcessRunner.RunAsync(_fastbootPath, "reboot", op: "fastboot.reboot");
         }
     }
 }

@@ -20,3 +20,4 @@ McpProtocol
 OtaPlan
 PreOpBackup
 SurfaceParity
+OpLogging

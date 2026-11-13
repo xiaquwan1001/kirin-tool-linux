@@ -7,6 +7,7 @@ Fork-relevant guides first; inherited-baseline guides follow. Entry point: [READ
 | [README](../README.md) · [中文 README](../README.zh-CN.md) | Overview, what this line changes vs upstream, design trade-offs, field notes, safety model, install. |
 | [refresh-changelog.md](refresh-changelog.md) | Per-release changes of the refresh line (with reasons) and known gaps. |
 | [cli-mcp.md](cli-mcp.md) | CLI commands, write kinds, redline gate, gate signals, exit codes, MCP stdio protocol. |
+| [op-logging.md](op-logging.md) | Unified operation log: JSONL field table, where the logs live and how to read them, VCOM session-log integration, migration order, `Process.Start` inventory. |
 | [fork-release.md](fork-release.md) | Fork release pipeline: deb / AppImage / tar.gz / CLI assets, deb layout, ICU/OpenSSL dependency policy, CI map. |
 | [features.md](features.md) | Feature overview across GUI, CLI and MCP. |
 | [FORK-NOTICE.md](FORK-NOTICE.md) | Fork provenance, BSL 1.1 license position, compliance checklist. |
@@ -29,3 +30,4 @@ Fork-relevant guides first; inherited-baseline guides follow. Entry point: [READ
 | [soc-support-fast-flash-loader.md](soc-support-fast-flash-loader.md) | SoC support and fast flash loader matrix. |
 
 Audit records (2026-11-12): [audit/](audit/).
+Audit reports (lane D input): [audit-gui-blackbox.md](audit-gui-blackbox.md) (36 GUI black-box items) · [audit-hardcoded-and-hidden-steps.md](audit-hardcoded-and-hidden-steps.md) (H01–H95 / S / F / P).
