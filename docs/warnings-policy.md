@@ -17,7 +17,7 @@ not set `TreatWarningsAsErrors` globally.
 | Batch | Scope | Status |
 | :--- | :--- | :--- |
 | **A** | Real defects + one-line hygiene: `CS4014` (unawaited `Dispatcher.UIThread.InvokeAsync`), `CS0168` (unused `ex`), `CS0618` (`OpenFolderDialog`, `ToggleButton.Checked/Unchecked`, `IClipboard.GetTextAsync`), `CA2022` (inexact `Stream.ReadAsync` in `VcomFlasher`), `CA1416` (`File.SetUnixFileMode` in tests), the `PropertyChanged` family (`CS0108`/`CS8612`/`CS8618`/`CS8622`: hand-written `INotifyPropertyChanged` declared non-nullable and shadowing `AvaloniaObject.PropertyChanged`) | done in 2.4.17 |
-| **B** | Nullable-reference leftovers on signatures: `CS8625` (`string op = null`, `IProgress<string> progress = null` …), `CS8618` non-nullable fields/properties set in `InitializeComponent`-style paths, `CS8600/CS8602/CS8603/CS8604/CS8620`. Touches `FastbootClient`, `ProcessRunner`, `VcomFlasher`, `UsbDownloadService`, `FirmwareUnlocker` — the flashing hot paths, hence its own commit and a full `tests/suites.txt` run | done: 76 unique sites → 0 (app project; tests were already 0). Baseline measured locally as 76 unique sites / 160 raw compiler lines; the raw count is higher than the site count because some lines carry two arguments (e.g. `EditEntries(model, regionVendor)`). Nullable tuple/delegate payloads (`string? Source`, `IReadOnlyList<string?>? argv`) were widened end-to-end instead of `!`-suppressing; `!` is only used where an invariant is genuinely invisible to the compiler (ctor-ordered init, success-gated payloads) and is always commented | done |
+| **B** | Nullable-reference leftovers on signatures: `CS8625` (`string op = null`, `IProgress<string> progress = null` …), `CS8618` non-nullable fields/properties set in `InitializeComponent`-style paths, `CS8600/CS8602/CS8603/CS8604/CS8620`. Touches `FastbootClient`, `ProcessRunner`, `VcomFlasher`, `UsbDownloadService`, `FirmwareUnlocker` — the flashing hot paths, hence its own commit and a full `tests/suites.txt` run | done: 76 unique sites → 0 (app project; tests were already 0). Baseline measured locally as 76 unique sites / 160 raw compiler lines; the raw count is higher than the site count because some lines carry two arguments (e.g. `EditEntries(model, regionVendor)`). Nullable tuple/delegate payloads (`string? Source`, `IReadOnlyList<string?>? argv`) were widened end-to-end instead of `!`-suppressing; `!` is only used where an invariant is genuinely invisible to the compiler (ctor-ordered init, success-gated payloads) and is always commented. **Done in 2.4.18** — the cleared nullable codes are gated from there on. |
 | **B+** | Drop the four hand-written `INotifyPropertyChanged` implementations in `MainWindow` / `ProcessDialogUapp` / `PartitionSelectorDialog` / `FastbootPartitionSelector` and use `AvaloniaObject.RaisePropertyChanged` instead of carrying `new event …?` forever | open (refactor, needs headless UI suites) |
 
 Batch A deliberately used the smallest correct change (`public new event
@@ -27,9 +27,20 @@ with `#pragma` was not used anywhere.
 
 ## Gate
 
-`Kirin-Tool.csproj` sets `<WarningsAsErrors>CS4014;CS0168;CA2022;CA1416</WarningsAsErrors>`:
-codes that batch A brought to zero may not regress. Nullable codes are intentionally *not*
-gated yet — gating a half-cleared category only teaches people to add `!`.
+`Kirin-Tool.csproj` sets
+
+```xml
+<WarningsAsErrors>CS4014;CS0168;CA2022;CA1416;CS8600;CS8602;CS8603;CS8604;CS8612;CS8618;CS8620;CS8622;CS8625</WarningsAsErrors>
+```
+
+Codes that batch A brought to zero may not regress; the nullable set (`CS86xx`) joined the gate in
+2.4.18, only once batch B had cleared its last site — gating a half-cleared category only teaches
+people to add `!`. Test projects are not covered by this property (separate csproj files); they
+measured 0 CS/CA warnings when batch B landed, and `tests/suites.txt` builds them on every run.
+
+`AVLN3001` is deliberately not gated: it is Avalonia's "won't be reachable via the runtime loader"
+notice for the three dialogs that are constructed in code with parameterized constructors, it is
+not a defect, and CI never reports it.
 
 ## How to measure locally
 
@@ -40,6 +51,10 @@ dotnet build Kirin-Tool.csproj -c Release -p:NuGetAudit=false 2>&1 \
 
 `dotnet build` prints every site once; CI logs print them twice (see above), so compare
 counts from a local build, not from a workflow log.
+
+Baseline after batch B (2.4.18): **0 CS/CA warnings**, `AVLN3001 ×3` (printed twice → 6 lines).
+`KirinTool.Cli` compiles the same sources through a project reference, so a clean app build implies
+a clean CLI build.
 
 ## Platform noise (not ours, still worth clearing)
 
