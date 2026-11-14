@@ -72,7 +72,7 @@ static async Task<Exception?> RunBounded(USBUpdateFlasherService svc, string app
     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
     // SelectedPartitions = null means "every partition in the package"; an empty list
     // would filter everything out and the service would stop before discovery.
-    var data = new List<(string FilePath, string Label, List<string> SelectedPartitions)>
+    var data = new List<(string? FilePath, string Label, List<string> SelectedPartitions)>
     {
         (app, "synthetic", null!),
     };

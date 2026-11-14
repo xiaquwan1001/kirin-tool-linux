@@ -11,7 +11,7 @@ var names = new[]{"ERECOVERY_KERNEL","ERECOVERY_RAMDISK","ERECOVERY_VENDOR"};
 var parts=names.Select(n=>new PartitionInfo{Name=n,Size=1024,FormattedSize="1 KB"}).ToList();
 foreach(bool sources in new[]{false,true}) {
  using var cancel=new CancellationTokenSource();
- var dialog=sources?new ProcessDialogUapp(parts.Select(p=>(p,"base")).ToList(),cancel):new ProcessDialogUapp(parts,cancel);
+ var dialog=sources?new ProcessDialogUapp(parts.Select(p=>(p,(string?)"base")).ToList(),cancel):new ProcessDialogUapp(parts,cancel);
  dialog.Show();Dispatcher.UIThread.RunJobs();
  var items=dialog.GetVisualDescendants().OfType<ItemsControl>().Single();
  if(items.ItemCount!=3)throw new Exception($"Partition rows missing (source constructor={sources}): {items.ItemCount}");

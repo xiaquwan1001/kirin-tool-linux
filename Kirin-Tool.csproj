@@ -13,12 +13,8 @@
          (found by the 2.4.15 real-device smoke test). tests/VersionMetadata guards this. -->
     <Version>2.4.18</Version>
     <ApplicationIcon>logo.ico</ApplicationIcon>
-    <!-- Warning budget (batches A + B of the 2026-11 cleanup, docs/warnings-policy.md): every
-         listed code is at zero in this project and must stay there. CS86xx joined the gate only
-         after batch B cleared the last site - gating a half-cleared category only teaches people
-         to sprinkle '!'. AVLN3001 is not listed: it is Avalonia's runtime-loader notice for the
-         three code-constructed dialogs, not a defect, and CI never reports it. -->
-    <WarningsAsErrors>CS4014;CS0168;CA2022;CA1416;CS8600;CS8602;CS8603;CS8604;CS8612;CS8618;CS8620;CS8622;CS8625</WarningsAsErrors>
+    <!-- The compiler-warning budget is tree-wide now: see Directory.Build.props / docs/warnings-policy.md.
+         It used to live here; it moved so the tests/ harnesses are gated too. -->
   </PropertyGroup>
 
   <ItemGroup>

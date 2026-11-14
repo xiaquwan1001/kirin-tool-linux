@@ -27,7 +27,8 @@ with `#pragma` was not used anywhere.
 
 ## Gate
 
-`Kirin-Tool.csproj` sets
+`Directory.Build.props` (tree-wide, so the app, `KirinTool.Cli` and every `tests/*` harness are
+covered — a gate in one csproj would leave the rest free to accumulate the same warnings) sets
 
 ```xml
 <WarningsAsErrors>CS4014;CS0168;CA2022;CA1416;CS8600;CS8602;CS8603;CS8604;CS8612;CS8618;CS8620;CS8622;CS8625</WarningsAsErrors>
@@ -35,12 +36,14 @@ with `#pragma` was not used anywhere.
 
 Codes that batch A brought to zero may not regress; the nullable set (`CS86xx`) joined the gate in
 2.4.18, only once batch B had cleared its last site — gating a half-cleared category only teaches
-people to add `!`. Test projects are not covered by this property (separate csproj files); they
-measured 0 CS/CA warnings when batch B landed, and `tests/suites.txt` builds them on every run.
+people to add `!`. Batch B's own residue lived in the test harnesses (two `CS8620` tuple-nullability
+mismatches in `tests/UsbRedlineGate` and `tests/UsbUpdateUi`), which is why the gate moved out of a
+single csproj: the app project was clean while the suites were not.
 
 `AVLN3001` is deliberately not gated: it is Avalonia's "won't be reachable via the runtime loader"
-notice for the three dialogs that are constructed in code with parameterized constructors, it is
-not a defect, and CI never reports it.
+notice for the three dialogs that are constructed in code with parameterized constructors. It is not
+a defect, so it is not gated — but CI *does* print it (3 sites, 6 lines because the app builds twice),
+so an annotation-free run is not achievable without lying to the XAML compiler.
 
 ## How to measure locally
 
@@ -52,9 +55,10 @@ dotnet build Kirin-Tool.csproj -c Release -p:NuGetAudit=false 2>&1 \
 `dotnet build` prints every site once; CI logs print them twice (see above), so compare
 counts from a local build, not from a workflow log.
 
-Baseline after batch B (2.4.18): **0 CS/CA warnings**, `AVLN3001 ×3` (printed twice → 6 lines).
-`KirinTool.Cli` compiles the same sources through a project reference, so a clean app build implies
-a clean CLI build.
+Baseline after batch B (2.4.18): **0 CS/CA warnings anywhere in the tree**; the only annotations left
+are `AVLN3001 ×3`. `KirinTool.Cli` compiles the app sources through a project reference, so a clean app
+build implies a clean CLI build; the `tests/*` harnesses are separate projects and are verified by
+running `tests/suites.txt` (or by reading the CI log, which builds every one of them).
 
 ## Platform noise (not ours, still worth clearing)
 

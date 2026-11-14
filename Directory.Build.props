@@ -1,0 +1,17 @@
+<Project>
+
+  <!-- Single source for the compiler-warning budget (docs/warnings-policy.md). It lives here, not in
+       one csproj, because the app, the CLI entry point and every tests/ harness are separate projects:
+       a gate in a single project would leave the others free to accumulate the same warnings.
+       Every code listed below is at zero tree-wide since 2.4.18 (batches A + B of the 2026-11
+       cleanup) and must stay there. CS86xx (nullable reference types) joined only after their last
+       site was fixed - gating a half-cleared category only teaches people to sprinkle '!'.
+       AVLN3001 is deliberately absent: it is Avalonia's "won't be reachable via the runtime loader"
+       notice for the three dialogs that are constructed in code with parameterized constructors, and
+       it is not a defect.
+       Nothing else is set here on purpose; project-specific settings stay in their own csproj. -->
+  <PropertyGroup>
+    <WarningsAsErrors>CS4014;CS0168;CA2022;CA1416;CS8600;CS8602;CS8603;CS8604;CS8612;CS8618;CS8620;CS8622;CS8625</WarningsAsErrors>
+  </PropertyGroup>
+
+</Project>
