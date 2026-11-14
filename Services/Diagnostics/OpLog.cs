@@ -93,11 +93,12 @@ namespace Kirin_Tool.Services.Diagnostics
         private const int ListingLimit = 200;
 
         /// <summary>Begin an op scope with an explicit tool category.</summary>
-        public static OperationScope Begin(string op, string tool, IReadOnlyList<string>? argv = null, string? notes = null)
+        // argv elements are nullable by contract (see OperationLogger.Begin).
+        public static OperationScope Begin(string op, string tool, IReadOnlyList<string?>? argv = null, string? notes = null)
             => OperationLogger.Begin(op, tool, argv, notes);
 
         /// <summary>Begin an op scope in the internal (non-child-process) category.</summary>
-        public static OperationScope Begin(string op, IReadOnlyList<string>? argv = null, string? notes = null)
+        public static OperationScope Begin(string op, IReadOnlyList<string?>? argv = null, string? notes = null)
             => OperationLogger.Begin(op, OpTools.Internal, argv, notes);
 
         /// <summary>The flasher's own verdict rule: exit-code, with the number on failure.</summary>

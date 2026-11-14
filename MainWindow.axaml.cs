@@ -481,7 +481,7 @@ namespace Kirin_Tool
         {
             int successCount = 0;
             int totalCount = selectedPartitions.Count;
-            string lastError = string.Empty;
+            string? lastError = string.Empty;
             var dumpedPartitions = new List<FastbootPartition>();
 
             try
@@ -619,7 +619,7 @@ namespace Kirin_Tool
         {
             int successCount = 0;
             int totalCount = selectedPartitions.Count;
-            string lastError = string.Empty;
+            string? lastError = string.Empty;
 
             // Pre-op backup before the first write; best effort, never aborts the flash.
             await RunPreOpBackupAsync(selectedPartitions.Select(p => p.Name), "gui-xml", progressDialog);
@@ -661,7 +661,9 @@ namespace Kirin_Tool
                             progressDialog.CurrentOperationText = $"Flashing {partition.Name}...";
                         });
 
-                        var result = await _fastbootFlasherService.FlashPartitionAsync(partition.Identifier, partition.DumpPath);
+                        // Invariant: dump-backed flashing only lists partitions whose dump target
+                        // was picked in the fastboot partition selector, so DumpPath != null here.
+                        var result = await _fastbootFlasherService.FlashPartitionAsync(partition.Identifier, partition.DumpPath!);
 
                         // Exit code 0 alone is not proof: a write only counts when the
                         // fastboot client printed OKAY for it.
@@ -902,7 +904,10 @@ namespace Kirin_Tool
                 if (partitionDialog.DialogResult)
                 {
                     partitionDialog.SetSelectedPartitions();
-                    otaFile.SelectedPartitions = partitionDialog.SelectedPartitions;
+                    if (partitionDialog.SelectedPartitions != null)
+                    {
+                        otaFile.SelectedPartitions = partitionDialog.SelectedPartitions;
+                    }
                 }
             }
             catch (Exception ex)
@@ -979,7 +984,7 @@ namespace Kirin_Tool
         private async Task StartUsbUpdateFlash()
         {
             using var cancellationTokenSource = new CancellationTokenSource();
-            var filesData = new List<(string FilePath, string Label, List<string> SelectedPartitions)>();
+            var filesData = new List<(string? FilePath, string Label, List<string> SelectedPartitions)>();
 
             var sourceFiles = new[]
             {
@@ -991,7 +996,7 @@ namespace Kirin_Tool
                 (PreloadUpdateFile, "Preload UPDATE")
             };
 
-            var allPartitions = new List<(PartitionInfo Partition, string Source)>();
+            var allPartitions = new List<(PartitionInfo Partition, string? Source)>();
 
             foreach (var (file, label) in sourceFiles)
             {
@@ -1171,7 +1176,7 @@ namespace Kirin_Tool
 
             using var cancellationTokenSource = new CancellationTokenSource();
 
-            var allPartitions = new List<(PartitionInfo Partition, string Source)>();
+            var allPartitions = new List<(PartitionInfo Partition, string? Source)>();
 
             if (BasePtableFile.HasFile && BasePtableFile.SelectedPartitions != null && BasePtableFile.SelectedPartitions.Count > 0)
             {
@@ -1283,15 +1288,15 @@ namespace Kirin_Tool
         // Information page (see RefreshBatteryBannerAsync); writes are deliberately
         // NOT blocked here — warning-only by decision 2026-11-12.
         private async Task<(bool IsSuccess, string Message)> FlashFullOtaPartitions(
-        List<(PartitionInfo Partition, string Source)> partitions,
+        List<(PartitionInfo Partition, string? Source)> partitions,
         ProcessDialogUapp progressDialog,
         CancellationToken cancellationToken,
         bool allowRedline = false)
         {
             int successCount = 0;
             int totalCount = partitions.Count;
-            string lastError = string.Empty;
-            string tempDirectory = null;
+            string? lastError = string.Empty;
+            string? tempDirectory = null;
 
             // Pre-op backup before the first write; best effort, never aborts the flash.
             await RunPreOpBackupAsync(partitions.Select(p => p.Partition.Name), "gui-full-ota", progressDialog);
@@ -1299,7 +1304,9 @@ namespace Kirin_Tool
             try
             {
                 var updateAppPath = partitions.First().Partition.UpdateAppFilePath;
-                var updateAppDirectory = Path.GetDirectoryName(updateAppPath);
+                // Invariant: UpdateAppFilePath is always set by the OTA scanner to a full file
+                // path under an existing directory, so GetDirectoryName never returns null here.
+                var updateAppDirectory = Path.GetDirectoryName(updateAppPath)!;
                 tempDirectory = Path.Combine(updateAppDirectory, $"temp_full_ota_{DateTime.Now:yyyyMMdd_HHmmss}");
 
                 if (!Directory.Exists(tempDirectory))
@@ -1357,7 +1364,7 @@ namespace Kirin_Tool
                 for (int i = 0; i < partitions.Count; i++)
                 {
                     var (partition, source) = partitions[i];
-                    string tempFilePath = null;
+                    string? tempFilePath = null;
                     string uniquePartitionId = $"{partition.Name} ({source})";
 
                     try
@@ -1373,7 +1380,9 @@ namespace Kirin_Tool
 
                         progressDialog.UpdateCurrentPartitionByIndex(i, source == "Merged Super" ? "Preparing merged image..." : $"Extracting from {source}...", 25);
 
-                        tempFilePath = Path.Combine(tempDirectory, $"{partition.Name}_{source.Replace(" ", "_")}_{i}.img");
+                        // Invariant: extraction sources are labelled ("Base UPDATE", "Merged Super", ...);
+                        // a null label never reaches this branch (only the unpacked-package loop does).
+                        tempFilePath = Path.Combine(tempDirectory, $"{partition.Name}_{source!.Replace(" ", "_")}_{i}.img");
 
                         if (source == "Merged Super" && File.Exists(partition.UpdateAppFilePath))
                         {
@@ -1640,7 +1649,10 @@ namespace Kirin_Tool
             {
                 if (enter)
                 {
-                    await _deviceWriteOps.SoftwareTestpointAsync(admission.RequireTicket(), true, SwTpUpdateFile.FilePath);
+                    // Invariant: this handler is only reachable with the SwTp OTA package loaded
+                    // (gated earlier), so FilePath is set; a null still surfaces as the service's
+                    // own "update.app missing" error, as before.
+                    await _deviceWriteOps.SoftwareTestpointAsync(admission.RequireTicket(), true, SwTpUpdateFile.FilePath!);
                     await ShowMessageBox("Transfer Completed - Mode Unknown",
                         "The software-testpoint XLOADER transfer returned without an error report from the service.\n\n" +
                         "Whether the device actually switched to VCOM mode is Unknown from here: while the device sits in VCOM " +
@@ -1656,7 +1668,8 @@ namespace Kirin_Tool
                         return;
                     }
 
-                    await _deviceWriteOps.SoftwareTestpointAsync(admission.RequireTicket(), false, SwTpUpdateFile.FilePath);
+                    // Same invariant as the enter branch: the SwTp package is loaded (gated earlier).
+                    await _deviceWriteOps.SoftwareTestpointAsync(admission.RequireTicket(), false, SwTpUpdateFile.FilePath!);
 
                     // The service only checks the flash exit code, so read the device back before
                     // claiming the XLOADER restore worked.
@@ -2121,7 +2134,7 @@ namespace Kirin_Tool
             };
 
             bool isFbUnlocked = fbLockState.ToUpper().Contains("UNLOCKED");
-            Task dialogTask = null;
+            Task? dialogTask = null;
 
             if (isFbUnlocked)
             {
@@ -2158,12 +2171,14 @@ namespace Kirin_Tool
                 dialogTask ??= _dialogService.ShowNonModalDialog(progressDialog);
 
                 bool allSuccess = true;
-                string baseUpdatePath = UsbUpdateFile.FilePath;
+                string? baseUpdatePath = UsbUpdateFile.FilePath;
 
                 // Pre-op backup before the rescue write; best effort, never aborts.
                 await RunPreOpBackupAsync(rescuePartitions, "gui-rescue", progressDialog);
 
-                using (var updateApp = new UpdateApp(baseUpdatePath))
+                // Invariant: the rescue flow is only reachable with the USB Update package loaded;
+                // a null path would fail inside UpdateApp exactly as before the annotation work.
+                using (var updateApp = new UpdateApp(baseUpdatePath!))
                 {
                     if (GetSelectedCpu() == ChipCapabilities.Kirin9000)
                     {
@@ -2283,7 +2298,9 @@ namespace Kirin_Tool
 
         private async Task HandleWriteSerialNumber()
         {
-            var newSn = NewSerialInput.Text.Trim();
+            // Invariant: NewSerialInput is created by InitializeComponent() in the window ctor,
+            // so it exists before any UI handler (this one included) can run.
+            var newSn = (NewSerialInput!.Text ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(newSn))
             {
                 await ShowMessageBox("Input Error", "New Serial Number cannot be empty.");
@@ -2704,7 +2721,9 @@ namespace Kirin_Tool
                 var savePath = await _dialogService.ShowSaveFileDialog("Save Converted OEMInfo File", $"converted-oeminfo-{model}.img");
                 if (!string.IsNullOrWhiteSpace(savePath))
                 {
-                    await File.WriteAllBytesAsync(savePath, result.ConvertedData);
+                    // Invariant: this branch runs only after the IsSuccess gate above, and
+                    // ConvertOemInfo assigns ConvertedData exactly when IsSuccess=true.
+                    await File.WriteAllBytesAsync(savePath, result.ConvertedData!);
 
                     // Conversion and device write are two separate outcomes and are reported as
                     // such: a finished conversion says nothing about the oeminfo partition.
@@ -2898,7 +2917,7 @@ namespace Kirin_Tool
                 return tag;
             }
 
-            string content = (CpuComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString();
+            string? content = (CpuComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString();
             if (!string.IsNullOrEmpty(content) && content.Contains('('))
             {
                 int start = content.IndexOf('(') + 1;
@@ -2944,7 +2963,10 @@ namespace Kirin_Tool
                 "PreloadUpdate" => PreloadUpdateFile,
                 "SwTpUpdate" => SwTpUpdateFile,
                 "UsbUpdate" => UsbUpdateFile,
-                _ => null
+                // Invariant: every caller passes one of the nine x:Name tags above (button.Tag
+                // is set in the AXAML); the default arm is therefore unreachable, `!` keeps the
+                // pre-existing behaviour (NRE on a programming error) instead of rippling `?`.
+                _ => null!
             };
         }
 

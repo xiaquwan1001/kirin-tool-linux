@@ -31,7 +31,7 @@ public static class ApprovalRequests
 {
     public static ApprovalRequest For(
         string capabilityId,
-        IEnumerable<string>? argv = null,
+        IEnumerable<string?>? argv = null,
         IEnumerable<string>? targets = null,
         bool? touchesRedline = null,
         ApprovalReversibility? reversibility = null,
@@ -45,7 +45,7 @@ public static class ApprovalRequests
             ?? throw new ArgumentException("capability '" + capabilityId + "' is not registered in CapabilityRegistry", nameof(capabilityId));
 
         IReadOnlyList<string> targetList = (targets ?? Array.Empty<string>()).Where(value => !string.IsNullOrWhiteSpace(value)).ToList();
-        IReadOnlyList<string> argvList = ApprovalRedaction.Redact(argv ?? Array.Empty<string>());
+        IReadOnlyList<string> argvList = ApprovalRedaction.Redact(argv ?? Array.Empty<string?>());
         bool redline = touchesRedline ?? ApprovalPolicy.TouchesRedline(targetList);
 
         return new ApprovalRequest

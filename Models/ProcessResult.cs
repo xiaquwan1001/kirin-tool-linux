@@ -29,8 +29,10 @@ namespace Kirin_Tool.Models
     public class ProcessResult
     {
         public int ExitCode { get; set; }
-        public string Output { get; set; }
-        public string Arguments { get; set; }
+        // ProcessRunner always assigns both when it constructs the result; the initializers
+        // are for the null-state only and are never observed in practice.
+        public string Output { get; set; } = string.Empty;
+        public string Arguments { get; set; } = string.Empty;
         public bool IsSuccess => ExitCode == 0;
     }
 }

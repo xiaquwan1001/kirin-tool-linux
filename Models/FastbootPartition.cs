@@ -26,7 +26,9 @@ namespace Kirin_Tool.Models
     public class FastbootPartition : INotifyPropertyChanged
     {
         private bool _isSelected;
-        private string _dumpPath;
+        // Null until a dump target is chosen; DumpPath readers already treat empty/null as
+        // "no dump" (ImageFileName falls back to Identifier.img), so `?` is the honest type.
+        private string? _dumpPath;
 
         public string Name { get; set; }
         public string Identifier { get; set; }
@@ -45,7 +47,7 @@ namespace Kirin_Tool.Models
             }
         }
 
-        public string DumpPath
+        public string? DumpPath
         {
             get => _dumpPath;
             set

@@ -41,14 +41,14 @@ namespace Kirin_Tool.Utils
     {
         private static readonly object LogLock = new object();
 
-        public static Task<ProcessResult> RunAsync(string executablePath, string arguments, int timeoutMinutes = 300, int timeoutSeconds = 0, string op = null)
+        public static Task<ProcessResult> RunAsync(string executablePath, string arguments, int timeoutMinutes = 300, int timeoutSeconds = 0, string? op = null)
         {
             var info = StartInfo(executablePath);
             info.Arguments = arguments;
             return RunAsync(info, arguments, OperationLogger.ParseArgv(arguments), timeoutMinutes, timeoutSeconds, op, null);
         }
 
-        public static Task<ProcessResult> RunAsync(string executablePath, IReadOnlyList<string> arguments, int timeoutMinutes = 300, int timeoutSeconds = 0, string op = null)
+        public static Task<ProcessResult> RunAsync(string executablePath, IReadOnlyList<string> arguments, int timeoutMinutes = 300, int timeoutSeconds = 0, string? op = null)
         {
             var info = StartInfo(executablePath);
             foreach (string arg in arguments) info.ArgumentList.Add(arg);
@@ -62,7 +62,7 @@ namespace Kirin_Tool.Utils
         /// this overload exists so no caller has to build its own <see cref="ProcessStartInfo"/>
         /// (docs/op-logging.md §4).
         /// </summary>
-        public static Task<ProcessResult> RunStreamingAsync(string executablePath, IReadOnlyList<string> arguments, IProgress<string> progress = null, int timeoutMinutes = 300, int timeoutSeconds = 0, string op = null)
+        public static Task<ProcessResult> RunStreamingAsync(string executablePath, IReadOnlyList<string> arguments, IProgress<string>? progress = null, int timeoutMinutes = 300, int timeoutSeconds = 0, string? op = null)
         {
             var info = StartInfo(executablePath);
             foreach (string arg in arguments) info.ArgumentList.Add(arg);
@@ -78,7 +78,7 @@ namespace Kirin_Tool.Utils
             UseShellExecute = false, CreateNoWindow = true
         };
 
-        private static async Task<ProcessResult> RunAsync(ProcessStartInfo processStartInfo, string arguments, IReadOnlyList<string> argv, int timeoutMinutes, int timeoutSeconds, string op, IProgress<string> progress)
+        private static async Task<ProcessResult> RunAsync(ProcessStartInfo processStartInfo, string arguments, IReadOnlyList<string> argv, int timeoutMinutes, int timeoutSeconds, string? op, IProgress<string>? progress)
         {
             string executablePath = processStartInfo.FileName;
             string tool = ToolName(executablePath);
@@ -163,7 +163,11 @@ namespace Kirin_Tool.Utils
         /// stream; <paramref name="combined"/> accumulates stdout+stderr in arrival order for the
         /// live progress callback (same text the GUI already showed).
         /// </summary>
-        private static async Task<string> PumpAsync(StreamReader reader, StringBuilder combined, object combinedLock, IProgress<string> progress)
+        // Invariant: `combined` is non-null whenever `progress` is non-null (RunAsync creates
+        // `combined = new StringBuilder()` exactly when `progress != null`, and PumpAsync is only
+        // called on that branch). The `?.` therefore never skips a real append; it only exists
+        // so the null-state of the shared local is expressible without `!` at the call sites.
+        private static async Task<string> PumpAsync(StreamReader reader, StringBuilder? combined, object combinedLock, IProgress<string> progress)
         {
             var builder = new StringBuilder();
             var chunk = new char[256];
@@ -183,7 +187,7 @@ namespace Kirin_Tool.Utils
 
                     lock (combinedLock)
                     {
-                        combined.Append(chunk, 0, read);
+                        combined?.Append(chunk, 0, read);
                     }
 
                     progress.Report(snapshot);
@@ -237,7 +241,7 @@ namespace Kirin_Tool.Utils
                 // writable (AppImage squashfs, root-owned pacman install),
                 // fall back to the user's XDG state directory.
                 string exeLogDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log");
-                string xdgState = Environment.GetEnvironmentVariable("XDG_STATE_HOME");
+                string? xdgState = Environment.GetEnvironmentVariable("XDG_STATE_HOME");
                 if (string.IsNullOrWhiteSpace(xdgState))
                 {
                     xdgState = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state");

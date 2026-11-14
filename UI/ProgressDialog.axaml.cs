@@ -13,7 +13,9 @@ namespace Kirin_Tool.UI
 {
     public partial class ProgressDialog : Window
     {
-        public ObservableCollection<ProgressItemViewModel> ProgressItems { get; }
+        // The parameterless ctor (designer path) is never used at runtime; every caller uses the
+  // items ctor. An empty collection keeps the null-state definite with no behaviour change.
+        public ObservableCollection<ProgressItemViewModel> ProgressItems { get; } = new();
 
         public ProgressDialog()
         {
@@ -83,7 +85,7 @@ namespace Kirin_Tool.UI
             });
         }
 
-        public void ShowCloseButton(bool isSuccess = true, string title = null)
+        public void ShowCloseButton(bool isSuccess = true, string? title = null)
         {
             Dispatcher.UIThread.InvokeAsync(() =>
             {

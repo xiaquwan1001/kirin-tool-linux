@@ -103,7 +103,7 @@ namespace Kirin_Tool.Services.USBUpdate
             LastError = null;
             _log("Opening USB Update connection.");
             var verdictBuilder = new UsbUpdateVerdictBuilder(requiredPartitions, _log, onEvent);
-            IUpdateTransport port = null;
+            IUpdateTransport? port = null;
             
             while (port == null)
             {
@@ -189,14 +189,16 @@ namespace Kirin_Tool.Services.USBUpdate
             return outcome;
         }
 
-        private IUpdateTransport BuildConnection()
+            // Returns null when no device answers; both call loops turn that into a
+        // retry prompt or an abort, so null is a normal link-state here, not a defect.
+        private IUpdateTransport? BuildConnection()
         {
             SerialPort? serial = null;
             try
             {
                 if (_connectionFactory != null) return _connectionFactory();
                 if (OperatingSystem.IsLinux()) return BufferedUsbTransport.Open();
-                string portName = FindHiSiliconUsbUpdatePort();
+                string? portName = FindHiSiliconUsbUpdatePort();
                 if (portName == null) return null;
                 serial = new SerialPort(portName, 9600)
                 {
@@ -214,7 +216,7 @@ namespace Kirin_Tool.Services.USBUpdate
             }
         }
 
-        private static string FindHiSiliconUsbUpdatePort()
+        private static string? FindHiSiliconUsbUpdatePort()
         {
             if (OperatingSystem.IsLinux())
             {
@@ -847,7 +849,7 @@ namespace Kirin_Tool.Services.USBUpdate
         public void SendRebootCommands()
         {
 
-            IUpdateTransport port = null;
+            IUpdateTransport? port = null;
             
             while (port == null)
             {

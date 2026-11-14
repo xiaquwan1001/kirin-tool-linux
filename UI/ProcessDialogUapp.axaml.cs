@@ -32,9 +32,9 @@ namespace Kirin_Tool.UI
 {
     public partial class ProcessDialogUapp : Window, INotifyPropertyChanged
     {
-        private string _overallStatusText;
+        private string _overallStatusText = string.Empty;
         private double _overallProgress;
-        private string _currentOperationText;
+        private string _currentOperationText = string.Empty;
         private bool _canCancel = true;
         private bool _showCloseButton = false;
         private CancellationTokenSource _cancellationTokenSource;
@@ -42,7 +42,8 @@ namespace Kirin_Tool.UI
         public ObservableCollection<FlashPartitionItem> PartitionItems { get; }
         public bool IsUsbUpdateMode { get; set; } = false;
 
-        public event EventHandler RequestClose;
+        // Raised only via RequestClose?.Invoke, so the nullable event type is exact.
+        public event EventHandler? RequestClose;
 
         public string OverallStatusText
         {
@@ -112,7 +113,7 @@ namespace Kirin_Tool.UI
             DataContext = this;
         }
 
-        public ProcessDialogUapp(List<(PartitionInfo Partition, string Source)> partitionsWithSources, CancellationTokenSource cancellationTokenSource)
+        public ProcessDialogUapp(List<(PartitionInfo Partition, string? Source)> partitionsWithSources, CancellationTokenSource cancellationTokenSource)
         {
             InitializeComponent();
 
@@ -219,7 +220,7 @@ namespace Kirin_Tool.UI
             });
         }
 
-        public void CompletePartitionByIndex(int index, bool success, string message = null)
+        public void CompletePartitionByIndex(int index, bool success, string? message = null)
         {
             Dispatcher.UIThread.Post(() =>
             {
@@ -251,7 +252,7 @@ namespace Kirin_Tool.UI
             });
         }
 
-        public void ReplacePartitions(List<(PartitionInfo Partition, string Source)> newPartitions)
+        public void ReplacePartitions(List<(PartitionInfo Partition, string? Source)> newPartitions)
         {
             Dispatcher.UIThread.Post(() =>
             {
@@ -298,7 +299,7 @@ namespace Kirin_Tool.UI
             });
         }
 
-        public void CompletePartition(string partitionName, bool success, string message = null)
+        public void CompletePartition(string partitionName, bool success, string? message = null)
         {
             Dispatcher.UIThread.Post(() =>
             {

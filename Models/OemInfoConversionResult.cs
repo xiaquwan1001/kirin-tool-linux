@@ -24,7 +24,9 @@ namespace Kirin_Tool.Models
     {
         public bool IsSuccess { get; set; }
         public string ErrorMessage { get; set; } = "";
-        public byte[] ConvertedData { get; set; }
+        // ConvertedData is assigned exactly when IsSuccess=true (OemInfoService.ConvertOemInfo);
+        // failure paths leave it null and callers gate on IsSuccess, so the payload is nullable.
+        public byte[]? ConvertedData { get; set; }
         public bool PulledFromDevice { get; set; }
     }
 }

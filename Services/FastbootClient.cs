@@ -47,7 +47,7 @@ namespace Kirin_Tool.Services
         /// <summary>\`oem unlock\` rejects anything that is not exactly this long.</summary>
         public const int UnlockCodeLength = 16;
 
-        public FastbootClient(string executablePath = null)
+        public FastbootClient(string? executablePath = null)
         {
             _fastbootPath = !string.IsNullOrWhiteSpace(executablePath)
                 ? ResolveExecutablePath(executablePath)
@@ -219,7 +219,7 @@ namespace Kirin_Tool.Services
         /// `unlockCode` defaults to the vendor magic; the length is validated before anything is
         /// sent to the device and a rejection is recorded with `verdictSource=arg-validation`.
         /// </summary>
-        public async Task<(bool IsSuccess, string Output)> UnlockBootloaderAsync(IProgress<string> progress = null, string? unlockCode = null)
+        public async Task<(bool IsSuccess, string Output)> UnlockBootloaderAsync(IProgress<string>? progress = null, string? unlockCode = null)
         {
             string code = string.IsNullOrEmpty(unlockCode) ? DefaultUnlockCode : unlockCode!;
 

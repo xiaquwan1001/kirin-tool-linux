@@ -81,7 +81,9 @@ namespace Kirin_Tool.Services
         private const int IDT_PID = 0x3609;
         private const int MAX_DATA_LEN = 0x400;
 
-        private SerialPort _serialPort;
+        // Null until Connect() succeeds; every reader already null-checks via `?.`
+        // (IsOpen, Dispose), so `?` just makes the existing invariant explicit.
+        private SerialPort? _serialPort;
         private readonly VcomFlasherOptions _options;
         private long _bytesSinceHead;
 
@@ -103,7 +105,7 @@ namespace Kirin_Tool.Services
 
         public void Connect()
         {
-            string portName = _options.PortName ?? FindIdtDevicePort();
+            string? portName = _options.PortName ?? FindIdtDevicePort();
             if (string.IsNullOrEmpty(portName))
             {
                 throw new IOException("No device in VCOM mode (HUAWEI USB COM 1.0) was found.");
@@ -259,7 +261,9 @@ namespace Kirin_Tool.Services
 
             await WriteAndVerify(BuildHeadCmd(returnAddr, 4), false, "HEAD", returnAddr);
 
-            if (_serialPort.BytesToRead > 0)
+            // Invariant: WriteAndVerify/Ack paths run only after Connect() assigned _serialPort;
+            // null-forgiving keeps the pre-existing NRE-on-misuse instead of hiding it.
+            if (_serialPort!.BytesToRead > 0)
             {
                 byte[] rsp = new byte[_serialPort.BytesToRead];
                 using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
@@ -287,7 +291,8 @@ namespace Kirin_Tool.Services
         /// </summary>
         private async Task WriteAndVerify(byte[] command, bool expectAck = true, string kind = "FRAME", int? address = null, int? sequence = null)
         {
-            await _serialPort.BaseStream.WriteAsync(command, 0, command.Length);
+            // Same invariant as above: only reachable with an open port.
+            await _serialPort!.BaseStream.WriteAsync(command, 0, command.Length);
             await _serialPort.BaseStream.FlushAsync();
             FramesSent++;
             if (kind == "HEAD") _bytesSinceHead = 0;
@@ -384,7 +389,9 @@ namespace Kirin_Tool.Services
             return fullCmd;
         }
 
-        private string FindIdtDevicePort()
+        // Returns null on platforms with neither Linux nor Windows USB-serial support;
+        // Connect() turns that into the "No device in VCOM mode" IOException.
+        private string? FindIdtDevicePort()
         {
             if (OperatingSystem.IsLinux())
             {
@@ -400,7 +407,9 @@ namespace Kirin_Tool.Services
         }
 
         [SupportedOSPlatform("windows")]
-        private static string FindWindowsPortByVidPid(int vid, int pid)
+        // Returns null when no matching COM device is enumerated; FindIdtDevicePort's caller
+        // turns that into "No device in VCOM mode".
+        private static string? FindWindowsPortByVidPid(int vid, int pid)
         {
             string pattern = $"VID_{vid:X4}&PID_{pid:X4}";
             using var searcher = new ManagementObjectSearcher(

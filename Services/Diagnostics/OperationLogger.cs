@@ -132,7 +132,7 @@ namespace Kirin_Tool.Services.Diagnostics
         }
 
         /// <summary>Mask an argv array for the log: option credentials and registered secrets.</summary>
-        public static IReadOnlyList<string> Redact(IReadOnlyList<string>? argv)
+        public static IReadOnlyList<string> Redact(IReadOnlyList<string?>? argv)
         {
             if (argv == null || argv.Count == 0) return Array.Empty<string>();
 
@@ -275,7 +275,7 @@ namespace Kirin_Tool.Services.Diagnostics
             EnsureSession(op, tool, argv, notes, rootOverride);
 
         /// <summary>Same as BeginSession; kept for call sites that read better as "ensure".</summary>
-        public static OperationSession EnsureSession(string op, string tool, IReadOnlyList<string>? argv = null, string? notes = null, string? rootOverride = null)
+        public static OperationSession EnsureSession(string op, string tool, IReadOnlyList<string?>? argv = null, string? notes = null, string? rootOverride = null)
         {
             string safeOp = string.IsNullOrWhiteSpace(op) ? "unknown" : op!;
             string safeTool = string.IsNullOrWhiteSpace(tool) ? "internal" : tool!.ToLowerInvariant();
@@ -319,7 +319,9 @@ namespace Kirin_Tool.Services.Diagnostics
         }
 
         /// <summary>Starts a new scope inside the current (or a freshly created) session.</summary>
-        public static OperationScope Begin(string op, string tool, IReadOnlyList<string>? argv = null, string? notes = null, string? parentId = null)
+        // argv elements are nullable by contract (e.g. an unloaded OTA package path);
+        // Redact already coalesces null to "", so logging behaviour is unchanged.
+        public static OperationScope Begin(string op, string tool, IReadOnlyList<string?>? argv = null, string? notes = null, string? parentId = null)
         {
             OperationSession session = EnsureSession(op, tool, argv, notes);
             return new OperationScope(session, op, tool, Redact(argv), notes, parentId);

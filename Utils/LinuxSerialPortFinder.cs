@@ -32,7 +32,9 @@ namespace Kirin_Tool.Utils
                     continue;
                 }
 
-                if (!MatchesUsbIdentity(usbDevice, vendorId, productId))
+                // Invariant: TryGetUsbDevice assigns usbDevice != null exactly when it returns true,
+                // so `!` here never hits a null dereference.
+                if (!MatchesUsbIdentity(usbDevice!, vendorId, productId))
                 {
                     continue;
                 }
