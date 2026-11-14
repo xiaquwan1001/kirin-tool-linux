@@ -11,7 +11,7 @@
     <!-- Version is the single source of truth. Do not pin FileVersion/InformationalVersion:
          they were pinned at 2.4.13 and every later release reported 2.4.13 to users
          (found by the 2.4.15 real-device smoke test). tests/VersionMetadata guards this. -->
-    <Version>2.4.18</Version>
+    <Version>2.4.19</Version>
     <ApplicationIcon>logo.ico</ApplicationIcon>
     <!-- The compiler-warning budget is tree-wide now: see Directory.Build.props / docs/warnings-policy.md.
          It used to live here; it moved so the tests/ harnesses are gated too. -->

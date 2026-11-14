@@ -47,8 +47,8 @@ Every link below is checked with `ls` (no dead entries; `docs/audit/` is a direc
 
 | Guide | What it covers |
 | :--- | :--- |
-| [release-notes/v2.4.18.md](release-notes/v2.4.18.md) | Current release: nullable-reference cleanup (batch B) finished — 0 compiler warnings, nullable codes gated. |
-| [release-notes/v2.4.17.md](release-notes/v2.4.17.md) | Previous release: warning/CI cleanup batch A — real defects, action majors, runner pinning, warning budget gate. |
+| [release-notes/v2.4.19.md](release-notes/v2.4.19.md) | Current release: batch B+ — the hand-rolled `INotifyPropertyChanged` in four windows stops shadowing `AvaloniaObject.PropertyChanged`; a headless assertion now guards the notification path. |
+| [release-notes/v2.4.18.md](release-notes/v2.4.18.md) | Previous release: nullable-reference cleanup (batch B) — 0 compiler warnings, nullable codes gated tree-wide. |
 | [fork-release.md](fork-release.md) | Fork release pipeline: deb / AppImage / tar.gz / CLI assets, deb layout, ICU/OpenSSL dependency policy, CI map. |
 | [portable-appimage.md](portable-appimage.md) | AppImage build baseline, glibc 2.31, host dependencies, udev onboarding. |
 | [stable-release.md](stable-release.md) | Inherited upstream 2.4.8 baseline description (old file names there are historical, not current assets). |
