@@ -91,7 +91,9 @@ namespace Kirin_Tool.UI
             }
         }
 
-        public List<FastbootPartition> SelectedPartitions { get; private set; }
+        // Assigned only on the confirm path (Ok_Click -> SelectedPartitions = ...); callers
+        // (MainWindow) null-check before use, so `?` matches how the property is consumed.
+        public List<FastbootPartition>? SelectedPartitions { get; private set; }
         public bool DialogResult { get; private set; }
 
         public FastbootPartitionSelector(List<FastbootPartition> partitions)

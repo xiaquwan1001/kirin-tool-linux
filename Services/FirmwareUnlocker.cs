@@ -109,7 +109,10 @@ namespace Kirin_Tool.Services
     public class UnlockResult
     {
         public bool IsSuccess { get; set; }
-        public string Message { get; set; }
+        // Both construction sites (success path and Fail()) set Message explicitly; the
+        // initializer just gives the null-state a definite value without changing any wire
+        // or log behaviour.
+        public string Message { get; set; } = string.Empty;
         public UnlockFailureKind FailureKind { get; set; } = UnlockFailureKind.None;
         /// <summary>Per-stage reports (empty for the GUI path, which reports through progressItems).</summary>
         public IReadOnlyList<UnlockStageReport> Stages { get; set; } = Array.Empty<UnlockStageReport>();
@@ -138,7 +141,7 @@ namespace Kirin_Tool.Services
             { "hisi990", new List<(string, int, bool)>{ ("null", 0x22000, false), ("XLOADER", 0x22000, true), ("UCE", unchecked((int)0x60000000), false), ("FASTBOOT", 0x1A400000, false), ("BL2", 0x1E400000, false) } },
         };
 
-        public Task<UnlockResult> UnlockFastboot(string cpu, ObservableCollection<ProgressItemViewModel> progressItems, IProgress<string> overallProgress, Func<string, Task<bool>> interactionHandler = null, bool useFastFlashLoader = false) =>
+        public Task<UnlockResult> UnlockFastboot(string cpu, ObservableCollection<ProgressItemViewModel> progressItems, IProgress<string> overallProgress, Func<string, Task<bool>>? interactionHandler = null, bool useFastFlashLoader = false) =>
             UnlockFastboot(cpu, progressItems, overallProgress, interactionHandler, useFastFlashLoader, null);
 
         /// <summary>
@@ -146,7 +149,7 @@ namespace Kirin_Tool.Services
         /// is the CLI/MCP injection point; when it is null the behaviour is byte-for-byte what the
         /// GUI has always done (fixed loader directory, lenient ACK, all stages, caller prompts).
         /// </summary>
-        public async Task<UnlockResult> UnlockFastboot(string cpu, ObservableCollection<ProgressItemViewModel> progressItems, IProgress<string> overallProgress, Func<string, Task<bool>> interactionHandler, bool useFastFlashLoader, UnlockOptions options)
+        public async Task<UnlockResult> UnlockFastboot(string cpu, ObservableCollection<ProgressItemViewModel> progressItems, IProgress<string> overallProgress, Func<string, Task<bool>>? interactionHandler, bool useFastFlashLoader, UnlockOptions? options)
         {
             var stages = options?.Stages ?? UnlockStageSelection.All;
             bool sendStart = stages != UnlockStageSelection.Rest;
@@ -375,7 +378,9 @@ namespace Kirin_Tool.Services
         /// Opens the port; a <see cref="UnlockOptions.ConnectRetryWindow"/> turns a missing device
         /// into a bounded wait (used by a <c>rest</c> run immediately after the replug).
         /// </summary>
-        private static async Task ConnectAsync(VcomFlasher flasher, UnlockOptions options)
+        // `options` is nullable by design: null means "GUI defaults" (see UnlockFastboot doc);
+        // the body already treats it via `options?.` throughout.
+        private static async Task ConnectAsync(VcomFlasher flasher, UnlockOptions? options)
         {
             var window = options?.ConnectRetryWindow ?? TimeSpan.Zero;
             if (window <= TimeSpan.Zero)

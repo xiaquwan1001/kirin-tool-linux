@@ -75,7 +75,8 @@ namespace Kirin_Tool.UI
             }
         }
 
-        public List<PartitionInfo> SelectedPartitions { get; private set; }
+        // Assigned only on the confirm path; MainWindow null-checks (line 905) before use.
+        public List<PartitionInfo>? SelectedPartitions { get; private set; }
         public bool DialogResult { get; private set; }
 
         public PartitionSelectorDialog(List<PartitionInfo> partitions)

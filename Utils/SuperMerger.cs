@@ -28,12 +28,12 @@ namespace Kirin_Tool.Utils
 {
     public static class SuperMerger
     {
-        public static async Task MergeSuperImages(string path1, string path2, string outputPath, Action<double> progressCallback = null)
+        public static async Task MergeSuperImages(string path1, string path2, string outputPath, Action<double>? progressCallback = null)
         {
             await Task.Run(() => PerformMerge(path1, path2, outputPath, progressCallback));
         }
 
-        private static void PerformMerge(string path1, string path2, string outputPath, Action<double> progressCallback)
+        private static void PerformMerge(string path1, string path2, string outputPath, Action<double>? progressCallback)
         {
             var len1 = new FileInfo(path1).Length;
             var len2 = new FileInfo(path2).Length;

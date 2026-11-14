@@ -234,13 +234,15 @@ public static class ApprovalRedaction
 {
     private static readonly string[] SensitiveFlags = { "value", "sn", "serial", "serialno", "nve" };
 
-    public static IReadOnlyList<string> Redact(IEnumerable<string> argv)
+    // argv elements are nullable by contract (e.g. an unloaded OTA package path); null tokens
+    // are already filtered below, so redaction behaviour is unchanged.
+    public static IReadOnlyList<string> Redact(IEnumerable<string?> argv)
     {
         var tokens = argv.Where(token => token != null).ToList();
         var redacted = new List<string>(tokens.Count);
         for (int i = 0; i < tokens.Count; i++)
         {
-            string current = tokens[i];
+            string current = tokens[i]!;
             string bare = current.TrimStart('-');
             bool sensitiveFlag = SensitiveFlags.Contains(bare, StringComparer.OrdinalIgnoreCase);
             if (sensitiveFlag)

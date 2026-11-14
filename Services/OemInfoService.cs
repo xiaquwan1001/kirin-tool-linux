@@ -44,7 +44,7 @@ namespace Kirin_Tool.Services
             string inputFilePath,
             string model,
             string vendorCountry,
-            IProgress<string> progress = null)
+            IProgress<string>? progress = null)
         {
             var result = new OemInfoConversionResult();
 
@@ -111,7 +111,10 @@ namespace Kirin_Tool.Services
                 var originalData = await File.ReadAllBytesAsync(sourceFilePath);
                 op.Step(OpLog.OkPrefix + "read " + originalData.Length + " byte(s) from " + sourceFilePath);
                 var editor = new OemInfoEditor(originalData);
-                var modifiedData = editor.EditEntries(model, vendorCountry);
+                // model/regionVendor are caller-validated (CLI: arg validation; GUI: non-empty field
+                // gate). null-forgiving preserves the existing behaviour (a null would NRE inside
+                // UpdateEntry and be reported by the catch) without widening the editor contract.
+                var modifiedData = editor.EditEntries(model!, vendorCountry!);
                 op.Step(OpLog.OkPrefix + "converted: " + originalData.Length + " -> " + modifiedData.Length
                     + " byte(s), model=" + (model ?? "(none)") + ", region=" + (vendorCountry ?? "(none)"));
 

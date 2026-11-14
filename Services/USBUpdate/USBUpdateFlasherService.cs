@@ -37,10 +37,14 @@ namespace Kirin_Tool.Services.USBUpdate
         private readonly Func<string, string, Task<bool>> _onRetryRequired;
 
         public Action<int>? OnProgressUpdate;
-        public Action<List<(string PartitionName, string SourceLabel)>>? OnPartitionsDiscovered;
+        // SourceLabel is nullable (a package without a label); subscribers pass it through to
+        // the progress dialog, which already renders a null label as its own fallback text.
+        public Action<List<(string PartitionName, string? SourceLabel)>>? OnPartitionsDiscovered;
         public Action<int, string, int>? OnPartitionProgress;
-        public Action<int, string, bool, string>? OnPartitionCompleted;
-        public Action<string>? OnExtractionStarted;
+        // Param payloads are nullable: source labels and failure reasons may legitimately be
+        // null and all subscribers report them verbatim, so the delegate says so.
+        public Action<int, string, bool, string?>? OnPartitionCompleted;
+        public Action<string?>? OnExtractionStarted;
         public Action<int>? OnExtractionProgress;
 
         public USBUpdateFlasherService(Action<string> log, string dloadDirectory, Func<string, string, Task<bool>> onRetryRequired)
@@ -94,7 +98,7 @@ namespace Kirin_Tool.Services.USBUpdate
         /// non-verified transfer no longer hides behind a bool or behind an exception, so the GUI
         /// and the CLI can report all three states; the caller must read this value.
         /// </returns>
-        public async Task<UsbUpdateVerdict> FlashPartitions(IEnumerable<(string FilePath, string Label, List<string> SelectedPartitions)> filesData, CancellationToken cancellationToken = default, bool allowRedline = false)
+        public async Task<UsbUpdateVerdict> FlashPartitions(IEnumerable<(string? FilePath, string Label, List<string> SelectedPartitions)> filesData, CancellationToken cancellationToken = default, bool allowRedline = false)
         {
             // One op for the whole USB-update transfer (docs/op-scope-map.md row 7): every unpack,
             // the redline decision and every per-partition transfer is a step of this file.
@@ -109,7 +113,7 @@ namespace Kirin_Tool.Services.USBUpdate
             Directory.CreateDirectory(_dloadDirectory);
 
             var sw = Stopwatch.StartNew();
-            List<(string partitionName, string sourceLabel)> allPartitions = new List<(string, string)>();
+            List<(string partitionName, string? sourceLabel)> allPartitions = new();
             List<string> mappingLines = new List<string>();
             bool unlockCodeExtracted = false;
 
@@ -213,7 +217,7 @@ namespace Kirin_Tool.Services.USBUpdate
 
                 // Collect the super .img paths from each source directory
                 var superImgPaths = new List<string>();
-                string firstSuperHeaderPath = null;
+                string? firstSuperHeaderPath = null;
 
                 foreach (var idx in superIndices)
                 {

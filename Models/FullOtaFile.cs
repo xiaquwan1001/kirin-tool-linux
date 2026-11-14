@@ -26,14 +26,17 @@ namespace Kirin_Tool.Models
 {
     public class FullOtaFile : INotifyPropertyChanged
     {
-        private string _filePath;
+        private string? _filePath;
         private bool _isSelected;
         private bool _isEditEnabled = true;
-        private List<PartitionInfo> _availablePartitions;
-        private List<PartitionInfo> _selectedPartitions;
+        // The list properties are replaced wholesale by the OTA scanners before any UI bind
+        // reads them; an empty list keeps the null-state definite without changing defaults
+        // visible to consumers.
+        private List<PartitionInfo> _availablePartitions = new();
+        private List<PartitionInfo> _selectedPartitions = new();
 
-        public string FileType { get; set; }
-        public string DisplayName { get; set; }
+        public string FileType { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
 
         public bool IsEditEnabled
         {
@@ -45,7 +48,9 @@ namespace Kirin_Tool.Models
             }
         }
 
-        public string FilePath
+        // Null when no OTA package is loaded; the Clear buttons deliberately assign null and
+        // every reader treats null/empty as "no file" (FileName, HasFile), so `?` is the honest type.
+        public string? FilePath
         {
             get => _filePath;
             set

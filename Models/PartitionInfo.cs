@@ -26,10 +26,12 @@ namespace Kirin_Tool.Models
     {
         private bool _isSelected;
 
-        public string Name { get; set; }
+        // Populated for every partition the parsers emit before the object is handed to any
+        // consumer; empty initializers only give the null-state a definite value.
+        public string Name { get; set; } = string.Empty;
         public long Size { get; set; }
-        public string FormattedSize { get; set; }
-        public string UpdateAppFilePath { get; set; }
+        public string FormattedSize { get; set; } = string.Empty;
+        public string UpdateAppFilePath { get; set; } = string.Empty;
         public uint HeaderSize { get; set; }
         public long DataOffset { get; set; }
         public long EntryOffset { get; set; }

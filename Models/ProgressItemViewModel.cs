@@ -26,9 +26,9 @@ namespace Kirin_Tool.Models
     public class ProgressItemViewModel : INotifyPropertyChanged
     {
         private double _progressValue;
-        private string _statusText;
+        private string _statusText = string.Empty;
 
-        public string FileName { get; set; }
+        public string FileName { get; set; } = string.Empty;
 
         public double ProgressValue
         {
@@ -43,7 +43,7 @@ namespace Kirin_Tool.Models
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
-        protected void OnPropertyChanged([CallerMemberName] string name = null)
+        protected void OnPropertyChanged([CallerMemberName] string? name = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
         }

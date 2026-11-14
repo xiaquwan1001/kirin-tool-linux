@@ -105,9 +105,11 @@ public partial class MainWindow
         }
         finally { _refreshingBatteryBanner = false; }
     }
-    private static string FlashFailureDescription(string output)
+    // output is nullable at the call sites (a failed flash may carry no captured text);
+    // null simply falls through to the generic "see the log" description.
+    private static string FlashFailureDescription(string? output)
     {
-        var failed = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+        var failed = (output ?? string.Empty).Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
             .FirstOrDefault(line => line.Contains("FAILED", StringComparison.OrdinalIgnoreCase));
         return failed?.Trim() ?? "Flash failed; see the fastboot log.";
     }

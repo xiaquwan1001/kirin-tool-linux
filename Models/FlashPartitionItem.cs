@@ -35,8 +35,11 @@ namespace Kirin_Tool.UI
         private double _progressValue = 0;
         private bool _isCompleted = false;
         private bool _isSuccess = false;
-        private Stopwatch _stopwatch;
-        private DispatcherTimer _tickTimer;
+        private Stopwatch _stopwatch = new Stopwatch();
+        // Invariant: assigned by StartTimer(), which both constructors call before any member
+        // use (including the timer's own Tick handler, which re-checks _stopwatch). null-forgiving
+        // only silences the compiler's inability to follow the ctor -> StartTimer assignment.
+        private DispatcherTimer _tickTimer = null!;
         private string _timeElapsed = "";
 
         public PartitionInfo Partition { get; }
@@ -160,7 +163,8 @@ namespace Kirin_Tool.UI
             StartTimer();
         }
 
-        public FlashPartitionItem(PartitionInfo partition, string source)
+        // source may be null (package without a label); it only feeds the display name.
+        public FlashPartitionItem(PartitionInfo partition, string? source)
         {
             Partition = partition;
             Name = partition.Name;
@@ -228,7 +232,7 @@ namespace Kirin_Tool.UI
             StatusText = status;
         }
 
-        public void Complete(bool success, string message = null)
+        public void Complete(bool success, string? message = null)
         {
             StopTimer();
             IsCompleted = true;
