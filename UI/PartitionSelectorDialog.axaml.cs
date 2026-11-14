@@ -218,10 +218,21 @@ namespace Kirin_Tool.UI
             this.Closed -= OnDialogClosed;
         }
 
-        public new event PropertyChangedEventHandler? PropertyChanged;
+        // CLR (non-AvaloniaProperty) properties notify through INotifyPropertyChanged. AvaloniaObject already
+        // declares a typed PropertyChanged (AvaloniaPropertyChangedEventArgs) and implements INPC explicitly,
+        // so this is the interface implementation again - not a public event shadowing the base one. Bindings
+        // resolve it through the interface; `x.PropertyChanged` keeps meaning Avalonia's typed event.
+        private PropertyChangedEventHandler? _inpcPropertyChanged;
+
+        event PropertyChangedEventHandler? INotifyPropertyChanged.PropertyChanged
+        {
+            add => _inpcPropertyChanged += value;
+            remove => _inpcPropertyChanged -= value;
+        }
+
         protected virtual void OnPropertyChanged(string propertyName)
         {
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            _inpcPropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
     }
 }

@@ -8,6 +8,9 @@ using Kirin_Tool.Models;
 using Kirin_Tool.UI;
 System.Environment.SetEnvironmentVariable("KIRIN_TOOL_SETTINGS_DIR", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kirin-tool-test-settings")); AppBuilder.Configure<App>().WithInterFont().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
 var names = new[]{"ERECOVERY_KERNEL","ERECOVERY_RAMDISK","ERECOVERY_VENDOR"};
+// CLR properties on these windows notify through INotifyPropertyChanged; assert the *bound control*
+// actually re-renders, which is what a broken notification path would silently stop doing.
+static bool AnyText(ProcessDialogUapp d,string s)=>d.GetVisualDescendants().OfType<TextBlock>().Any(t=>t.Text==s);
 var parts=names.Select(n=>new PartitionInfo{Name=n,Size=1024,FormattedSize="1 KB"}).ToList();
 foreach(bool sources in new[]{false,true}) {
  using var cancel=new CancellationTokenSource();
@@ -20,8 +23,10 @@ foreach(bool sources in new[]{false,true}) {
  for(int i=0;i<3;i++)dialog.CompletePartitionByIndex(i,true);
  dialog.SetOverallComplete(true,"Rebooted to USB Update mode successfully!");Dispatcher.UIThread.RunJobs();
  if(dialog.CurrentOperationText!="Rebooted to USB Update mode successfully!")throw new Exception("Reboot result hidden by generic flash message");
+ if(!AnyText(dialog,"Rebooted to USB Update mode successfully!"))throw new Exception("Bound status text did not re-render after the property change (INPC path broken)");
  if(!dialog.FindControl<Button>("CloseButton")!.IsVisible || dialog.CanCancel)throw new Exception("Completion controls incorrect");
  dialog.SetOverallComplete(false,"Flash successful, but failed to enter USB Update mode.");Dispatcher.UIThread.RunJobs();
  if(!dialog.CurrentOperationText.Contains("failed to enter"))throw new Exception("Failure message lost");
+ if(!dialog.GetVisualDescendants().OfType<TextBlock>().Any(t=>t.Text!=null&&t.Text.Contains("failed to enter")))throw new Exception("Bound status text did not re-render the failure message (INPC path broken)");
  dialog.Close();Console.WriteLine("PASS rendered rows, reboot success/failure and completion controls; sources="+sources);
 }
